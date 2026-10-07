@@ -1,0 +1,80 @@
+# ============================================================
+#  Sports Analytics Platform — Backend Dependencies
+#  Actualizado: 2026-09-30 | Python 3.12+
+#  Versiones verificadas en PyPI con compatibilidades validadas
+# ============================================================
+
+# ─── Web framework ─────────────────────────────────────────────────────────
+fastapi>=0.142.0
+uvicorn[standard]>=0.54.0
+python-dotenv>=1.2.3
+pydantic>=2.13.0
+pydantic-settings>=2.15.0
+
+# ─── Database ──────────────────────────────────────────────────────────────
+# SQLAlchemy 2.1 es compatible con asyncpg 0.31 y alembic 1.20
+sqlalchemy[asyncio]>=2.1.0
+asyncpg>=0.31.0
+alembic>=1.20.0
+# psycopg2-binary: solo necesario para Alembic CLI en host, no en runtime async
+psycopg2-binary>=2.9.13
+
+# ─── Cache / Task Queue ────────────────────────────────────────────────────
+# redis>=7.4 recomendado: la serie 8.x cambió la API de conexión,
+# Celery 5.6.x todavía usa el cliente redis<8 en algunos paths internos.
+# Evitar Redis Python 8.x hasta que Celery garantice compatibilidad en todos
+# sus paths internos.
+redis>=7.4.0,<8.0.0
+celery>=5.6.0
+
+# ─── HTTP client ───────────────────────────────────────────────────────────
+httpx>=0.28.1
+
+# ─── Sports Data APIs ──────────────────────────────────────────────────────
+# nba_api 1.11.4 es la versión actual (1.5.2 estaba desactualizada)
+nba_api>=1.11.0
+nflreadpy>=0.1.5         # Puerto Python de nflreadr (R) — NFL PBP/EPA
+
+# ─── Machine Learning ──────────────────────────────────────────────────────
+# scikit-learn 1.9.x compatible con numpy 2.x
+scikit-learn>=1.9.0
+
+# CatBoost 1.2.10 (última): soporta numpy 2.x desde 1.2.5
+catboost>=1.2.10
+
+# XGBoost 3.4.x: compatible con numpy 2.x y scikit-learn 1.9.x
+xgboost>=3.4.0
+
+# numpy 2.5.x: CatBoost >=1.2.5, XGBoost >=2.0, sklearn >=1.4 lo soportan
+numpy>=2.5.0
+
+# pandas: usamos serie 2.x para máxima compatibilidad con Prophet y CatBoost
+# pandas 3.0 tiene breaking changes (copy-on-write mandatory, etc.)
+# Se actualiza a 3.x cuando Prophet 1.5+ lo soporte oficialmente
+pandas>=2.2.3,<3.0.0
+
+joblib>=1.6.0
+
+# ─── Time series ───────────────────────────────────────────────────────────
+# Prophet 1.4.0 (última): requiere pandas >=1.0.4, compatible con 2.x
+prophet>=1.4.0
+
+# statsmodels 0.15.0 compatible con numpy 2.x y pandas 2.x
+statsmodels>=0.15.0
+
+# ─── Scraping (backup cuando no hay API oficial) ───────────────────────────
+playwright>=1.63.0
+beautifulsoup4>=4.15.0
+lxml>=6.1.0
+
+# ─── Utils ─────────────────────────────────────────────────────────────────
+pytz>=2024.2
+python-dateutil>=2.9.0
+structlog>=26.1.0
+
+# ─── Testing ───────────────────────────────────────────────────────────────
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+polars>=1.0.0
+nflreadpy>=0.1.5
+pyarrow

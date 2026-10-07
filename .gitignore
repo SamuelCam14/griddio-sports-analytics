@@ -1,0 +1,33 @@
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+# ─── Node / Frontend ─────────────────────────────────────────────────────────
+node_modules/
+dist/
+.pnp
+.yarn/
+
+# ─── IDEs ────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+
+# ─── Docker ──────────────────────────────────────────────────────────────────
+*.env.local
+
+# ─── ML models ───────────────────────────────────────────────────────────────
+backend/ml/models/*.pkl
+backend/ml/models/*.joblib
+backend/ml/models/**/*.joblib
+
+# ─── Datos sensibles ─────────────────────────────────────────────────────────
+data/*.db
+data/*.csv
+data/raw/
+data/processed/
+data/predictions/
