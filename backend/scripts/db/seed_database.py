@@ -174,7 +174,7 @@ async def main():
     async with AsyncSessionLocal() as session:
         await seed_teams(session)
         await sync_odds_and_predictions(session)
-    logger.info("Database seeding process complete! 🎉")
+    logger.info("Database seeding process complete.")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -155,7 +155,7 @@ class Prediction(Base):
     # Probabilidades del modelo
     home_win_prob       = Column(Float, nullable=False)
     away_win_prob       = Column(Float, nullable=False)
-    confluence_tier     = Column(String(10))   # "★★★" | "★★" | "★"
+    confluence_tier     = Column(String(10))   # "PREMIUM" | "VALUE" | "SKIP"
     model_agreement     = Column(Integer)      # Cuántos de 3 modelos coinciden
 
     # EV calculado contra el mejor momio disponible

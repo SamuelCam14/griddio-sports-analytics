@@ -76,7 +76,7 @@ async def test_exhaustive_multiple_markets_different_updates():
         now = datetime.now(timezone.utc)
         game_start = now + timedelta(hours=2)
         fresh_time = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        stale_time = (now - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stale_time = (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
         
         odds_data = {
             "external_id": "game_1",

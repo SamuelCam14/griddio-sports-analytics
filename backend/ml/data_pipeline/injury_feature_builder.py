@@ -72,21 +72,29 @@ def build_nfl_historical_injury_features(seasons: list[int], rolling_window: int
     team_potential = roster_strength.groupby(['season', 'week', 'team'])['rolling_ppr'].sum().reset_index()
     team_potential.rename(columns={'rolling_ppr': 'team_potential_ppr'}, inplace=True)
     
-    # Lesiones Históricas con Resolución de "Questionable" vía Ground Truth (Box Score)
+    # ── Resolución Histórica de Disponibilidad en Game Day (Box Score Ground Truth) ──
+    # En el registro histórico de nflverse, el reporte del viernes mantenía "Questionable"
+    # por eliminación reglamentaria de la etiqueta "Probable" en 2016 (~75% sí juegan).
+    # Comprobar el Box Score real del partido (did_play / estadísticas / snaps) establece
+    # con rigor qué jugadores saltaron al campo y quiénes fueron bajas reales de 90 min.
     played_this_week = game_logs[['season', 'week', 'player_id']].copy()
     played_this_week['did_play'] = True
     injuries = pd.merge(injuries, played_this_week, on=['season', 'week', 'player_id'], how='left')
     injuries['did_play'] = injuries['did_play'].fillna(False)
-    
-    def normalize_history_status(row):
-        if pd.isna(row['report_status']): return 'ACTIVE'
+
+    def resolve_historical_casualty(row):
+        if pd.isna(row['report_status']):
+            return 'ACTIVE'
         s = str(row['report_status']).lower()
-        if 'out' in s or 'ir' in s or 'reserve' in s or 'doubtful' in s: return 'OUT'
-        if 'questionable' in s:
+        if any(x in s for x in ['out', 'ir', 'reserve', 'injured reserve']):
+            return 'OUT'
+        if 'doubtful' in s:
+            return 'ACTIVE' if row['did_play'] else 'OUT'
+        if any(x in s for x in ['questionable', 'day-to-day', 'gtd']):
             return 'ACTIVE' if row['did_play'] else 'OUT'
         return 'ACTIVE'
 
-    injuries['normalized_status'] = injuries.apply(normalize_history_status, axis=1)
+    injuries['normalized_status'] = injuries.apply(resolve_historical_casualty, axis=1)
     out_injuries = injuries[injuries['normalized_status'] == 'OUT'].copy()
     
     lost_prod = pd.merge(
@@ -95,7 +103,7 @@ def build_nfl_historical_injury_features(seasons: list[int], rolling_window: int
         on=['season', 'week', 'player_id'],
         how='inner'
     )
-    
+
     team_lost = lost_prod.groupby(['season', 'week', 'team']).agg({
         'rolling_ppr': 'sum',
         'rolling_off_pct': 'sum',

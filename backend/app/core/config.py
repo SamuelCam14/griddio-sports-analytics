@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 
     # ─── The Odds API ────────────────────────────────────────────────────────
     ODDS_API_KEY: str = ""
+    ODDS_API_KEY_2: str = ""
     ODDS_API_BASE_URL: str = "https://api.the-odds-api.com/v4"
 
     # ─── NBA API ─────────────────────────────────────────────────────────────
@@ -43,8 +44,8 @@ class Settings(BaseSettings):
     MODELS_DIR: str = "/app/ml/models"
 
     # ─── P3: Freshness Thresholds (hours) ────────────────────────────────────
-    FRESHNESS_HOURS_NFL_ODDS: float = 12.0
-    FRESHNESS_HOURS_NBA_ODDS: float = 6.0
+    FRESHNESS_HOURS_NFL_ODDS: float = 36.0
+    FRESHNESS_HOURS_NBA_ODDS: float = 18.0
     FRESHNESS_HOURS_NEWS: float = 24.0
 
     # ─── Computed ────────────────────────────────────────────────────────────

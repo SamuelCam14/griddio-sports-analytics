@@ -3,6 +3,7 @@
  * Diseñado para armar combinadas de 2 a 3 legs buscando momio ~2.0 (+100) con EV combinado > 0.
  */
 import { useState } from 'react'
+import { Target, Shield, Zap, Wrench, RefreshCw, Check } from 'lucide-react'
 import { useRecommendedParlays, useEvaluateParlay } from '@/hooks'
 import { type RecommendedParlay } from '@/services/api'
 
@@ -69,7 +70,8 @@ export function ParlayBuilderView({ bankroll }: Props) {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
-              <span>🎯</span> Micro-Parlay Builder con Ventaja Matemática
+              <Target className="h-5 w-5 text-emerald-400" />
+              <span>Micro-Parlay Builder con Ventaja Matemática</span>
             </h2>
             <p className="text-sm text-gray-400 mt-1 max-w-3xl">
               Estrategia institucional: Combina de 2 a 3 eventos de alta probabilidad (&gt;65%)
@@ -77,7 +79,8 @@ export function ParlayBuilderView({ bankroll }: Props) {
             </p>
           </div>
           <div className="flex items-center gap-2 bg-brand-950/60 border border-brand-800/60 px-4 py-2 rounded-xl text-xs font-mono text-brand-300">
-            <span>🛡️ Cap Máximo Kelly: 5% Bankroll</span>
+            <Shield className="h-4 w-4 text-emerald-400" />
+            <span>Cap Máximo Kelly: 5% Bankroll</span>
           </div>
         </div>
       </div>
@@ -85,7 +88,8 @@ export function ParlayBuilderView({ bankroll }: Props) {
       {/* ─── Parlays Recomendados Automáticos ─────────────────────────────── */}
       <section className="space-y-4">
         <h3 className="text-base font-semibold text-gray-200 flex items-center gap-2">
-          <span>⚡</span> Parlays Sugeridos del Día (Generados por Algoritmo Combinatorio)
+          <Zap className="h-4 w-4 text-amber-400" />
+          <span>Parlays Sugeridos del Día (Generados por Algoritmo Combinatorio)</span>
         </h3>
 
         {recommendedQuery.isLoading && (
@@ -106,8 +110,9 @@ export function ParlayBuilderView({ bankroll }: Props) {
       {/* ─── Constructor Interactivo Personalizado ───────────────────────── */}
       <section className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-6">
         <div>
-          <h3 className="text-base font-semibold text-white">
-            🛠️ Constructor de Parlay a Medida (2 a 4 Patas)
+          <h3 className="text-base font-semibold text-white flex items-center gap-2">
+            <Wrench className="h-4 w-4 text-slate-300" />
+            <span>Constructor de Parlay a Medida (2 a 4 Patas)</span>
           </h3>
           <p className="text-xs text-gray-400 mt-0.5">
             Selecciona eventos de la lista o ingresa patas personalizadas para auditar el EV y monto Kelly en vivo.
@@ -196,9 +201,10 @@ export function ParlayBuilderView({ bankroll }: Props) {
             <button
               onClick={() => evaluateMutation.mutate({ legs: selectedLegs, bankroll })}
               disabled={evaluateMutation.isPending}
-              className="text-xs text-brand-400 hover:text-brand-300 font-semibold"
+              className="flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 font-semibold"
             >
-              🔄 Recalcular Métricas
+              <RefreshCw className="h-3.5 w-3.5" />
+              <span>Recalcular Métricas</span>
             </button>
           </div>
 
@@ -269,8 +275,9 @@ function ParlayCard({ parlay, bankroll }: { parlay: RecommendedParlay; bankroll:
       <div className="space-y-2">
         {parlay.legs_evaluadas.map((leg, i) => (
           <div key={i} className="flex justify-between items-center text-xs">
-            <span className="text-gray-300 font-medium">
-              ✓ {leg.team_name}
+            <span className="flex items-center gap-1.5 text-gray-300 font-medium">
+              <Check className="h-3.5 w-3.5 text-emerald-400" />
+              <span>{leg.team_name}</span>
             </span>
             <span className="font-mono text-gray-400">
               {(leg.prob_model * 100).toFixed(0)}% · {leg.odds_american > 0 ? `+${leg.odds_american}` : leg.odds_american}

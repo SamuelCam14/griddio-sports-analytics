@@ -67,7 +67,7 @@ GAMES_SLATE = [
         "home_ml": 125, "away_ml": -150,
         "spread": 3.0, "total": 37.5,
         "home_win_prob": 0.405, "away_win_prob": 0.595,
-        "confluence_tier": "★★★",
+        "confluence_tier": "TIER_3",
         "best_bm": "DraftKings",
         "away_ev": 8.4, "home_ev": -6.2,
         "away_has_edge": True, "home_has_edge": False,
@@ -80,7 +80,7 @@ GAMES_SLATE = [
         "home_ml": -140, "away_ml": 120,
         "spread": -2.5, "total": 47.5,
         "home_win_prob": 0.655, "away_win_prob": 0.345,
-        "confluence_tier": "★★★",
+        "confluence_tier": "TIER_3",
         "best_bm": "FanDuel",
         "home_ev": 12.3, "away_ev": -11.0,
         "home_has_edge": True, "away_has_edge": False,
@@ -93,7 +93,7 @@ GAMES_SLATE = [
         "home_ml": -180, "away_ml": 155,
         "spread": -4.0, "total": 45.0,
         "home_win_prob": 0.680, "away_win_prob": 0.320,
-        "confluence_tier": "★★★",
+        "confluence_tier": "TIER_3",
         "best_bm": "BetMGM",
         "home_ev": 5.4, "away_ev": -8.5,
         "home_has_edge": True, "away_has_edge": False,
@@ -106,7 +106,7 @@ GAMES_SLATE = [
         "home_ml": -115, "away_ml": -105,
         "spread": -1.5, "total": 48.5,
         "home_win_prob": 0.582, "away_win_prob": 0.418,
-        "confluence_tier": "★★",
+        "confluence_tier": "TIER_2",
         "best_bm": "Caesars",
         "home_ev": 8.8, "away_ev": -7.2,
         "home_has_edge": True, "away_has_edge": False,
@@ -119,7 +119,7 @@ GAMES_SLATE = [
         "home_ml": 110, "away_ml": -130,
         "spread": 1.5, "total": 47.0,
         "home_win_prob": 0.440, "away_win_prob": 0.560,
-        "confluence_tier": "★★",
+        "confluence_tier": "TIER_2",
         "best_bm": "DraftKings",
         "home_ev": -3.5, "away_ev": 4.8,
         "home_has_edge": False, "away_has_edge": True,
@@ -129,7 +129,7 @@ GAMES_SLATE = [
 
 
 async def seed_nfl():
-    print("🌱 Iniciando semillero de NFL (Equipos, Cartelera de Partidos y Predicciones)...")
+    print("Iniciando semillero de NFL (Equipos, Cartelera de Partidos y Predicciones)...")
     await init_db()
 
     async with AsyncSessionLocal() as session:
@@ -220,7 +220,7 @@ async def seed_nfl():
                     home_win_prob=g_data["home_win_prob"],
                     away_win_prob=g_data["away_win_prob"],
                     confluence_tier=g_data["confluence_tier"],
-                    model_agreement=3 if g_data["confluence_tier"] == "★★★" else 2,
+                    model_agreement=3 if g_data["confluence_tier"] == "TIER_3" else 2,
                     best_bookmaker=g_data["best_bm"],
                     best_home_ml=g_data["home_ml"],
                     best_away_ml=g_data["away_ml"],
@@ -234,7 +234,7 @@ async def seed_nfl():
                 session.add(pred)
 
         await session.commit()
-        print("✅ Semillero de la NFL completado con éxito!")
+        print("Semillero de la NFL completado con exito.")
 
 
 if __name__ == "__main__":

@@ -4,12 +4,13 @@
  * Presentar la identidad visual del enfrentamiento:
  * - Equipos (local y visitante con nombres y abreviaciones)
  * - Fecha y hora oficial del encuentro
- * - Insignias de confianza (Tier ★★★ PREMIUM / ★★ VALUE)
- * - Estado de juego (🔥 HOY EN VIVO)
+ * - Insignias de confianza (Tier PREMIUM / VALUE)
+ * - Estado de juego (HOY EN VIVO)
  * - Fuente de cuotas (Bookmaker) y confluencia
  * - Botón para guardar/marcar como favorito
  */
 import React from 'react'
+import { Star, Radio } from 'lucide-react'
 import type { Pick } from '@/services/api'
 
 interface MatchupHeaderProps {
@@ -50,11 +51,12 @@ export const MatchupHeader: React.FC<MatchupHeaderProps> = ({ pick, isSaved, onT
       <div>
         <div className="flex items-center gap-2 flex-wrap">
           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase ${badgeStyle}`}>
-            {pick.tier_emoji} {pick.tier}
+            {pick.tier}
           </span>
           {pick.is_today && (
-            <span className="text-[10px] font-bold bg-amber-950/80 text-amber-300 border border-amber-800 px-2 py-0.5 rounded-full animate-pulse">
-              🔥 HOY
+            <span className="flex items-center gap-1 text-[10px] font-bold bg-amber-950/80 text-amber-300 border border-amber-800 px-2 py-0.5 rounded-full">
+              <Radio className="h-2.5 w-2.5 animate-pulse text-amber-400" />
+              <span>HOY</span>
             </span>
           )}
           <span className="text-[11px] text-gray-400 font-mono">
@@ -74,13 +76,13 @@ export const MatchupHeader: React.FC<MatchupHeaderProps> = ({ pick, isSaved, onT
 
       <button
         onClick={onToggleSave}
-        className={`text-xl transition-colors p-1 ${
+        className={`p-1.5 transition-colors ${
           isSaved ? 'text-brand-400' : 'text-gray-600 hover:text-gray-400'
         }`}
         title={isSaved ? 'Quitar de favoritos' : 'Guardar partido'}
         aria-label="Favorito"
       >
-        {isSaved ? '★' : '☆'}
+        <Star className={`h-4 w-4 ${isSaved ? 'fill-brand-400 text-brand-400' : 'text-gray-500'}`} />
       </button>
     </div>
   )

@@ -4,6 +4,7 @@
  */
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
+import { Cpu, Home, Plane, Zap } from 'lucide-react'
 import { predictionsApi, type SimulationResult } from '@/services/api'
 
 const NBA_TEAMS = [
@@ -46,8 +47,9 @@ export function MatchupSimulator({ bankroll }: Props) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-base font-semibold text-gray-200">
-            🤖 Simulador de Ensamble (CatBoost + XGBoost + Logistic)
+          <h3 className="flex items-center gap-2 text-base font-semibold text-gray-200">
+            <Cpu className="h-4 w-4 text-cyan-400" />
+            <span>Simulador de Ensamble (CatBoost + XGBoost + Logistic)</span>
           </h3>
           <p className="text-xs text-gray-400">
             Ejecuta inferencia multi-modelo en tiempo real con ponderación walk-forward calibrada.
@@ -58,8 +60,9 @@ export function MatchupSimulator({ bankroll }: Props) {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Local */}
         <div>
-          <label className="block text-xs text-gray-500 mb-1 uppercase tracking-wider">
-            🏠 Equipo Local
+          <label className="flex items-center gap-1.5 text-xs text-gray-500 mb-1 uppercase tracking-wider">
+            <Home className="h-3.5 w-3.5 text-emerald-400" />
+            <span>Equipo Local</span>
           </label>
           <select
             value={homeTeam}
@@ -85,8 +88,9 @@ export function MatchupSimulator({ bankroll }: Props) {
 
         {/* Visitante */}
         <div>
-          <label className="block text-xs text-gray-500 mb-1 uppercase tracking-wider">
-            ✈️ Equipo Visitante
+          <label className="flex items-center gap-1.5 text-xs text-gray-500 mb-1 uppercase tracking-wider">
+            <Plane className="h-3.5 w-3.5 text-cyan-400" />
+            <span>Equipo Visitante</span>
           </label>
           <select
             value={awayTeam}
@@ -133,7 +137,14 @@ export function MatchupSimulator({ bankroll }: Props) {
             disabled={mutation.isPending}
             className="w-full px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium text-sm transition-colors disabled:opacity-50"
           >
-            {mutation.isPending ? '⋯ Calculando Ensamble...' : '⚡ Simular Matchup'}
+            {mutation.isPending ? (
+              'Calculando Ensamble...'
+            ) : (
+              <span className="flex items-center justify-center gap-1.5">
+                <Zap className="h-4 w-4" />
+                <span>Simular Matchup</span>
+              </span>
+            )}
           </button>
         </div>
       </div>

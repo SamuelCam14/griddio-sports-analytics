@@ -36,6 +36,19 @@ async def get_games_by_date(
     return await _get_games_by_date(game_date, db)
 
 
+@router.get("/{game_id}/context", summary="Contexto deportivo estilo SofaScore (H2H, L5, lesiones, métricas)")
+async def get_game_context(
+    game_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Obtiene el historial H2H, forma reciente, reporte de lesiones y duelo estadístico."""
+    from app.services.matchup_context_service import get_matchup_context
+    context = await get_matchup_context(game_id, db)
+    if not context:
+        raise HTTPException(status_code=404, detail="Partido no encontrado")
+    return context
+
+
 @router.get("/upcoming", summary="Próximos partidos (7 días)")
 async def get_upcoming_games(
     days: int = Query(default=7, ge=1, le=30),

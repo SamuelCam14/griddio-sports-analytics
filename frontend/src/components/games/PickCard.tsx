@@ -2,6 +2,7 @@
  * PickCard — Tarjeta de pick con EV, Kelly y tier visual.
  */
 import { useState } from 'react'
+import { Star, AlertCircle } from 'lucide-react'
 import { useAppStore } from '@/store/useAppStore'
 import type { Pick } from '@/services/api'
 
@@ -61,7 +62,7 @@ export function PickCard({ pick, bankroll }: Props) {
       <div className="flex items-start justify-between mb-3">
         <div>
           <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${style.badge}`}>
-            {pick.tier_emoji} {pick.tier}
+            {pick.tier}
           </span>
           <p className="text-xs text-gray-500 mt-1">{pick.sport} · {pick.model_agreement}/3 modelos</p>
         </div>
@@ -70,10 +71,10 @@ export function PickCard({ pick, bankroll }: Props) {
             e.stopPropagation()
             isSaved ? removePick(pick.game_id) : savePick(pick)
           }}
-          className={`text-lg transition-colors ${isSaved ? 'text-brand-400' : 'text-gray-600 hover:text-gray-400'}`}
+          className={`p-1 transition-colors ${isSaved ? 'text-brand-400' : 'text-gray-600 hover:text-gray-400'}`}
           title={isSaved ? 'Quitar de guardados' : 'Guardar pick'}
         >
-          {isSaved ? '★' : '☆'}
+          <Star className={`h-4 w-4 ${isSaved ? 'fill-brand-400 text-brand-400' : 'text-gray-500'}`} />
         </button>
       </div>
 
@@ -82,7 +83,7 @@ export function PickCard({ pick, bankroll }: Props) {
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-sm text-gray-400">
-              {pick.pick_side === 'home' ? '🏠 Local' : '✈️ Visitante'}
+              {pick.pick_side === 'home' ? 'Local' : 'Visitante'}
             </span>
             {pick.momio && (
               <span className="font-mono font-bold text-white">
@@ -114,8 +115,9 @@ export function PickCard({ pick, bankroll }: Props) {
           )}
         </div>
       ) : (
-        <div className="text-center py-4 text-gray-500 text-sm">
-          ❌ Sin ventaja matemática suficiente
+        <div className="flex items-center justify-center gap-1.5 py-4 text-gray-500 text-sm">
+          <AlertCircle className="h-4 w-4 text-gray-500" />
+          <span>Sin ventaja matemática suficiente</span>
         </div>
       )}
 

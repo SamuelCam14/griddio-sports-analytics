@@ -97,33 +97,20 @@ def predict_matchups(
     features['away_off_snaps_lost_pct'] = 0.0
     features['away_def_snaps_lost_pct'] = 0.0
     
-    if sport == "nfl" and not upcoming_games.empty:
+    if not upcoming_games.empty:
         import structlog
         from app.services.fantasy_injury_service import FantasyInjuryService
         logger = structlog.get_logger(__name__)
         try:
             svc = FantasyInjuryService()
-            # Asumimos misma season y week para los upcomings del lote actual
-            # Extraer season de upcoming_games
-            season = int(upcoming_games.iloc[0]['season'])
-            # En NFL el week es extraíble del game_id 2024_01_ARI_BUF o upcoming puede no tener week directamente, 
-            # pero podemos obtenerlo del game_id
-            def extract_week(gid):
-                try:
-                    return int(str(gid).split('_')[1])
-                except:
-                    return 1
+            injury_data = svc.get_live_production_lost(sport)
             
             for idx, row in features.iterrows():
-                week = extract_week(row['game_id'])
-                injury_data = svc.get_live_production_lost("nfl", season, week)
+                home_abbr = str(row.get('home_team_abbreviation') or row.get('home_team_name') or row.get('home_team_id', '')).upper()
+                away_abbr = str(row.get('away_team_abbreviation') or row.get('away_team_name') or row.get('away_team_id', '')).upper()
                 
-                # Obtener abbreviation, nflverse use abbreviation
-                home_abbr = row.get('home_team_abbreviation') or row.get('home_team_name') or str(row['home_team_id'])
-                away_abbr = row.get('away_team_abbreviation') or row.get('away_team_name') or str(row['away_team_id'])
-                
-                h_inj = injury_data.get(home_abbr, {})
-                a_inj = injury_data.get(away_abbr, {})
+                h_inj = injury_data.get(home_abbr) or injury_data.get(home_abbr.lower()) or {}
+                a_inj = injury_data.get(away_abbr) or injury_data.get(away_abbr.lower()) or {}
                 
                 features.at[idx, 'home_ppr_lost_pct'] = h_inj.get('ppr_lost_pct', 0.0)
                 features.at[idx, 'home_off_snaps_lost_pct'] = h_inj.get('off_snaps_lost_pct', 0.0)
@@ -132,9 +119,8 @@ def predict_matchups(
                 features.at[idx, 'away_ppr_lost_pct'] = a_inj.get('ppr_lost_pct', 0.0)
                 features.at[idx, 'away_off_snaps_lost_pct'] = a_inj.get('off_snaps_lost_pct', 0.0)
                 features.at[idx, 'away_def_snaps_lost_pct'] = a_inj.get('def_snaps_lost_pct', 0.0)
-                
         except Exception as e:
-            logger.error("Error inyectando live injuries", error=str(e))
+            logger.error("Error inyectando live injuries", sport=sport, error=str(e))
     if features[feature_columns(stats)].columns.tolist() != feature_columns(stats):
         raise DataQualityError("El orden de features de inferencia no coincide con el contrato del modelo")
     X = features[feature_columns(stats)].astype(float)

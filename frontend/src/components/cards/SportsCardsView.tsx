@@ -4,6 +4,7 @@
  * curvas de depreciación con series de tiempo (Prophet) y detección de anomalías de precio (EV+).
  */
 import { useState } from 'react'
+import { Calculator, AlertTriangle, TrendingUp, Zap, X, Layers } from 'lucide-react'
 import {
   AreaChart,
   Area,
@@ -42,7 +43,7 @@ export function SportsCardsView() {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
-              <span>🃏</span> Sports Card Analytics & Valuación Hedónica
+              <Layers className="h-5 w-5 text-brand-400" /> Sports Card Analytics & Valuación Hedónica
             </h2>
             <p className="text-sm text-gray-400 mt-1 max-w-3xl">
               Modelado cuantitativo de activos coleccionables (NBA & NCAA NIL).
@@ -54,7 +55,8 @@ export function SportsCardsView() {
             onClick={() => setShowValuationModal(true)}
             className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5"
           >
-            <span>🧮</span> Calculadora de Fair Value
+            <Calculator className="h-4 w-4" />
+            <span>Calculadora de Fair Value</span>
           </button>
         </div>
       </div>
@@ -63,7 +65,7 @@ export function SportsCardsView() {
       {arbitrageCards.length > 0 && (
         <section className="bg-gradient-to-r from-emerald-950/40 via-gray-900 to-teal-950/40 border border-emerald-800/40 rounded-xl p-5 space-y-3">
           <div className="flex items-center gap-2">
-            <span className="text-lg">🚨</span>
+            <AlertTriangle className="h-5 w-5 text-emerald-400" />
             <h3 className="text-sm font-bold text-emerald-400 uppercase tracking-wider">
               Anomalías de Precio Detectadas (Oportunidades de Arbitraje EV+)
             </h3>
@@ -154,9 +156,10 @@ export function SportsCardsView() {
               </div>
               <button
                 onClick={() => setSelectedCardForTrajectory(null)}
-                className="text-gray-400 hover:text-white text-lg p-1"
+                className="text-gray-400 hover:text-white p-1"
+                title="Cerrar"
               >
-                ✕
+                <X className="h-4 w-4" />
               </button>
             </div>
 
@@ -260,8 +263,9 @@ function CardItem({ card, onInspectTrajectory }: { card: SportsCardItem; onInspe
         <p className="text-xs text-gray-400 mt-0.5">{card.manufacturer} {card.brand} {card.parallel_name}</p>
 
         {isArbitrage && (
-          <div className="mt-2 text-[10px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800 px-2 py-0.5 rounded">
-            🚨 ARBITRAJE EV+ ({card.ev_percentage > 0 ? `+${card.ev_percentage.toFixed(0)}%` : ''})
+          <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800 px-2 py-0.5 rounded">
+            <AlertTriangle className="h-3 w-3" />
+            <span>ARBITRAJE EV+ ({card.ev_percentage > 0 ? `+${card.ev_percentage.toFixed(0)}%` : ''})</span>
           </div>
         )}
       </div>
@@ -278,9 +282,10 @@ function CardItem({ card, onInspectTrajectory }: { card: SportsCardItem; onInspe
 
         <button
           onClick={onInspectTrajectory}
-          className="w-full mt-2 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg text-xs font-medium transition-colors"
+          className="w-full mt-2 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5"
         >
-          📈 Ver Curva de Precios
+          <TrendingUp className="h-3.5 w-3.5" />
+          <span>Ver Curva de Precios</span>
         </button>
       </div>
     </div>
@@ -319,9 +324,12 @@ function CardValuationModal({ onClose }: { onClose: () => void }) {
       <div className="bg-gray-900 border border-gray-700 rounded-2xl max-w-xl w-full p-6 space-y-4 shadow-2xl">
         <div className="flex items-center justify-between border-b border-gray-800 pb-3">
           <h3 className="text-base font-bold text-white flex items-center gap-2">
-            <span>🧮</span> Calculadora Hedónica de Fair Value
+            <Calculator className="h-4 w-4 text-emerald-400" />
+            <span>Calculadora Hedónica de Fair Value</span>
           </h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">✕</button>
+          <button onClick={onClose} className="text-gray-400 hover:text-white p-1" title="Cerrar">
+            <X className="h-4 w-4" />
+          </button>
         </div>
 
         <div className="grid grid-cols-2 gap-3 text-xs">
@@ -409,9 +417,16 @@ function CardValuationModal({ onClose }: { onClose: () => void }) {
         <button
           onClick={handleEvaluate}
           disabled={mutation.isPending}
-          className="w-full py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition-colors"
+          className="w-full py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
         >
-          {mutation.isPending ? '⋯ Calculando Valoración...' : '⚡ Calcular Fair Value'}
+          {mutation.isPending ? (
+            'Calculando Valoración...'
+          ) : (
+            <>
+              <Zap className="h-3.5 w-3.5" />
+              <span>Calcular Fair Value</span>
+            </>
+          )}
         </button>
 
         {evalResult && (

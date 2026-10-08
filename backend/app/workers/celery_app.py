@@ -35,34 +35,36 @@ celery_app.conf.task_routes = {
 
 # ─── Programación de Tareas Recurrentes (Celery Beat Schedule) ───────────────
 celery_app.conf.beat_schedule = {
-    "ingest-nba-odds-frequent": {
-            "task": "app.workers.celery_app.ingest_odds_task",
-            "schedule": crontab(minute=0, hour="*/4"),  # Every 4 hours to satisfy 6h freshness
-            "args": ("NBA",),
-        },
-        "ingest-nfl-odds-frequent": {
-            "task": "app.workers.celery_app.ingest_odds_task",
-            "schedule": crontab(minute=0, hour="*/8"),  # Every 8 hours to satisfy 12h freshness
-            "args": ("NFL",),
-        },
-        "ingest-nba-schedule-weekly": {
-            "task": "app.workers.celery_app.ingest_nba_schedule_task",
-            "schedule": crontab(minute=0, hour=3, day_of_week='1'),  # Mondays at 3 AM
-        },
-        "ingest-nfl-schedule-weekly": {
-            "task": "app.workers.celery_app.ingest_nfl_schedule_task",
-            "schedule": crontab(minute=0, hour=4, day_of_week='2'),  # Tuesdays at 4 AM
-        },
-        "evaluate-nba-predictions-frequent": {
-            "task": "app.workers.celery_app.evaluate_predictions_task",
-            "schedule": crontab(minute=5, hour="*/4"),
-            "args": ("NBA",),
-        },
-        "evaluate-nfl-predictions-frequent": {
-            "task": "app.workers.celery_app.evaluate_predictions_task",
-            "schedule": crontab(minute=5, hour="*/8"),
-            "args": ("NFL",),
-        },
+    # --- NBA Odds Ingestion: 2 veces al día (11:00 AM ET y 5:30 PM ET antes de los partidos) ---
+    "ingest-nba-odds-optimized": {
+        "task": "app.workers.celery_app.ingest_odds_task",
+        "schedule": crontab(minute=0, hour="15,21"),
+        "args": ("NBA",),
+    },
+    # --- NFL Odds Ingestion: Solo días de juego (Jueves, Sábado víspera, Domingo matutino/tarde, Lunes) ---
+    "ingest-nfl-odds-optimized": {
+        "task": "app.workers.celery_app.ingest_odds_task",
+        "schedule": crontab(minute=0, hour="14,20", day_of_week="0,1,4,6"),
+        "args": ("NFL",),
+    },
+    "ingest-nba-schedule-weekly": {
+        "task": "app.workers.celery_app.ingest_nba_schedule_task",
+        "schedule": crontab(minute=0, hour=3, day_of_week="1"),  # Lunes 3 AM
+    },
+    "ingest-nfl-schedule-weekly": {
+        "task": "app.workers.celery_app.ingest_nfl_schedule_task",
+        "schedule": crontab(minute=0, hour=4, day_of_week="2"),  # Martes 4 AM
+    },
+    "evaluate-nba-predictions-optimized": {
+        "task": "app.workers.celery_app.evaluate_predictions_task",
+        "schedule": crontab(minute=15, hour="15,21"),
+        "args": ("NBA",),
+    },
+    "evaluate-nfl-predictions-optimized": {
+        "task": "app.workers.celery_app.evaluate_predictions_task",
+        "schedule": crontab(minute=15, hour="14,20", day_of_week="0,1,4,6"),
+        "args": ("NFL",),
+    },
 }
 
 
@@ -125,14 +127,15 @@ def evaluate_predictions_task(sport: str = "ALL"):
             results = []
             for sp in sports_to_run:
                 try:
+                    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=1)
                     if sp == "NBA":
                         from ml.data_pipeline.nba_source import load_nba_games, load_nba_upcoming_games
                         completed = load_nba_games()
-                        upcoming = load_nba_upcoming_games(as_of=pd.Timestamp.now(tz="UTC"))
+                        upcoming = load_nba_upcoming_games(as_of=cutoff)
                     elif sp == "NFL":
                         from ml.data_pipeline.nfl_source import load_nfl_games, load_nfl_upcoming_games
                         completed = load_nfl_games()
-                        upcoming = load_nfl_upcoming_games(as_of=pd.Timestamp.now(tz="UTC"))
+                        upcoming = load_nfl_upcoming_games(as_of=cutoff)
                     else:
                         continue
                         
@@ -140,7 +143,7 @@ def evaluate_predictions_task(sport: str = "ALL"):
                         logger.info(f"No upcoming games to predict for {sp}")
                         continue
                         
-                    preds_df, meta = predict_matchups(sp.lower(), completed, upcoming, allow_experimental=True)
+                    preds_df, meta = predict_matchups(sp.lower(), completed, upcoming, as_of=cutoff, allow_experimental=True)
                     
                     if not meta.get("production_eligible"):
                         logger.warning(f"Model for {sp} is not production eligible. Skipping DB insert.")

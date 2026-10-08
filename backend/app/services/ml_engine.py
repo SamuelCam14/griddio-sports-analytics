@@ -135,11 +135,11 @@ class MLEngine:
         models_agree = 3 if (home_votes in (3, 0)) else 2
 
         if models_agree == 3 and abs(ens_home_p - 0.50) >= 0.12:
-            tier = "★★★ PREMIUM"
+            tier = "PREMIUM"
         elif abs(ens_home_p - 0.50) >= 0.05:
-            tier = "★★ VALUE"
+            tier = "VALUE"
         else:
-            tier = "★ SKIP"
+            tier = "SKIP"
 
         return {
             "home_win_prob": round(ens_home_p, 4),

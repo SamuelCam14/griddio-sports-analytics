@@ -61,7 +61,7 @@ class TestNFLAnalyticsService:
                 "odds_american": -114,
                 "win_probability": 0.58,
                 "edge_pct": 5.2,
-                "tier": "★★ VALUE",
+                "tier": "TIER_2 VALUE",
             },
             {
                 "player_name": "Jaylen Warren",
@@ -73,7 +73,7 @@ class TestNFLAnalyticsService:
                 "odds_american": -110,
                 "win_probability": 0.61,
                 "edge_pct": 7.4,
-                "tier": "★★★ PREMIUM",
+                "tier": "TIER_3 PREMIUM",
             }
         ]
 

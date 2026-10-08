@@ -30,8 +30,8 @@ def analyze_arbitrage_opportunity(
         "roi_percentage": round(roi_pct * 100, 2),
         "is_arbitrage_opportunity": is_arbitrage,
         "recommendation": (
-            "🚨 OPORTUNIDAD EV+ (COMPRA SUBVALORADA)" if is_arbitrage
+            "OPORTUNIDAD EV+ (COMPRA SUBVALORADA)" if is_arbitrage
             else "FAIR VALUE (PRECIO DE MERCADO AJUSTADO)" if abs(roi_pct) < 0.10
-            else "⚠️ SOBREVALORADA (EV NEGATIVO)"
+            else "SOBREVALORADA (EV NEGATIVO)"
         ),
     }

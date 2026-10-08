@@ -92,7 +92,7 @@ async def calculate_single_ev(req: EVRequest):
         "tiene_ventaja":    result.has_edge,
         "tier":             result.tier,
         "advertencias":     result.warnings,
-        "recomendacion":    "✅ APOSTAR" if result.tier in ("PREMIUM", "VALUE") else "❌ PASAR",
+        "recomendacion":    "APOSTAR" if result.tier in ("PREMIUM", "VALUE") else "PASAR",
     }
 
 
@@ -163,7 +163,7 @@ async def build_ev_parlay(req: ParlayRequest):
         "momio_americano":  result.odds_american,
         "ev_dolares":       result.ev_dollars,
         "kelly_fraccion":   result.kelly_fraction,
-        "recomendacion":    f"✅ Apostar ${result.kelly_fraction * req.bankroll:.2f}" if result.is_viable else "❌ No hay parlay viable hoy",
+        "recomendacion":    f"Apostar ${result.kelly_fraction * req.bankroll:.2f}" if result.is_viable else "No hay parlay viable hoy",
     }
 
 
@@ -195,9 +195,9 @@ async def run_montecarlo(req: MonteCarloRequest):
             "roi_esperado":    f"{result['roi_esperado']:.1%} ROI promedio sobre {req.n_bets} apuestas",
             "rango_probable":  f"${result['percentil_25']:,.2f} – ${result['percentil_75']:,.2f} (50% de los casos)",
             "evaluacion":      (
-                "✅ ESTRATEGIA SÓLIDA" if result["prob_ruina"] < 0.10 and result["roi_esperado"] > 0.05
-                else "⚠️ RIESGO MODERADO" if result["prob_ruina"] < 0.20
-                else "❌ ESTRATEGIA PELIGROSA"
+                "ESTRATEGIA SOLIDA" if result["prob_ruina"] < 0.10 and result["roi_esperado"] > 0.05
+                else "RIESGO MODERADO" if result["prob_ruina"] < 0.20
+                else "ESTRATEGIA PELIGROSA"
             ),
         },
     }

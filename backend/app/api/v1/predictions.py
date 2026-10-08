@@ -171,18 +171,18 @@ async def get_today_picks(
         )
 
         # Evaluar la oportunidad máxima entre todos los mercados disponibles (Moneyline, Spread, Totales, Props)
-        ml_is_premium = "★★★" in (pred.confluence_tier or "")
-        ml_is_value = "★★" in (pred.confluence_tier or "")
-        props_has_premium = any("★★★" in p.get("tier", "") for p in real_props)
-        props_has_value = any("★★" in p.get("tier", "") for p in real_props)
-        spread_is_premium = analytics["spread"].get("tier") == "★★★ PREMIUM"
-        spread_is_value = analytics["spread"].get("tier") == "★★ VALUE"
+        ml_is_premium = "PREMIUM" in (pred.confluence_tier or "").upper()
+        ml_is_value = "VALUE" in (pred.confluence_tier or "").upper()
+        props_has_premium = any("PREMIUM" in p.get("tier", "").upper() for p in real_props)
+        props_has_value = any("VALUE" in p.get("tier", "").upper() for p in real_props)
+        spread_is_premium = "PREMIUM" in (analytics["spread"].get("tier") or "").upper()
+        spread_is_value = "VALUE" in (analytics["spread"].get("tier") or "").upper()
 
         has_premium = ml_is_premium or props_has_premium or spread_is_premium
         has_value = ml_is_value or props_has_value or spread_is_value
 
         normalized_tier = "PREMIUM" if has_premium else ("VALUE" if has_value else "SKIP")
-        tier_emoji = "★★★" if has_premium else ("★★" if has_value else "★")
+        tier_label = normalized_tier
 
         if tier != "all" and normalized_tier != tier.upper():
             continue
@@ -210,7 +210,8 @@ async def get_today_picks(
                 "division":     away.division,
             },
             "tier":             normalized_tier,
-            "tier_emoji":       tier_emoji,
+            "tier_label":       tier_label,
+            "tier_emoji":       tier_label,
             "model_agreement":  pred.model_agreement,
             "pick_side":        side,
             "pick_team_name":   home.name if side == "home" else away.name,
@@ -388,9 +389,9 @@ async def get_game_prediction(
             },
         },
         "recomendacion": (
-            "✅ PREMIUM — Apostar con Kelly"    if pred.confluence_tier and "★★★" in pred.confluence_tier
-            else "⚠️ VALUE — Apostar 50% Kelly" if pred.confluence_tier and "★★" in pred.confluence_tier
-            else "❌ PASAR — Sin ventaja suficiente"
+            "PREMIUM — Apostar con criterio Kelly"    if pred.confluence_tier and "PREMIUM" in pred.confluence_tier.upper()
+            else "VALUE — Apostar 50% Kelly" if pred.confluence_tier and "VALUE" in pred.confluence_tier.upper()
+            else "PASAR — Sin ventaja matemática suficiente"
         ),
     }
 

@@ -5,6 +5,7 @@
  * explicados en lenguaje coloquial y comprensible para humanos ("peras y manzanas").
  */
 import React from 'react'
+import { Brain, ChevronDown, ChevronUp, Check } from 'lucide-react'
 
 interface MatchupKeyFactorsProps {
   factors?: string[]
@@ -22,14 +23,17 @@ export const MatchupKeyFactors: React.FC<MatchupKeyFactorsProps> = ({
   return (
     <div className="mt-3">
       <button
+        type="button"
         onClick={onToggle}
         className="text-xs text-gray-400 hover:text-white flex items-center justify-between w-full py-1 transition-colors"
       >
         <span className="flex items-center gap-1.5 font-medium">
-          <span>🧠</span> Factores Clave del Modelo ({factors.length})
+          <Brain className="h-3.5 w-3.5 text-purple-400" />
+          <span>Factores Clave del Modelo ({factors.length})</span>
         </span>
-        <span className="text-[10px] text-gray-500 font-mono">
-          {isExpanded ? '▲ Ocultar' : '▼ Ver Análisis'}
+        <span className="flex items-center gap-1 text-[10px] text-gray-500 font-mono">
+          <span>{isExpanded ? 'Ocultar' : 'Ver Análisis'}</span>
+          {isExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
         </span>
       </button>
 
@@ -37,7 +41,7 @@ export const MatchupKeyFactors: React.FC<MatchupKeyFactorsProps> = ({
         <ul className="mt-2 bg-gray-950/60 border border-gray-800/80 rounded-lg p-3 space-y-1.5 text-[11px] text-gray-300 animate-fadeIn">
           {factors.map((factor, i) => (
             <li key={i} className="flex items-start gap-2">
-              <span className="text-brand-400 text-xs mt-0.5">✓</span>
+              <Check className="h-3.5 w-3.5 text-brand-400 shrink-0 mt-0.5" />
               <span>{factor}</span>
             </li>
           ))}

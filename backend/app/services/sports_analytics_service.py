@@ -81,7 +81,7 @@ def generate_nfl_matchup_analytics(
     edge_a = p_away_model - p_a_fair
 
     if edge_h >= 0.045 and ev_h >= 3.5:
-        ml_tier = "★★★ PREMIUM"
+        ml_tier = "PREMIUM"
         ml_side = "home"
         ml_pick_team = home_team
         ml_ev = ev_h
@@ -89,7 +89,7 @@ def generate_nfl_matchup_analytics(
         ml_odds = home_ml
         kelly_frac = calculate_kelly_fraction(p_home_model, dec_h, fraction_multiplier=0.25, max_cap=0.05)
     elif edge_a >= 0.045 and ev_a >= 3.5:
-        ml_tier = "★★★ PREMIUM"
+        ml_tier = "PREMIUM"
         ml_side = "away"
         ml_pick_team = away_team
         ml_ev = ev_a
@@ -97,7 +97,7 @@ def generate_nfl_matchup_analytics(
         ml_odds = away_ml
         kelly_frac = calculate_kelly_fraction(p_away_model, dec_a, fraction_multiplier=0.25, max_cap=0.05)
     elif edge_h >= 0.02 and ev_h > 0:
-        ml_tier = "★★ VALUE"
+        ml_tier = "VALUE"
         ml_side = "home"
         ml_pick_team = home_team
         ml_ev = ev_h
@@ -105,7 +105,7 @@ def generate_nfl_matchup_analytics(
         ml_odds = home_ml
         kelly_frac = calculate_kelly_fraction(p_home_model, dec_h, fraction_multiplier=0.15, max_cap=0.03)
     elif edge_a >= 0.02 and ev_a > 0:
-        ml_tier = "★★ VALUE"
+        ml_tier = "VALUE"
         ml_side = "away"
         ml_pick_team = away_team
         ml_ev = ev_a
@@ -139,7 +139,7 @@ def generate_nfl_matchup_analytics(
     ev_spread = (spread_cover_prob * (dec_spread - 1.0) * 100.0) - ((1.0 - spread_cover_prob) * 100.0)
     spread_kelly_frac = calculate_kelly_fraction(spread_cover_prob, dec_spread, fraction_multiplier=0.25, max_cap=0.05) if ev_spread > 0 else 0.0
     spread_kelly_stake = calculate_kelly_amount(bankroll, spread_kelly_frac)
-    spread_tier = "★★★ PREMIUM" if spread_edge >= 4.0 and ev_spread > 3.0 else ("★★ VALUE" if spread_edge >= 1.5 and ev_spread > 0 else "NEUTRAL")
+    spread_tier = "PREMIUM" if spread_edge >= 4.0 and ev_spread > 3.0 else ("VALUE" if spread_edge >= 1.5 and ev_spread > 0 else "NEUTRAL")
 
     # 5. Análisis Cuantitativo de Totales con EV y Kelly
     sigma_totals = 13.8
@@ -160,7 +160,7 @@ def generate_nfl_matchup_analytics(
     ev_totals = (totals_prob * (dec_totals - 1.0) * 100.0) - ((1.0 - totals_prob) * 100.0)
     totals_kelly_frac = calculate_kelly_fraction(totals_prob, dec_totals, fraction_multiplier=0.25, max_cap=0.05) if ev_totals > 0 else 0.0
     totals_kelly_stake = calculate_kelly_amount(bankroll, totals_kelly_frac)
-    totals_tier = "★★★ PREMIUM" if totals_edge >= 4.0 and ev_totals > 3.0 else ("★★ VALUE" if totals_edge >= 1.5 and ev_totals > 0 else "NEUTRAL")
+    totals_tier = "PREMIUM" if totals_edge >= 4.0 and ev_totals > 3.0 else ("VALUE" if totals_edge >= 1.5 and ev_totals > 0 else "NEUTRAL")
 
     # 6. Player Props Reales Enriquecidos con EV y Kelly Individual
     enriched_props: List[Dict[str, Any]] = []
@@ -186,7 +186,7 @@ def generate_nfl_matchup_analytics(
     if ml_ev > 0 and kelly_stake_ml > 0:
         candidates.append({
             "market": "moneyline",
-            "market_label": "💰 Moneyline",
+            "market_label": "Moneyline",
             "selection": f"{ml_pick_team} ({ml_odds:+d} ML)",
             "odds_american": ml_odds,
             "win_probability": ml_prob,
@@ -200,7 +200,7 @@ def generate_nfl_matchup_analytics(
     if ev_spread > 0 and spread_kelly_stake > 0:
         candidates.append({
             "market": "spread",
-            "market_label": "🛡️ Spread / Hándicap",
+            "market_label": "Spread / Handicap",
             "selection": f"{spread_pick} (-110)",
             "odds_american": -110,
             "win_probability": spread_cover_prob,
@@ -214,7 +214,7 @@ def generate_nfl_matchup_analytics(
     if ev_totals > 0 and totals_kelly_stake > 0:
         candidates.append({
             "market": "totals",
-            "market_label": "🎯 Totales (Over/Under)",
+            "market_label": "Totales (Over/Under)",
             "selection": f"{totals_recommendation} (-110)",
             "odds_american": -110,
             "win_probability": totals_prob,
@@ -229,7 +229,7 @@ def generate_nfl_matchup_analytics(
         if ep["ev_dollars"] > 0 and ep["kelly_stake"] > 0:
             candidates.append({
                 "market": "props",
-                "market_label": "⚡ Player Props",
+                "market_label": "Player Props",
                 "selection": f"{ep['player_name']} {ep['pick']} {ep['market_line']} ({ep['odds_american']:+d})",
                 "odds_american": ep["odds_american"],
                 "win_probability": ep["win_probability"],
@@ -241,7 +241,7 @@ def generate_nfl_matchup_analytics(
             })
 
     # Priorizar por Tier PREMIUM y mayor EV
-    candidates.sort(key=lambda c: ("★★★" in c["tier"], c["ev_dollars"]), reverse=True)
+    candidates.sort(key=lambda c: ("PREMIUM" in c["tier"], c["ev_dollars"]), reverse=True)
     best_bet = candidates[0] if candidates else None
 
     # 8. Factores Clave Explicados para Humanos (SSOT con recomendación clara de Kelly)
@@ -256,10 +256,10 @@ def generate_nfl_matchup_analytics(
 
     if best_bet:
         factors.append(
-            f"🎯 Recomendación Kelly: La mayor ventaja matemática está en {best_bet['market_label']} ({best_bet['selection']}) con EV +${best_bet['ev_dollars']} y asignación Kelly de ${best_bet['kelly_stake']}."
+            f"Recomendación Kelly: La mayor ventaja matemática está en {best_bet['market_label']} ({best_bet['selection']}) con EV +${best_bet['ev_dollars']} y asignación Kelly de ${best_bet['kelly_stake']}."
         )
     else:
-        factors.append("⚠️ Criterio de Kelly: El mercado está altamente eficiente en todos los renglones; se sugiere no forzar apuestas.")
+        factors.append("Criterio de Kelly: El mercado está altamente eficiente en todos los renglones; se sugiere no forzar apuestas.")
 
     return {
         "home_team": home_team,
@@ -270,7 +270,7 @@ def generate_nfl_matchup_analytics(
         "prob_home": round(p_home_model, 4),
         "prob_away": round(p_away_model, 4),
         "tier": ml_tier,
-        "has_edge": ml_tier in ["★★★ PREMIUM", "★★ VALUE"],
+        "has_edge": ml_tier in ["PREMIUM", "VALUE"],
         "best_bet": best_bet,
         "moneyline": {
             "pick_team": ml_pick_team,

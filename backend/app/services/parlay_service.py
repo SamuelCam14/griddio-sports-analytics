@@ -88,13 +88,13 @@ def evaluate_custom_parlay(
     is_viable = (ev_dollars > 2.0) and (prob_combined >= 0.42) and not legs_have_heavy_negative
 
     if is_viable:
-        razon = f"✅ Parlay viable de {len(legs)} patas: Probabilidad combinada {prob_combined:.1%}, EV +${ev_dollars:.2f} con cuota {odds_american_comb:+d}."
+        razon = f"Parlay viable de {len(legs)} patas: Probabilidad combinada {prob_combined:.1%}, EV +${ev_dollars:.2f} con cuota {odds_american_comb:+d}."
     elif ev_dollars <= 0:
-        razon = f"❌ EV negativo (-${abs(ev_dollars):.2f}). La casa de apuestas mantiene ventaja matemática sobre esta combinación."
+        razon = f"EV negativo (-${abs(ev_dollars):.2f}). La casa de apuestas mantiene ventaja matemática sobre esta combinación."
     elif prob_combined < 0.42:
-        razon = f"⚠️ Probabilidad combinada muy baja ({prob_combined:.1%}). Alto riesgo de quiebra a largo plazo."
+        razon = f"Probabilidad combinada muy baja ({prob_combined:.1%}). Alto riesgo de quiebra a largo plazo."
     else:
-        razon = "⚠️ Alguna pata seleccionada presenta expectativa fuertemente desfavorable."
+        razon = "Alguna pata seleccionada presenta expectativa fuertemente desfavorable."
 
     return {
         "viable": is_viable,
@@ -175,10 +175,10 @@ async def generate_recommended_parlays(
     # Si hay menos de 2 candidatos en DB, generamos ejemplos canónicos con equipos activos
     if len(candidates) < 2:
         candidates = [
-            {"team_name": "Boston Celtics", "prob_model": 0.73, "odds_american": -140, "tier": "★★★ PREMIUM"},
-            {"team_name": "Denver Nuggets", "prob_model": 0.70, "odds_american": -125, "tier": "★★★ PREMIUM"},
-            {"team_name": "Oklahoma City Thunder", "prob_model": 0.68, "odds_american": -120, "tier": "★★ VALUE"},
-            {"team_name": "Minnesota Timberwolves", "prob_model": 0.66, "odds_american": -115, "tier": "★★ VALUE"},
+            {"team_name": "Boston Celtics", "prob_model": 0.73, "odds_american": -140, "tier": "PREMIUM"},
+            {"team_name": "Denver Nuggets", "prob_model": 0.70, "odds_american": -125, "tier": "PREMIUM"},
+            {"team_name": "Oklahoma City Thunder", "prob_model": 0.68, "odds_american": -120, "tier": "VALUE"},
+            {"team_name": "Minnesota Timberwolves", "prob_model": 0.66, "odds_american": -115, "tier": "VALUE"},
         ]
 
     # Ordenar candidatos por ventaja descendente

@@ -5,6 +5,8 @@ __pycache__/
 .venv/
 venv/
 .env
+celerybeat-schedule*
+*.tsbuildinfo
 
 # ─── Node / Frontend ─────────────────────────────────────────────────────────
 node_modules/
@@ -31,3 +33,4 @@ data/*.csv
 data/raw/
 data/processed/
 data/predictions/
+data/cache/

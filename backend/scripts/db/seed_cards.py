@@ -221,7 +221,7 @@ async def seed_sports_cards():
                 existing.ev_percentage = arb["roi_percentage"]
 
         await session.commit()
-        logger.info("Sports cards catalog seeded successfully! 🃏")
+        logger.info("Sports cards catalog seeded successfully.")
 
 
 if __name__ == "__main__":

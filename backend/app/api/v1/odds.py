@@ -17,29 +17,19 @@ router = APIRouter()
 
 @router.get("/nba", summary="Momios actuales NBA")
 async def get_nba_odds():
-    """
-    Obtiene los momios actuales de todos los partidos NBA del día.
-
-    - Hace line shopping entre DraftKings, FanDuel, BetMGM y Caesars
-    - Elimina el vig para mostrar probabilidades implícitas reales
-    - Requiere ODDS_API_KEY configurado en .env
-
-    Plan gratuito: 500 requests/mes. Se cachea cada 15 minutos.
-    """
-    data = await fetch_odds(sport="NBA")
-    if not data:
-        raise HTTPException(
-            status_code=503,
-            detail="No se pudieron obtener momios. Verifica que ODDS_API_KEY está configurado."
-        )
+    try:
+        data = await fetch_odds(sport="NBA", allow_db_fallback=True)
+    except Exception as e:
+        data = []
     return {"sport": "NBA", "total_games": len(data), "games": data}
 
 
 @router.get("/nfl", summary="Momios actuales NFL")
 async def get_nfl_odds():
-    data = await fetch_odds(sport="NFL")
-    if not data:
-        raise HTTPException(status_code=503, detail="No se pudieron obtener momios NFL.")
+    try:
+        data = await fetch_odds(sport="NFL", allow_db_fallback=True)
+    except Exception as e:
+        data = []
     return {"sport": "NFL", "total_games": len(data), "games": data}
 
 

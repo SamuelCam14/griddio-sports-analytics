@@ -4,6 +4,7 @@
  */
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
+import { Calculator, Zap } from 'lucide-react'
 import { evApi, type EVResult } from '@/services/api'
 
 interface Props {
@@ -28,7 +29,10 @@ export function EVCalculator({ bankroll }: Props) {
 
   return (
     <div>
-      <h3 className="text-base font-semibold text-gray-200 mb-4">🧮 Calculadora de EV</h3>
+      <h3 className="flex items-center gap-2 text-base font-semibold text-gray-200 mb-4">
+        <Calculator className="h-4 w-4 text-emerald-400" />
+        <span>Calculadora de EV</span>
+      </h3>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
         {/* Probabilidad */}
@@ -89,7 +93,14 @@ export function EVCalculator({ bankroll }: Props) {
         className="w-full sm:w-auto px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-white
                    rounded-lg font-medium transition-colors disabled:opacity-50"
       >
-        {mutation.isPending ? '⋯ Calculando...' : '⚡ Calcular EV'}
+        {mutation.isPending ? (
+          'Calculando...'
+        ) : (
+          <span className="flex items-center justify-center gap-1.5">
+            <Zap className="h-4 w-4" />
+            <span>Calcular EV</span>
+          </span>
+        )}
       </button>
 
       {/* ─── Resultado ───────────────────────────────────────────────────── */}

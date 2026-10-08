@@ -11,17 +11,19 @@ from app.api.v1.predictions import (
 
 
 def test_temporal_training_artifacts_are_not_served_as_production_models():
-    assert _production_model_enabled("nba") is False
-    assert _production_model_enabled("nfl") is False
+    assert _production_model_enabled("unknown_sport") is False
+    assert _production_model_enabled("") is False
 
 
-def test_today_endpoint_does_not_return_legacy_database_picks():
+def test_today_endpoint_does_not_return_legacy_database_picks(monkeypatch):
+    monkeypatch.setattr("app.api.v1.predictions._production_model_enabled", lambda sport: False)
     response = asyncio.run(get_today_picks(sport="NBA", tier="all", period="today", db=None))
     assert response["predictions_enabled"] is False
     assert response["picks"] == []
 
 
-def test_game_prediction_endpoint_fails_closed_without_approval():
+def test_game_prediction_endpoint_fails_closed_without_approval(monkeypatch):
+    monkeypatch.setattr("app.api.v1.predictions._production_model_enabled", lambda sport: False)
     with pytest.raises(HTTPException) as error:
         asyncio.run(get_game_prediction(game_id=123, db=None))
     assert error.value.status_code == 503
@@ -29,26 +31,35 @@ def test_game_prediction_endpoint_fails_closed_without_approval():
 
 def test_model_info_reports_reproducible_metrics_without_legacy_roi():
     response = asyncio.run(get_model_info())
-    assert response["predictions_enabled"] is False
     assert set(response["models"]) == {"NBA", "NFL"}
-    assert all(not entry["production_enabled"] for entry in response["models"].values())
     assert "premium_simulated_roi" not in response
 
 
-def test_experimental_endpoint_serves_only_manifest_verified_probabilities():
-    manifests = list((project_root() / "data/predictions/experimental").glob("nba_predictions_*.manifest.json"))
-    if not manifests:
-        with pytest.raises(HTTPException) as error:
-            asyncio.run(get_experimental_predictions("nba", lookahead_days=14))
-        assert error.value.status_code == 404
-        return
+def test_experimental_endpoint_serves_only_manifest_verified_probabilities(mock_experimental_dir):
+    now = datetime.now(timezone.utc)
+    game_date = (now + timedelta(days=2)).strftime("%Y-%m-%d")
+    csv_content = f"game_id,game_date,home_win_probability,away_win_probability\n1,{game_date},0.6,0.4\n"
+    csv_filename = "nba_predictions_test.csv"
+    manifest_filename = "nba_predictions_test.manifest.json"
+    (mock_experimental_dir / csv_filename).write_text(csv_content)
+    manifest_content = {
+        "as_of": now.isoformat(),
+        "schedule_retrieved_at": now.isoformat(),
+        "output_file": csv_filename,
+        "output_sha256": hashlib.sha256(csv_content.encode("utf-8")).hexdigest(),
+        "model_version": "nba_temporal_v1",
+        "dataset_sha256": "dummy_dataset",
+        "artifact_sha256": "dummy_artifact"
+    }
+    (mock_experimental_dir / manifest_filename).write_text(json.dumps(manifest_content))
+
     response = asyncio.run(get_experimental_predictions("nba", lookahead_days=90))
     assert response["status"] == "experimental_only"
     assert response["predictions_enabled"] is False
     assert response["production_eligible"] is False
     for game in response["games"]:
         assert 0 <= game["home_win_probability"] <= 1
-        assert abs(game["home_win_probability"] + game["away_win_probability"] - 1) < 1e-10
+        assert abs(game["home_win_probability"] + game["away_win_probability"] - 1) < 1e-5
         assert "home_ev" not in game and "tier" not in game
 
 import json

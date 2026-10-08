@@ -94,9 +94,9 @@ def calculate_ev(
 
     warnings = []
     if prob_model > 0.85:
-        warnings.append("⚠️ Probabilidad inusualmente alta (>85%). Verificar posible sobreajuste.")
+        warnings.append("Probabilidad inusualmente alta (>85%). Verificar posible sobreajuste.")
     if abs(odds_american) >= 300:
-        warnings.append("⚠️ Momio extremo. Varianza elevada.")
+        warnings.append("Momio extremo. Varianza elevada.")
 
     return BetEvent(
         prob_model=round(prob_model, 4),

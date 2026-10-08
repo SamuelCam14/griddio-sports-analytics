@@ -261,12 +261,101 @@ export interface SimulationResult {
   } | null
 }
 
+// ─── SofaScore Context Types ────────────────────────────────────────────────
+
+export interface MatchupH2HClash {
+  date: string
+  home_team: string
+  away_team: string
+  home_score: number
+  away_score: number
+  winner: string
+}
+
+export interface MatchupH2H {
+  home_wins: number
+  away_wins: number
+  draws: number
+  total_games: number
+  recent_clashes: MatchupH2HClash[]
+}
+
+export interface RecentGameForm {
+  date: string
+  opponent: string
+  is_home: boolean
+  team_score: number
+  opponent_score: number
+  result: 'W' | 'L' | 'T'
+}
+
+export interface TeamRecentForm {
+  streak: Array<'W' | 'L' | 'T'>
+  games: RecentGameForm[]
+}
+
+export interface OfficialInjury {
+  player_name: string
+  position: string
+  status: 'OUT' | 'QUESTIONABLE' | 'DOUBTFUL' | string
+  injury: string
+  practice_status?: string
+}
+
+export interface TeamProductionImpact {
+  ppr_lost_pct: number
+  off_snaps_lost_pct: number
+  def_snaps_lost_pct: number
+}
+
+export interface MatchupTeamInjuries {
+  home: OfficialInjury[]
+  away: OfficialInjury[]
+  home_impact: TeamProductionImpact
+  away_impact: TeamProductionImpact
+}
+
+export interface ComparisonStatTeam {
+  name: string
+  abbr: string
+  ppg: number
+  opp_ppg: number
+  avg_margin: number
+  days_rest: number
+}
+
+export interface MatchupComparisonStats {
+  home: ComparisonStatTeam
+  away: ComparisonStatTeam
+}
+
+export interface MatchupContext {
+  game_id: number
+  sport: string
+  matchup_label: string
+  home_team: { id: number; name: string; abbr: string }
+  away_team: { id: number; name: string; abbr: string }
+  h2h: MatchupH2H
+  recent_form: {
+    home: TeamRecentForm
+    away: TeamRecentForm
+  }
+  injuries: MatchupTeamInjuries
+  comparison_stats: MatchupComparisonStats
+}
+
 // ─── Games ───────────────────────────────────────────────────────────────────
 
 export const gamesApi = {
   getToday: () => api.get<{ date: string; total: number; games: Game[] }>('/games/today'),
   getByDate: (date: string) => api.get<{ date: string; total: number; games: Game[] }>(`/games/date/${date}`),
-  getUpcoming: (days = 7, sport = 'NBA') => api.get(`/games/upcoming`, { params: { days, sport } }),
+  getUpcoming: (days = 7, sport = 'NBA') => api.get<{
+    sport: string
+    range_days: number
+    total: number
+    games: Game[]
+  }>('/games/upcoming', { params: { days, sport } }),
+  getContext: (gameId: number) => api.get<MatchupContext>(`/games/${gameId}/context`),
 }
 
 // ─── Odds ────────────────────────────────────────────────────────────────────
@@ -291,6 +380,8 @@ export const predictionsApi = {
       value: number
       skip: number
       picks: Pick[]
+      predictions_enabled?: boolean
+      reason?: string
     }>('/predictions/today', { params: { sport, tier, period } }),
   getTop: (sport = 'NBA', limit = 5) =>
     api.get<{ sport: string; top_picks: Pick[] }>('/predictions/top', { params: { sport, limit } }),

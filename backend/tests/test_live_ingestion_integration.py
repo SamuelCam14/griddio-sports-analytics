@@ -34,7 +34,7 @@ async def test_sync_real_games_integrated_flow():
     now = datetime.now(timezone.utc)
     game_start = now + timedelta(hours=2)
     fresh_time = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    stale_time = (now - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")  # NBA threshold is 6h
+    stale_time = (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")  # NBA threshold is 18h
     
     odds_data = {
         "external_id": "game_1",

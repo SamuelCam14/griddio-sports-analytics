@@ -2,6 +2,7 @@
  * BankrollWidget — Display compacto del bankroll con indicador de ROI.
  */
 import { useState } from 'react'
+import { Pencil } from 'lucide-react'
 import { useAppStore } from '@/store/useAppStore'
 
 interface Props {
@@ -42,7 +43,7 @@ export function BankrollWidget({ bankroll }: Props) {
           ${bankroll.toLocaleString()}
         </button>
       )}
-      <span className="text-gray-600 text-xs">✏️</span>
+      <Pencil className="h-3 w-3 text-gray-500" />
     </div>
   )
 }
