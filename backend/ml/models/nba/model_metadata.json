@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-10-06T22:34:37.493358+00:00",
+  "created_at": "2026-10-08T22:38:43.029807+00:00",
   "dataset_sha256": "cfffd690f781c4d58b217c1eecde089e5c952fe170009ba322c7645fe10e55ed",
   "date_from": "2021-10-22",
   "date_to": "2026-04-12",
@@ -199,7 +199,7 @@
   "model_version": "nba_temporal_v1",
   "production_enabled": true,
   "sample_count": 6137,
-  "source_manifest": "e22004eb137b06bdaae326d02b3fe8c1a41e362096d0e3f5c2dcbebe52adcefb",
+  "source_manifest": "2439234348e338a75476a26103ed07d1dad64f39465600889c48eeda37150014",
   "sport": "NBA",
   "validation_status": "temporal_evaluation_complete_manual_review_required"
 }

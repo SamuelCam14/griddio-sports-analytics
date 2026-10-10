@@ -8,57 +8,134 @@
     font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
-    background: #071411;
+    background: #040e0b;
   }
 
-  * { @apply border-white/10; }
+  * {
+    @apply border-white/10;
+  }
 
   body {
-    @apply m-0 min-h-screen bg-[#071411] text-slate-100 antialiased;
-    background-image:
-      radial-gradient(ellipse at 53% -20%, rgba(14, 116, 91, .23), transparent 42%),
-      radial-gradient(ellipse at 100% 30%, rgba(11, 87, 81, .12), transparent 34%);
+    @apply m-0 min-h-screen text-slate-100 antialiased selection:bg-emerald-400/30 selection:text-emerald-100;
+    background-color: #040e0b;
+    background-image: 
+      radial-gradient(ellipse at 50% 0%, rgba(16, 185, 129, 0.18), transparent 50%),
+      radial-gradient(circle at 85% 15%, rgba(6, 182, 212, 0.12), transparent 35%),
+      linear-gradient(180deg, rgba(4, 14, 11, 0.85) 0%, rgba(4, 14, 11, 0.95) 100%),
+      url('/images/stadium_bg.jpg');
+    background-position: center top;
+    background-repeat: no-repeat;
+    background-size: cover;
+    background-attachment: fixed;
   }
 
   button { font: inherit; }
   button:focus-visible { @apply outline-none ring-2 ring-emerald-300 ring-offset-2 ring-offset-[#071411]; }
-  ::selection { @apply bg-emerald-300/30 text-white; }
 }
 
 @layer components {
-  .dashboard-shell { @apply min-h-screen px-3 pb-6 sm:px-5 lg:px-8; }
-  .dashboard-header { @apply sticky top-0 z-30 -mx-3 mb-5 flex items-center justify-between gap-3 border-b border-white/10 bg-[#071411]/90 px-4 py-3 backdrop-blur-xl sm:-mx-5 sm:px-7 lg:-mx-8 lg:px-10; }
-  .dashboard-layout { @apply mx-auto grid max-w-[1680px] grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(250px,0.9fr)_minmax(0,2fr)] xl:grid-cols-[minmax(250px,0.88fr)_minmax(460px,2fr)_minmax(240px,0.8fr)]; }
-  .dashboard-footer { @apply mx-auto mt-6 max-w-[1680px] border-t border-white/10 pt-4 text-center text-xs text-slate-500; }
-  .surface-card { @apply rounded-2xl border border-white/10 bg-[#10221e]/80 p-4 shadow-[0_16px_50px_rgba(0,0,0,0.16)] backdrop-blur-xl sm:p-5; }
-  .section-heading { @apply flex items-start justify-between gap-3; }
-  .section-title { @apply mt-1 text-base font-semibold tracking-tight text-white; }
-  .eyebrow { @apply text-[10px] font-semibold tracking-[0.2em] text-emerald-300/80; }
-  .brand-mark { @apply grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-emerald-300/30 bg-emerald-300/10 text-xs font-bold tracking-wider text-emerald-200; }
-  .sport-switch { @apply rounded-full px-4 py-2 text-xs font-semibold text-slate-400 transition-colors hover:text-white; }
-  .sport-switch-active { @apply bg-emerald-300 text-[#062019] shadow-[0_4px_20px_rgba(110,231,183,0.2)]; }
-  .count-pill { @apply rounded-full border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-xs text-slate-300; }
-  .match-list-item { @apply flex w-full items-center gap-3 rounded-xl border border-transparent bg-white/[0.025] p-3 transition duration-200 hover:border-white/10 hover:bg-white/[0.055]; }
-  .match-list-item-active { @apply border-emerald-300/30 bg-emerald-300/[0.08] ring-1 ring-emerald-300/10; }
-  .match-status { @apply shrink-0 rounded-md bg-white/5 px-2 py-1 text-[10px] capitalize text-slate-400; }
-  .status-badge { @apply rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-slate-300; }
-  .status-badge-green { @apply border-emerald-300/20 bg-emerald-300/10 text-emerald-200; }
-  .state-copy { @apply rounded-xl border border-white/10 bg-white/[0.025] p-3 text-sm leading-relaxed text-slate-400; }
-  .state-error { @apply rounded-xl border border-rose-400/20 bg-rose-400/[0.07] p-3 text-sm leading-relaxed text-rose-200; }
-  .team-initials { @apply mx-auto grid h-16 w-16 place-items-center rounded-2xl border border-emerald-200/20 bg-gradient-to-br from-emerald-200/15 to-cyan-300/5 font-mono text-lg font-bold tracking-widest text-emerald-100 sm:h-20 sm:w-20 sm:text-xl; }
-  .team-initials-home { @apply border-cyan-200/20 bg-gradient-to-br from-cyan-200/15 to-emerald-300/5 text-cyan-100; }
-  .empty-model { @apply rounded-xl border border-amber-200/10 bg-amber-100/[0.025] p-4; }
-  .empty-model-icon { @apply mb-3 grid h-9 w-9 place-items-center rounded-full border border-amber-100/20 text-lg text-amber-200; }
-  .probability-track { @apply flex h-2 overflow-hidden rounded-full bg-cyan-300/70; }
-  .probability-home { @apply h-full rounded-full bg-emerald-300; }
-  .recommendation-box { @apply rounded-xl border border-emerald-200/15 bg-emerald-100/[0.04] p-3; }
-  .factor-row { @apply rounded-lg border border-white/5 bg-white/[0.025] px-3 py-2 text-sm leading-relaxed text-slate-300; }
-  .pending-row { @apply flex items-center gap-2.5 text-sm text-slate-300; }
-  .pending-dot { @apply h-1.5 w-1.5 rounded-full bg-amber-300/80; }
-  .source-row { @apply flex items-center gap-2.5; }
-  .source-indicator { @apply h-1.5 w-1.5 rounded-full bg-emerald-300; }
-  .source-indicator-error { @apply bg-rose-400; }
-  .source-indicator-muted { @apply bg-amber-300; }
+  /* ─── Glassmorphism Panels ──────────────────────────────────────────────── */
+  .glass-panel {
+    @apply rounded-2xl border border-white/10 bg-[#0c1f1a]/75 backdrop-blur-xl shadow-glass transition-all duration-200;
+  }
+  .glass-panel-subtle {
+    @apply rounded-2xl border border-white/5 bg-[#091814]/60 backdrop-blur-md;
+  }
+  .glass-panel-interactive {
+    @apply glass-panel hover:border-emerald-400/30 hover:bg-[#0f2520]/80 hover:shadow-glass-hover;
+  }
+
+  /* ─── Header & Shell Layout ────────────────────────────────────────────── */
+  .dashboard-shell {
+    @apply min-h-screen px-3 py-3 sm:px-5 lg:px-7;
+  }
+  .glass-header {
+    @apply sticky top-3 z-40 mx-auto mb-5 flex max-w-[1720px] items-center justify-between gap-4 rounded-2xl border border-white/10 bg-[#071813]/85 px-4 py-2.5 backdrop-blur-2xl shadow-glass;
+  }
+  .dashboard-grid-main {
+    @apply mx-auto grid max-w-[1720px] grid-cols-1 items-start gap-4 lg:grid-cols-[330px_minmax(0,1fr)_340px] xl:grid-cols-[350px_minmax(0,1fr)_360px];
+  }
+
+  /* ─── Standardized Glass Pills & Buttons ────────────────────────────────── */
+  .glass-pill {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-300 transition-all duration-200 hover:bg-white/10 hover:text-white;
+  }
+  .glass-pill-active {
+    @apply border-emerald-400/40 bg-emerald-400/20 text-emerald-200 shadow-emerald-glow;
+  }
+  .glass-pill-blue-active {
+    @apply border-blue-400/40 bg-blue-500/20 text-blue-200 shadow-btn-glow;
+  }
+
+  .btn-glow-primary {
+    @apply relative inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 px-5 py-3 text-sm font-bold text-white shadow-btn-glow transition-all duration-200 hover:brightness-110 hover:shadow-btn-glow active:scale-[0.98];
+  }
+  .btn-glow-emerald {
+    @apply relative inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 px-5 py-2.5 text-xs font-bold text-white shadow-emerald-glow transition-all duration-200 hover:brightness-110 active:scale-[0.98];
+  }
+  .btn-icon-glass {
+    @apply grid h-9 w-9 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-300 transition-all hover:border-white/20 hover:bg-white/15 hover:text-white active:scale-95;
+  }
+
+  /* ─── Live & Status Badges ─────────────────────────────────────────────── */
+  .badge-live-pulse {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-rose-500/30 bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold tracking-wider text-rose-300 uppercase;
+  }
+  .badge-live-dot {
+    @apply h-2 w-2 rounded-full bg-rose-400 animate-pulse;
+  }
+  .badge-tier-premium {
+    @apply inline-flex items-center gap-1 rounded-full border border-purple-400/30 bg-purple-500/15 px-2.5 py-0.5 text-[10px] font-bold tracking-wider text-purple-200;
+  }
+  .badge-tier-value {
+    @apply inline-flex items-center gap-1 rounded-full border border-blue-400/30 bg-blue-500/15 px-2.5 py-0.5 text-[10px] font-bold tracking-wider text-blue-200;
+  }
+  .badge-tier-neutral {
+    @apply inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[10px] font-medium tracking-wider text-slate-300;
+  }
+
+  /* ─── Metric & KPI Cards ───────────────────────────────────────────────── */
+  .metric-card {
+    @apply flex flex-col justify-between rounded-xl border border-white/10 bg-black/25 p-3.5 backdrop-blur-md transition-colors hover:border-white/20 hover:bg-black/35;
+  }
+  .metric-label {
+    @apply text-[11px] font-semibold uppercase tracking-wider text-slate-400;
+  }
+  .metric-value {
+    @apply font-mono text-xl font-bold tracking-tight text-white;
+  }
+  .metric-sub {
+    @apply text-[11px] text-slate-400;
+  }
+
+  /* ─── Typography & Eyebrows ────────────────────────────────────────────── */
+  .eyebrow-accent {
+    @apply text-[10px] font-semibold tracking-[0.2em] uppercase text-emerald-300/80;
+  }
+  .section-title-sm {
+    @apply text-base font-semibold tracking-tight text-white;
+  }
+
+  /* ─── Tables & Lists ───────────────────────────────────────────────────── */
+  .standings-row {
+    @apply grid grid-cols-[24px_1fr_32px_32px_32px_36px] items-center gap-2 rounded-lg px-2.5 py-2 text-xs transition-colors hover:bg-white/5;
+  }
+
+  /* ─── Custom Scrollbars ────────────────────────────────────────────────── */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.1);
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 9999px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

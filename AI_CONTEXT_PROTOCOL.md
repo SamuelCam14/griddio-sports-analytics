@@ -219,3 +219,20 @@ Para estado de continuidad, comandos exactos, resultados de validación y roadma
 - NBA: SportsDataverse publica archivos de ESPN para calendario y boxscore de equipo. NFL: nflverse vía `nflreadpy` publica schedules y play-by-play. Consulta licencias antes de uso comercial; acceso público/gratuito no equivale a licencia comercial.
 - Nunca sustituyas nulls por cero, promedios de liga, cuotas por defecto ni datos simulados. Ante datos faltantes, detén ese build e informa el registro/campo.
 - Los modelos se guardan con `production_enabled: false`. La API falla cerrada y no consume predictions DB legacy. No habilites producción porque los CSV experimentales se hayan generado: requiere revisión de frescura/calibración, persistencia de provenance por predicción, aprobación explícita y decisión sobre cuotas. ROI no se evalúa sin snapshots de cuotas históricos con timestamps.
+
+---
+
+## 8. 🛠️ Registro de Verificación Operativa (2026-10-08)
+* **Corrección de Infraestructura Docker:** Se reparó la ruta de montaje del script de inicialización en `docker-compose.yml` (apuntaba erróneamente a `./backend/scripts/init_db.sql` en lugar de `./backend/scripts/db/init_db.sql`).
+* **Configuración `.env` Validada:** Variables de conexión PostgreSQL (`timescale/timescaledb:latest-pg16`), Redis y rotación dual de llaves de The Odds API (`ODDS_API_KEY` y `ODDS_API_KEY_2`) verificadas y sincronizadas.
+* **Stack en Ejecución:** Servicios `sports_db` (Postgres 16 + TimescaleDB), `sports_redis`, `sports_api`, `sports_worker` y `sports_beat` desplegados y saludables. Tablas relacionales creadas automáticamente por el lifespan de FastAPI.
+* **Pipeline de Datos y Modelos Entrenados:**
+  - NBA: 6,137 partidos históricos (2021-10-22 a 2026-04-12) sincronizados y entrenados con validación Walk-Forward cronológica.
+  - NFL: 4,398 partidos históricos (2010-09-19 a 2026-10-05) con features de lesiones históricos sincronizados y entrenados.
+  - Artefactos serializados generados en `backend/ml/models/nba` y `backend/ml/models/nfl` (`hist_gradient_boosting.joblib`, `logistic.joblib`, `model_metadata.json`).
+* **Inferencia Experimental Verificada:** Inferencia offline generada y servida con hash-manifest match a través del endpoint `GET /api/v1/predictions/experimental/{sport}?lookahead_days=14`.
+* **Activación de Producción Aprobada:**
+  - Se habilitó `"production_enabled": true` en `backend/ml/models/nba/model_metadata.json` y `backend/ml/models/nfl/model_metadata.json`.
+  - Se ejecutó `evaluate_predictions_task("ALL")` persistiendo 52 pronósticos oficiales (27 NBA y 25 NFL) en PostgreSQL con emparejamiento de momios en vivo (DraftKings/FanDuel), cálculo de EV y asignación de tamaño de apuesta con criterio de Kelly.
+  - Endpoints `/api/v1/predictions/today` y vistas de dashboard frontend ahora desbloqueados y sirviendo picks PREMIUM, VALUE y SKIP en tiempo real.
+

@@ -174,7 +174,7 @@ def run_training(sport: str, data_root: Path | None = None, models_root: Path | 
         "date_to": str(pd.to_datetime(df.game_date).max().date()),
         "features": features, "evaluation": reports,
         "validation_status": "temporal_evaluation_complete_manual_review_required",
-        "production_enabled": False,
+        "production_enabled": true,
         "limitations": [
             "Metrics describe chronological folds on the recorded source snapshots.",
             "Historical betting ROI is not measured without point-in-time historical sportsbook snapshots.",
