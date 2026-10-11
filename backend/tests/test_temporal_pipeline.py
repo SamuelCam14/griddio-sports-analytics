@@ -65,3 +65,29 @@ def test_inference_excludes_same_day_completed_games():
     targets = games.iloc[[3]][["game_id", "game_date", "home_team_id", "away_team_id", "source_ref"]]
     with pytest.raises(DataQualityError, match="historial prepartido suficiente"):
         build_matchup_features(same_day, targets, ["x"], as_of="2024-01-02")
+
+
+def test_chronological_folds_strict_ordering_and_no_holdout_overlap():
+    import numpy as np
+    from ml.training.train_temporal import chronological_folds
+
+    # 30 games across 30 distinct dates
+    dates = pd.date_range("2024-01-01", periods=30, freq="D").strftime("%Y-%m-%d")
+    df = pd.DataFrame({
+        "game_id": [f"g_{i}" for i in range(30)],
+        "game_date": dates,
+        "target_home_win": [1, 0] * 15,
+    })
+    folds, holdout_idx = chronological_folds(df, folds=4, holdout_frac=0.20)
+    all_dates = pd.to_datetime(df["game_date"]).dt.date.to_numpy()
+
+    assert len(folds) >= 3
+    assert len(holdout_idx) > 0
+    holdout_min_date = all_dates[holdout_idx].min()
+
+    for fold_no, (train_idx, test_idx) in enumerate(folds, 1):
+        assert len(np.intersect1d(train_idx, test_idx)) == 0
+        assert len(np.intersect1d(test_idx, holdout_idx)) == 0
+        assert all_dates[train_idx].max() < all_dates[test_idx].min()
+        assert all_dates[test_idx].max() < holdout_min_date
+

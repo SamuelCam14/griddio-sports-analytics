@@ -1,6 +1,6 @@
 import { type ButtonHTMLAttributes, type ReactNode } from 'react'
 
-export type ButtonVariant = 'glow' | 'emerald-glow' | 'glass' | 'pill' | 'icon' | 'ghost'
+export type ButtonVariant = 'primary' | 'secondary' | 'glow' | 'emerald-glow' | 'segmented' | 'icon' | 'ghost'
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant
@@ -10,7 +10,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 export function Button({
-  variant = 'glass',
+  variant = 'secondary',
   children,
   className = '',
   active = false,
@@ -20,24 +20,23 @@ export function Button({
   let baseClass = ''
 
   switch (variant) {
+    case 'primary':
     case 'glow':
-      baseClass = 'btn-glow-primary'
-      break
     case 'emerald-glow':
-      baseClass = 'btn-glow-emerald'
+      baseClass = 'macos-btn-primary'
       break
     case 'icon':
-      baseClass = 'btn-icon-glass'
+      baseClass = 'macos-btn-icon'
       break
-    case 'pill':
-      baseClass = `glass-pill ${active ? 'glass-pill-active' : ''}`
+    case 'segmented':
+      baseClass = `macos-segmented-item ${active ? 'macos-segmented-item-active' : ''}`
       break
     case 'ghost':
-      baseClass = 'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:text-white hover:bg-white/5 transition-colors'
+      baseClass = 'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors'
       break
-    case 'glass':
+    case 'secondary':
     default:
-      baseClass = 'glass-pill'
+      baseClass = active ? 'macos-pill-nav-active' : 'macos-btn-secondary'
       break
   }
 

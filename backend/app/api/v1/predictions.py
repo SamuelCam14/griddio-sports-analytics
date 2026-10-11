@@ -361,6 +361,10 @@ async def get_game_prediction(
     if not pred:
         raise HTTPException(status_code=404, detail=f"No hay predicción para game_id={game_id}")
 
+    pred_sport = "nfl" if pred.model_version == "nfl_temporal_v1" else "nba"
+    if not _production_model_enabled(pred_sport):
+        raise HTTPException(status_code=503, detail=f"Predicciones deshabilitadas para {pred_sport.upper()}: no hay modelo aprobado para producción.")
+
     return {
         "game_id":          pred.game_id,
         "model_version":    pred.model_version,

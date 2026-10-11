@@ -77,15 +77,27 @@ def chronological_folds(df: pd.DataFrame, folds: int = 4, holdout_frac: float = 
         if end <= start:
             continue
         train_mask = all_dates < cv_dates[start]
-        test_mask = all_dates >= cv_dates[start]
-        if end < len(cv_dates):
-            test_mask &= all_dates < cv_dates[end]
+        end_date = cv_dates[end] if end < len(cv_dates) else dates[holdout_start]
+        test_mask = (all_dates >= cv_dates[start]) & (all_dates < end_date)
         if train_mask.sum() == 0 or test_mask.sum() == 0:
             continue
         result.append((np.flatnonzero(train_mask), np.flatnonzero(test_mask)))
     if len(result) < 3:
         raise DataQualityError("Menos de tres folds temporales utilizables")
-    return result, np.flatnonzero(all_dates >= dates[holdout_start])
+    holdout_indices = np.flatnonzero(all_dates >= dates[holdout_start])
+
+    # Assertions de separación temporal estricta y sin solapamiento
+    for fold_no, (train_idx, test_idx) in enumerate(result, 1):
+        if len(np.intersect1d(train_idx, test_idx)) > 0:
+            raise DataQualityError(f"Fold {fold_no}: solapamiento entre train y test")
+        if len(np.intersect1d(test_idx, holdout_indices)) > 0:
+            raise DataQualityError(f"Fold {fold_no}: test se solapa con holdout/lockbox")
+        if not (all_dates[train_idx].max() < all_dates[test_idx].min()):
+            raise DataQualityError(f"Fold {fold_no}: observación de train posterior o igual a test")
+    if not (all_dates[np.concatenate([f[1] for f in result])].max() < all_dates[holdout_indices].min()):
+        raise DataQualityError("Test de folds de validación posterior o igual al holdout")
+
+    return result, holdout_indices
 def run_training(sport: str, data_root: Path | None = None, models_root: Path | None = None) -> dict:
     sport = sport.lower()
     data_root = data_root or project_root() / "data" / "processed"
@@ -121,8 +133,6 @@ def run_training(sport: str, data_root: Path | None = None, models_root: Path | 
                 "majority_baseline_log_loss": float(log_loss(y.iloc[test_idx], baseline_probability, labels=[0, 1])),
             })
         # Train final model on everything EXCEPT holdout
-        train_all_cv_idx = np.concatenate([f[0] for f in folds] + [folds[-1][1]])
-        train_all_cv_idx = np.unique(train_all_cv_idx) # Or simply all indices not in holdout
         all_indices = np.arange(len(df))
         train_all_cv_idx = np.setdiff1d(all_indices, holdout_idx)
         
@@ -174,7 +184,7 @@ def run_training(sport: str, data_root: Path | None = None, models_root: Path | 
         "date_to": str(pd.to_datetime(df.game_date).max().date()),
         "features": features, "evaluation": reports,
         "validation_status": "temporal_evaluation_complete_manual_review_required",
-        "production_enabled": true,
+        "production_enabled": False,
         "limitations": [
             "Metrics describe chronological folds on the recorded source snapshots.",
             "Historical betting ROI is not measured without point-in-time historical sportsbook snapshots.",

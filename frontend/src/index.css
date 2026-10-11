@@ -5,129 +5,129 @@
 @layer base {
   :root {
     color-scheme: dark;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", Inter, ui-sans-serif, system-ui, sans-serif;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
-    background: #040e0b;
+    background: #0d0f14;
   }
 
   * {
-    @apply border-white/10;
+    @apply border-white/[0.08];
   }
 
   body {
-    @apply m-0 min-h-screen text-slate-100 antialiased selection:bg-emerald-400/30 selection:text-emerald-100;
-    background-color: #040e0b;
-    background-image: 
-      radial-gradient(ellipse at 50% 0%, rgba(16, 185, 129, 0.18), transparent 50%),
-      radial-gradient(circle at 85% 15%, rgba(6, 182, 212, 0.12), transparent 35%),
-      linear-gradient(180deg, rgba(4, 14, 11, 0.85) 0%, rgba(4, 14, 11, 0.95) 100%),
-      url('/images/stadium_bg.jpg');
-    background-position: center top;
-    background-repeat: no-repeat;
-    background-size: cover;
+    @apply m-0 min-h-screen text-slate-100 antialiased;
+    background-color: #0d0f14;
+    background-image:
+      radial-gradient(ellipse at 50% 0%, rgba(45, 65, 95, 0.2), transparent 55%),
+      radial-gradient(ellipse at 85% 30%, rgba(30, 42, 60, 0.15), transparent 45%),
+      linear-gradient(180deg, #0d0f14 0%, #11131a 100%);
     background-attachment: fixed;
   }
 
+  ::selection {
+    background-color: rgba(10, 132, 255, 0.35);
+    color: #ffffff;
+  }
+
   button { font: inherit; }
-  button:focus-visible { @apply outline-none ring-2 ring-emerald-300 ring-offset-2 ring-offset-[#071411]; }
+  button:focus-visible { @apply outline-none ring-2 ring-apple-blue/50 ring-offset-2 ring-offset-[#0d0f14]; }
 }
 
 @layer components {
-  /* ─── Glassmorphism Panels ──────────────────────────────────────────────── */
-  .glass-panel {
-    @apply rounded-2xl border border-white/10 bg-[#0c1f1a]/75 backdrop-blur-xl shadow-glass transition-all duration-200;
-  }
-  .glass-panel-subtle {
-    @apply rounded-2xl border border-white/5 bg-[#091814]/60 backdrop-blur-md;
-  }
-  .glass-panel-interactive {
-    @apply glass-panel hover:border-emerald-400/30 hover:bg-[#0f2520]/80 hover:shadow-glass-hover;
-  }
-
-  /* ─── Header & Shell Layout ────────────────────────────────────────────── */
-  .dashboard-shell {
+  /* ─── macOS Translucent Materials (SwiftUI Style) ───────────────────────── */
+  .macos-window-shell {
     @apply min-h-screen px-3 py-3 sm:px-5 lg:px-7;
   }
-  .glass-header {
-    @apply sticky top-3 z-40 mx-auto mb-5 flex max-w-[1720px] items-center justify-between gap-4 rounded-2xl border border-white/10 bg-[#071813]/85 px-4 py-2.5 backdrop-blur-2xl shadow-glass;
+
+  .macos-toolbar {
+    @apply sticky top-3 z-40 mx-auto mb-5 flex max-w-[1720px] items-center justify-between gap-3 rounded-2xl border border-white/[0.09] bg-[#13161f]/80 px-4 py-2.5 backdrop-blur-2xl shadow-macos-card;
   }
+
+  .macos-card {
+    @apply rounded-2xl border border-white/[0.08] bg-[#161a24]/65 backdrop-blur-2xl shadow-macos-card transition-all duration-200;
+  }
+
+  .macos-card-interactive {
+    @apply macos-card hover:border-white/[0.16] hover:bg-[#1a1f2b]/75 hover:shadow-macos-card-hover;
+  }
+
+  .macos-card-subtle {
+    @apply rounded-xl border border-white/[0.06] bg-[#12151e]/50 backdrop-blur-md;
+  }
+
+  /* ─── macOS Segmented Controls & Pills ──────────────────────────────────── */
+  .macos-segmented-track {
+    @apply inline-flex items-center rounded-xl border border-white/[0.08] bg-black/40 p-1 backdrop-blur-md;
+  }
+
+  .macos-segmented-item {
+    @apply rounded-lg px-3 py-1 text-xs font-medium text-slate-400 transition-all duration-150 hover:text-slate-200;
+  }
+
+  .macos-segmented-item-active {
+    @apply bg-white/[0.14] text-white font-semibold shadow-macos-btn border border-white/[0.08];
+  }
+
+  .macos-pill-nav {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-slate-300 transition-all duration-150 hover:bg-white/[0.08] hover:text-white;
+  }
+
+  .macos-pill-nav-active {
+    @apply border-white/20 bg-white/[0.16] text-white font-semibold shadow-macos-btn;
+  }
+
+  /* ─── Buttons ──────────────────────────────────────────────────────────── */
+  .macos-btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-apple-blue px-4 py-2.5 text-xs font-semibold text-white shadow-macos-btn transition-all duration-150 hover:bg-[#0071e3] active:scale-[0.98];
+  }
+
+  .macos-btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.09] bg-white/[0.06] px-3.5 py-2 text-xs font-medium text-slate-200 transition-all duration-150 hover:bg-white/[0.12] hover:text-white active:scale-[0.98];
+  }
+
+  .macos-btn-icon {
+    @apply grid h-8 w-8 place-items-center rounded-xl border border-white/[0.08] bg-white/[0.05] text-slate-300 transition-all hover:border-white/15 hover:bg-white/[0.1] hover:text-white active:scale-95;
+  }
+
+  /* ─── Metric & KPI Cards ───────────────────────────────────────────────── */
+  .macos-metric-tile {
+    @apply flex flex-col justify-between rounded-xl border border-white/[0.07] bg-[#12151e]/55 p-3.5 backdrop-blur-md transition-colors hover:border-white/[0.12] hover:bg-[#141822]/70;
+  }
+
+  .macos-metric-label {
+    @apply text-[11px] font-medium tracking-wide text-slate-400;
+  }
+
+  .macos-metric-value {
+    @apply font-mono text-xl font-bold tracking-tight text-white;
+  }
+
+  .macos-metric-sub {
+    @apply text-[11px] text-slate-400;
+  }
+
+  /* ─── Badges ───────────────────────────────────────────────────────────── */
+  .macos-badge-live {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-apple-red/30 bg-apple-red/15 px-2.5 py-0.5 text-[10px] font-semibold tracking-wider text-rose-300 uppercase;
+  }
+
+  .macos-badge-live-dot {
+    @apply h-1.5 w-1.5 rounded-full bg-apple-red animate-pulse;
+  }
+
+  /* ─── Layout Grid ──────────────────────────────────────────────────────── */
   .dashboard-grid-main {
     @apply mx-auto grid max-w-[1720px] grid-cols-1 items-start gap-4 lg:grid-cols-[330px_minmax(0,1fr)_340px] xl:grid-cols-[350px_minmax(0,1fr)_360px];
   }
 
-  /* ─── Standardized Glass Pills & Buttons ────────────────────────────────── */
-  .glass-pill {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-300 transition-all duration-200 hover:bg-white/10 hover:text-white;
-  }
-  .glass-pill-active {
-    @apply border-emerald-400/40 bg-emerald-400/20 text-emerald-200 shadow-emerald-glow;
-  }
-  .glass-pill-blue-active {
-    @apply border-blue-400/40 bg-blue-500/20 text-blue-200 shadow-btn-glow;
-  }
-
-  .btn-glow-primary {
-    @apply relative inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 px-5 py-3 text-sm font-bold text-white shadow-btn-glow transition-all duration-200 hover:brightness-110 hover:shadow-btn-glow active:scale-[0.98];
-  }
-  .btn-glow-emerald {
-    @apply relative inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 px-5 py-2.5 text-xs font-bold text-white shadow-emerald-glow transition-all duration-200 hover:brightness-110 active:scale-[0.98];
-  }
-  .btn-icon-glass {
-    @apply grid h-9 w-9 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-slate-300 transition-all hover:border-white/20 hover:bg-white/15 hover:text-white active:scale-95;
-  }
-
-  /* ─── Live & Status Badges ─────────────────────────────────────────────── */
-  .badge-live-pulse {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-rose-500/30 bg-rose-500/15 px-2.5 py-1 text-[11px] font-bold tracking-wider text-rose-300 uppercase;
-  }
-  .badge-live-dot {
-    @apply h-2 w-2 rounded-full bg-rose-400 animate-pulse;
-  }
-  .badge-tier-premium {
-    @apply inline-flex items-center gap-1 rounded-full border border-purple-400/30 bg-purple-500/15 px-2.5 py-0.5 text-[10px] font-bold tracking-wider text-purple-200;
-  }
-  .badge-tier-value {
-    @apply inline-flex items-center gap-1 rounded-full border border-blue-400/30 bg-blue-500/15 px-2.5 py-0.5 text-[10px] font-bold tracking-wider text-blue-200;
-  }
-  .badge-tier-neutral {
-    @apply inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[10px] font-medium tracking-wider text-slate-300;
-  }
-
-  /* ─── Metric & KPI Cards ───────────────────────────────────────────────── */
-  .metric-card {
-    @apply flex flex-col justify-between rounded-xl border border-white/10 bg-black/25 p-3.5 backdrop-blur-md transition-colors hover:border-white/20 hover:bg-black/35;
-  }
-  .metric-label {
-    @apply text-[11px] font-semibold uppercase tracking-wider text-slate-400;
-  }
-  .metric-value {
-    @apply font-mono text-xl font-bold tracking-tight text-white;
-  }
-  .metric-sub {
-    @apply text-[11px] text-slate-400;
-  }
-
-  /* ─── Typography & Eyebrows ────────────────────────────────────────────── */
-  .eyebrow-accent {
-    @apply text-[10px] font-semibold tracking-[0.2em] uppercase text-emerald-300/80;
-  }
-  .section-title-sm {
-    @apply text-base font-semibold tracking-tight text-white;
-  }
-
-  /* ─── Tables & Lists ───────────────────────────────────────────────────── */
-  .standings-row {
-    @apply grid grid-cols-[24px_1fr_32px_32px_32px_36px] items-center gap-2 rounded-lg px-2.5 py-2 text-xs transition-colors hover:bg-white/5;
-  }
-
-  /* ─── Custom Scrollbars ────────────────────────────────────────────────── */
+  /* ─── Custom macOS Scrollbar ───────────────────────────────────────────── */
   .custom-scrollbar::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
   .custom-scrollbar::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.1);
+    background: transparent;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.15);

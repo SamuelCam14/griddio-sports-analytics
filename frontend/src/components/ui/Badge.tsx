@@ -5,10 +5,10 @@ export type BadgeVariant =
   | 'premium'
   | 'value'
   | 'neutral'
-  | 'emerald'
-  | 'cyan'
-  | 'purple'
-  | 'rose'
+  | 'success'
+  | 'warning'
+  | 'danger'
+  | 'blue'
 
 interface BadgeProps {
   variant?: BadgeVariant
@@ -20,27 +20,27 @@ interface BadgeProps {
 export function Badge({ variant = 'neutral', children, className = '', pulse }: BadgeProps) {
   if (variant === 'live') {
     return (
-      <span className={`badge-live-pulse ${className}`}>
-        <span className="badge-live-dot" />
+      <span className={`macos-badge-live ${className}`}>
+        <span className="macos-badge-live-dot" />
         {children}
       </span>
     )
   }
 
   const variantStyles: Record<BadgeVariant, string> = {
-    live: 'badge-live-pulse',
-    premium: 'badge-tier-premium',
-    value: 'badge-tier-value',
-    neutral: 'badge-tier-neutral',
-    emerald: 'border-emerald-400/30 bg-emerald-500/15 text-emerald-200',
-    cyan: 'border-cyan-400/30 bg-cyan-500/15 text-cyan-200',
-    purple: 'border-purple-400/30 bg-purple-500/15 text-purple-200',
-    rose: 'border-rose-400/30 bg-rose-500/15 text-rose-200',
+    live: 'macos-badge-live',
+    premium: 'border-apple-purple/25 bg-apple-purple/15 text-[#d896ff]',
+    value: 'border-apple-blue/25 bg-apple-blue/15 text-[#70b4ff]',
+    neutral: 'border-white/[0.08] bg-white/[0.05] text-slate-300',
+    success: 'border-apple-green/25 bg-apple-green/15 text-[#54e378]',
+    warning: 'border-apple-orange/25 bg-apple-orange/15 text-[#ffb340]',
+    danger: 'border-apple-red/25 bg-apple-red/15 text-rose-300',
+    blue: 'border-apple-blue/25 bg-apple-blue/15 text-[#70b4ff]',
   }
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold tracking-wider uppercase ${variantStyles[variant]} ${className}`}
+      className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] font-medium tracking-wide ${variantStyles[variant]} ${className}`}
     >
       {pulse && <span className="h-1.5 w-1.5 rounded-full bg-current animate-ping" />}
       {children}

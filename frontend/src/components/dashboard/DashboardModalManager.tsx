@@ -141,12 +141,12 @@ export function DashboardModalManager({
               Capital disponible (USD)
             </label>
             <div className="mt-1.5 flex items-center gap-2">
-              <span className="font-mono text-lg font-bold text-emerald-400">$</span>
+              <span className="font-mono text-lg font-bold text-apple-blue">$</span>
               <input
                 type="number"
                 value={bankrollInput}
                 onChange={(e) => setBankrollInput(e.target.value)}
-                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 font-mono text-base font-bold text-white outline-none focus:border-emerald-400"
+                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 font-mono text-base font-bold text-white outline-none focus:border-apple-blue"
               />
             </div>
           </div>
@@ -161,10 +161,10 @@ export function DashboardModalManager({
                   key={frac}
                   type="button"
                   onClick={() => setKellyFraction(frac)}
-                  className={`flex-1 rounded-lg border py-1.5 text-xs font-mono font-bold transition-all ${
+                  className={`flex-1 rounded-lg border py-1.5 text-xs font-mono font-semibold transition-all ${
                     kellyFraction === frac
-                      ? 'border-emerald-400/40 bg-emerald-400/20 text-emerald-200'
-                      : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                      ? 'border-white/20 bg-white/[0.16] text-white shadow-macos-btn'
+                      : 'border-white/10 bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'
                   }`}
                 >
                   {frac === 0.125 ? '1/8' : frac === 0.25 ? '1/4' : frac === 0.5 ? '1/2' : 'Full'}
@@ -180,7 +180,7 @@ export function DashboardModalManager({
             <button
               type="button"
               onClick={handleSaveBankroll}
-              className="btn-glow-emerald w-full py-2.5 text-center text-sm font-bold uppercase"
+              className="macos-btn-primary w-full py-2 text-center text-xs font-semibold"
             >
               Guardar y Actualizar
             </button>

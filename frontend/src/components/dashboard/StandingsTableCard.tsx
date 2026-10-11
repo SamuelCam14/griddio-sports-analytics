@@ -39,10 +39,10 @@ export function StandingsTableCard({ sport }: StandingsTableCardProps) {
       ]
 
   return (
-    <div className="glass-panel p-4 sm:p-5">
+    <div className="macos-card p-4 sm:p-5">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/10 pb-3">
-        <h3 className="section-title-sm text-white">Group Standing</h3>
+      <div className="flex items-center justify-between border-b border-white/[0.08] pb-3">
+        <h3 className="text-sm font-semibold tracking-tight text-white">Group Standing</h3>
 
         <button
           type="button"
@@ -51,7 +51,7 @@ export function StandingsTableCard({ sport }: StandingsTableCardProps) {
               prev === 'Oeste' ? 'Este' : prev === 'Este' ? 'Estadísticas' : 'Oeste'
             )
           }
-          className="flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[11px] text-slate-300 hover:text-white"
+          className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.05] px-2 py-0.5 text-[11px] text-slate-300 hover:text-white transition-colors"
         >
           <span>{selectedConference}</span>
           <ChevronDown className="h-3 w-3" />
@@ -59,7 +59,7 @@ export function StandingsTableCard({ sport }: StandingsTableCardProps) {
       </div>
 
       {/* Table header */}
-      <div className="mt-3 grid grid-cols-[20px_1fr_28px_28px_36px_28px] items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+      <div className="mt-2.5 grid grid-cols-[18px_1fr_26px_26px_34px_26px] items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
         <span>P</span>
         <span>Equipo</span>
         <span className="text-center">G</span>
@@ -73,12 +73,12 @@ export function StandingsTableCard({ sport }: StandingsTableCardProps) {
         {standings.map((team) => (
           <div
             key={team.name}
-            className={`grid grid-cols-[20px_1fr_28px_28px_36px_28px] items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors hover:bg-white/5 ${
-              team.highlight ? 'bg-emerald-400/[0.08] border border-emerald-400/20' : ''
+            className={`grid grid-cols-[18px_1fr_26px_26px_34px_26px] items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors hover:bg-white/[0.05] ${
+              team.highlight ? 'bg-white/[0.06] border border-white/[0.08]' : ''
             }`}
           >
             {/* Position */}
-            <span className={`font-mono text-[11px] ${team.pos <= 4 ? 'text-emerald-400 font-bold' : 'text-slate-500'}`}>
+            <span className={`font-mono text-[11px] ${team.pos <= 4 ? 'text-apple-blue font-semibold' : 'text-slate-500'}`}>
               {team.pos}
             </span>
 
@@ -94,7 +94,7 @@ export function StandingsTableCard({ sport }: StandingsTableCardProps) {
             <span className="text-center font-mono text-slate-400">{team.w}</span>
             <span className="text-center font-mono text-slate-500">{team.l}</span>
             <span className="text-center font-mono text-slate-400">{team.pct}</span>
-            <span className="text-center font-mono font-bold text-white">{team.pts}</span>
+            <span className="text-center font-mono font-semibold text-white">{team.pts}</span>
           </div>
         ))}
       </div>

@@ -24,7 +24,7 @@ export function PillTabs<T extends string = string>({
   return (
     <div
       role="tablist"
-      className={`inline-flex items-center gap-1 rounded-full border border-white/10 bg-black/30 p-1 backdrop-blur-md ${className}`}
+      className={`inline-flex items-center rounded-xl border border-white/[0.08] bg-black/40 p-1 backdrop-blur-xl ${className}`}
     >
       {tabs.map((tab) => {
         const isActive = activeTab === tab.id
@@ -35,17 +35,17 @@ export function PillTabs<T extends string = string>({
             type="button"
             aria-selected={isActive}
             onClick={() => onChange(tab.id)}
-            className={`rounded-full font-semibold transition-all duration-200 ${padClass} ${
+            className={`rounded-lg font-medium transition-all duration-150 ${padClass} ${
               isActive
-                ? 'bg-blue-600 text-white shadow-btn-glow'
-                : 'text-slate-400 hover:text-white hover:bg-white/5'
+                ? 'bg-white/[0.14] text-white shadow-macos-btn border border-white/[0.08]'
+                : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <span>{tab.label}</span>
             {tab.badge != null && (
               <span
                 className={`ml-1.5 rounded-full px-1.5 py-0.2 text-[9px] ${
-                  isActive ? 'bg-white/20 text-white' : 'bg-white/10 text-slate-300'
+                  isActive ? 'bg-white/20 text-white' : 'bg-white/10 text-slate-400'
                 }`}
               >
                 {tab.badge}

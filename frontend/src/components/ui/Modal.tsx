@@ -52,33 +52,33 @@ export function Modal({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="fixed inset-0 bg-black/75 backdrop-blur-xl"
+            className="fixed inset-0 bg-black/60 backdrop-blur-md"
             aria-hidden="true"
           />
 
-          {/* Modal Container */}
+          {/* Modal Container — macOS Sheet Style */}
           <motion.div
-            initial={{ opacity: 0, scale: 0.96, y: 12 }}
+            initial={{ opacity: 0, scale: 0.97, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: 12 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className={`relative z-10 flex max-h-[90vh] w-full flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#091a15]/95 shadow-2xl backdrop-blur-2xl ${widthClasses[maxWidth]}`}
+            exit={{ opacity: 0, scale: 0.97, y: 10 }}
+            transition={{ type: 'spring', damping: 28, stiffness: 350 }}
+            className={`relative z-10 flex max-h-[90vh] w-full flex-col overflow-hidden rounded-2xl border border-white/[0.12] bg-[#141720]/95 shadow-macos-window backdrop-blur-2xl ${widthClasses[maxWidth]}`}
             role="dialog"
             aria-modal="true"
           >
             {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+            <div className="flex items-center justify-between border-b border-white/[0.08] px-5 py-3.5">
               <div>
-                {eyebrow && <p className="eyebrow-accent">{eyebrow}</p>}
-                {title && <h2 className="text-lg font-bold text-white">{title}</h2>}
+                {eyebrow && <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{eyebrow}</p>}
+                {title && <h2 className="text-sm font-semibold text-white mt-0.5">{title}</h2>}
               </div>
               <button
                 type="button"
                 onClick={onClose}
-                className="btn-icon-glass text-slate-400 hover:text-white"
+                className="grid h-7 w-7 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.05] text-slate-400 hover:bg-white/[0.1] hover:text-white transition-colors"
                 aria-label="Cerrar modal"
               >
-                <X className="h-4 w-4" />
+                <X className="h-3.5 w-3.5" />
               </button>
             </div>
 

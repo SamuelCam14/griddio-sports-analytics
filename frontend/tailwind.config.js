@@ -8,52 +8,60 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Paleta principal — oscuro con acentos verde/teal (EV positivo)
-        brand: {
-          50:  '#f0fdf4',
-          100: '#dcfce7',
-          200: '#bbf7d0',
-          300: '#86efac',
-          400: '#4ade80',
-          500: '#22c55e',  // Verde principal
-          600: '#16a34a',
-          700: '#15803d',
-          800: '#166534',
-          900: '#14532d',
+        // macOS / Apple HIG Dark Mode Palette
+        macos: {
+          bg: '#0d0f14',
+          sidebar: '#12151d',
+          card: 'rgba(23, 27, 36, 0.68)',
+          cardHover: 'rgba(30, 35, 48, 0.78)',
+          toolbar: 'rgba(18, 21, 29, 0.85)',
+          fill: 'rgba(255, 255, 255, 0.06)',
+          fillHover: 'rgba(255, 255, 255, 0.1)',
+          fillActive: 'rgba(255, 255, 255, 0.16)',
+          separator: 'rgba(255, 255, 255, 0.08)',
+          border: 'rgba(255, 255, 255, 0.1)',
+          borderStrong: 'rgba(255, 255, 255, 0.16)',
+        },
+        apple: {
+          blue: '#0a84ff',
+          green: '#30d158',
+          orange: '#ff9f0a',
+          red: '#ff453a',
+          purple: '#bf5af2',
+          cyan: '#64d2ff',
+          yellow: '#ffd60a',
+          gray: '#8e8e93',
         },
         ev: {
-          positive: '#22c55e',   // Verde — EV+
-          negative: '#ef4444',   // Rojo  — EV-
-          neutral:  '#f59e0b',   // Ámbar — Neutro
+          positive: '#30d158',
+          negative: '#ff453a',
+          neutral: '#ff9f0a',
         },
         tier: {
-          premium: '#a855f7',    // Púrpura — ★★★ PREMIUM
-          value:   '#3b82f6',    // Azul    — ★★ VALUE
-          skip:    '#6b7280',    // Gris    — ★ SKIP
-        },
-        surface: {
-          dark: '#061310',
-          panel: 'rgba(12, 26, 22, 0.78)',
-          card: 'rgba(16, 34, 29, 0.72)',
-          popover: 'rgba(9, 21, 18, 0.94)',
-        },
-        accent: {
-          primary: '#10b981',
-          glow: '#34d399',
-          cyan: '#38bdf8',
-          blue: '#3b82f6',
-          violet: '#6366f1',
+          premium: '#bf5af2',
+          value: '#0a84ff',
+          skip: '#8e8e93',
         },
       },
       boxShadow: {
-        'glass': '0 8px 32px 0 rgba(0, 0, 0, 0.36), inset 0 1px 0 0 rgba(255, 255, 255, 0.08)',
-        'glass-hover': '0 12px 40px 0 rgba(0, 0, 0, 0.45), inset 0 1px 0 0 rgba(255, 255, 255, 0.15)',
-        'btn-glow': '0 0 24px -2px rgba(59, 130, 246, 0.6), 0 0 12px -1px rgba(99, 102, 241, 0.4)',
-        'emerald-glow': '0 0 24px -2px rgba(16, 185, 129, 0.4)',
-        'card-glow': '0 10px 40px -10px rgba(16, 185, 129, 0.15)',
+        'macos-card': '0 4px 20px -2px rgba(0, 0, 0, 0.28), inset 0 1px 0 0 rgba(255, 255, 255, 0.08)',
+        'macos-card-hover': '0 8px 24px -2px rgba(0, 0, 0, 0.36), inset 0 1px 0 0 rgba(255, 255, 255, 0.14)',
+        'macos-window': '0 16px 48px -4px rgba(0, 0, 0, 0.45), inset 0 1px 0 0 rgba(255, 255, 255, 0.12)',
+        'macos-popover': '0 12px 32px -4px rgba(0, 0, 0, 0.4)',
+        'macos-btn': '0 1px 2px 0 rgba(0, 0, 0, 0.2)',
       },
       fontFamily: {
-        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+        sans: [
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"SF Pro Text"',
+          '"SF Pro Display"',
+          'Inter',
+          'ui-sans-serif',
+          'system-ui',
+          'sans-serif'
+        ],
+        mono: ['SF Mono', 'JetBrains Mono', 'Fira Code', 'monospace'],
       },
     },
   },

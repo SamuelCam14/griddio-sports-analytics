@@ -81,29 +81,29 @@ export function DashboardPage() {
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className="dashboard-shell">
-        {/* Header con diseño glassmorphism y selección de vista */}
+      <div className="macos-window-shell">
+        {/* Header con diseño macOS toolbar y selección de vista */}
         <DashboardHeader
           onOpenView={handleOpenView}
           onOpenBankroll={() => setActiveModal('bankroll')}
           hasLiveGames={matches.some((m) => m.game.status === 'live')}
         />
 
-        {/* Layout Principal de 3 Columnas inspirado en la imagen de referencia */}
+        {/* Layout Principal de 3 Columnas inspirado en la referencia con estilo macOS */}
         <main className="dashboard-grid-main pb-10">
           {/* ══════════════════════════════════════════════════════════════════════
               COLUMNA IZQUIERDA: AI Powered Dashboard, Overview, MVP, Métricas, Predictions
              ══════════════════════════════════════════════════════════════════════ */}
           <motion.aside
-            initial={{ opacity: 0, x: -12 }}
+            initial={{ opacity: 0, x: -10 }}
             animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.3 }}
+            transition={{ duration: 0.25 }}
             className="space-y-4"
             aria-label="Panel de Información y Pronósticos AI"
           >
             {/* Título de la sección izquierda */}
             <div>
-              <h1 className="text-xl font-extrabold tracking-tight text-white sm:text-2xl">
+              <h1 className="text-xl font-bold tracking-tight text-white sm:text-2xl">
                 Ai Powered Dashboard
               </h1>
               <p className="mt-0.5 text-xs text-slate-400">
@@ -114,14 +114,14 @@ export function DashboardPage() {
             {/* Overview header */}
             <div className="flex items-center justify-between pt-1">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-bold text-white">Overview</span>
-                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-slate-400">
+                <span className="text-sm font-semibold text-white">Overview</span>
+                <span className="rounded-md border border-white/[0.08] bg-white/[0.05] px-2 py-0.5 text-[10px] text-slate-400">
                   Hoy
                 </span>
               </div>
               <button
                 type="button"
-                className="text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-colors"
+                className="text-xs font-medium text-apple-blue hover:underline transition-colors"
               >
                 Ver todo
               </button>
@@ -139,7 +139,7 @@ export function DashboardPage() {
             />
 
             {/* AI Prediction con sparklines y probabilidades */}
-            <div className="glass-panel p-4">
+            <div className="macos-card p-4">
               <AiPredictionList
                 matches={matches}
                 sport={sport}

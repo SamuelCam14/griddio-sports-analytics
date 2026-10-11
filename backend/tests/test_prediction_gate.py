@@ -191,3 +191,39 @@ def test_experimental_endpoint_null_id(mock_experimental_dir):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(get_experimental_predictions("nfl", lookahead_days=14))
     assert exc.value.status_code == 503
+
+
+def test_nfl_gate_is_strictly_closed_by_default():
+    """Verify that NFL production gate is closed in real model metadata without monkeypatching."""
+    assert _production_model_enabled("NFL") is False
+    assert _production_model_enabled("nfl") is False
+
+
+def test_today_endpoint_nfl_serves_zero_picks_when_gate_closed():
+    """Verify that /today returns zero picks for NFL with gate closed without monkeypatching."""
+    response = asyncio.run(get_today_picks(sport="NFL", tier="all", period="all", db=None))
+    assert response["predictions_enabled"] is False
+    assert response["total_picks"] == 0
+    assert response["picks"] == []
+    assert "no hay un modelo aprobado" in response["reason"].lower()
+
+
+def test_game_prediction_nfl_fails_closed_when_model_is_nfl():
+    """Verify that get_game_prediction raises 503 for an NFL prediction when NFL gate is closed."""
+    from unittest.mock import AsyncMock, MagicMock
+    from app.models.game import Prediction
+
+    mock_pred = MagicMock(spec=Prediction)
+    mock_pred.game_id = 999
+    mock_pred.model_version = "nfl_temporal_v1"
+
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_pred
+    mock_db.execute.return_value = mock_result
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(get_game_prediction(game_id=999, db=mock_db))
+    assert exc.value.status_code == 503
+    assert "NFL" in exc.value.detail
+

@@ -197,7 +197,7 @@
     "Production inference stays disabled until feature/source parity and calibration are reviewed."
   ],
   "model_version": "nfl_temporal_v1",
-  "production_enabled": true,
+  "production_enabled": false,
   "sample_count": 4398,
   "source_manifest": "3f8315e73885980578ba4fc3a74d633527238e3e4fdf067e542a5676bb68fbab",
   "sport": "NFL",

@@ -20,18 +20,18 @@ export function Card({
   subtle = false,
 }: CardProps) {
   const panelClass = subtle
-    ? 'glass-panel-subtle'
+    ? 'macos-card-subtle'
     : interactive
-    ? 'glass-panel-interactive'
-    : 'glass-panel'
+    ? 'macos-card-interactive'
+    : 'macos-card'
 
   return (
     <section className={`${panelClass} p-4 sm:p-5 ${className}`}>
       {(eyebrow || title || action) && (
-        <div className="mb-4 flex items-start justify-between gap-3">
+        <div className="mb-3.5 flex items-start justify-between gap-3">
           <div>
-            {eyebrow && <p className="eyebrow-accent">{eyebrow}</p>}
-            {title && <h3 className="section-title-sm mt-0.5">{title}</h3>}
+            {eyebrow && <p className="text-[10px] font-semibold tracking-wider uppercase text-slate-400">{eyebrow}</p>}
+            {title && <h3 className="text-sm font-semibold tracking-tight text-white mt-0.5">{title}</h3>}
           </div>
           {action && <div className="shrink-0">{action}</div>}
         </div>
