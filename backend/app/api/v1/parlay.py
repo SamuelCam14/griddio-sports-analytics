@@ -5,7 +5,7 @@ Endpoints:
   GET  /recommended   → Obtiene los mejores micro-parlays optimizados del día (2-3 legs, cuota ~2.0, EV+)
   POST /evaluate      → Evalúa una combinada personalizada en tiempo real con Criterio de Kelly
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ from app.services.parlay_service import (
     evaluate_custom_parlay,
     generate_recommended_parlays,
 )
+from app.api.v1.predictions import _production_model_enabled
 
 router = APIRouter()
 
@@ -33,6 +34,7 @@ class EvaluateParlayRequest(BaseModel):
 
 @router.get("/recommended", summary="Micro-parlays recomendados del día con ventaja matemática")
 async def get_recommended_parlays(
+    sport: str = Query(default="NFL", description="Filtrar por deporte (exclusivamente NFL admitido en esta fase)"),
     bankroll: float = Query(default=1000.0, gt=0, description="Banca actual para cálculo de apuestas"),
     limit: int = Query(default=4, ge=1, le=10, description="Cantidad máxima de parlays a retornar"),
     db: AsyncSession = Depends(get_db),
@@ -44,8 +46,33 @@ async def get_recommended_parlays(
     - Cuota combinada cercana a 2.0 (+100 americano)
     - EV combinado positivo (> $0 por cada $100 apostados)
     - Criterio de Kelly fraccional para gestión de riesgo
+    Opera exclusivamente sobre NFL en esta fase de ejecución.
     """
-    parlays = await generate_recommended_parlays(db=db, bankroll=bankroll, max_combos=limit)
+    target_sport = (sport if isinstance(sport, str) else "NFL").upper()
+    clean_bankroll = bankroll if isinstance(bankroll, (int, float)) else 1000.0
+    clean_limit = limit if isinstance(limit, int) else 4
+
+    if target_sport != "NFL":
+        return {
+            "status": "unavailable",
+            "sport": target_sport,
+            "total": 0,
+            "target_odds": "Cuota ~2.0 (+100) con probabilidad >45% y EV+",
+            "parlays": [],
+            "reason": f"El Parlay Builder está restringido exclusivamente a NFL en esta fase. Deporte solicitado '{target_sport}' no admitido.",
+        }
+
+    if not _production_model_enabled("NFL"):
+        return {
+            "status": "unavailable",
+            "sport": "NFL",
+            "total": 0,
+            "target_odds": "Cuota ~2.0 (+100) con probabilidad >45% y EV+",
+            "parlays": [],
+            "reason": "No hay un modelo aprobado para producción para NFL.",
+        }
+
+    parlays = await generate_recommended_parlays(db=db, bankroll=clean_bankroll, max_combos=clean_limit, sport="NFL")
     return {
         "status": "success",
         "total": len(parlays),

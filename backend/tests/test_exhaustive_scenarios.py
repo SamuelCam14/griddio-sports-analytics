@@ -1,4 +1,5 @@
 import pytest
+aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite driver not installed in test environment")
 import asyncio
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession

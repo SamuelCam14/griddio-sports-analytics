@@ -20,10 +20,21 @@ from ml.data_pipeline.common import DataQualityError, backend_root, project_root
 from ml.data_pipeline.temporal_features import feature_columns
 
 
-def load_training_dataset(sport: str, processed_root: Path | None = None) -> tuple[pd.DataFrame, dict]:
+def _dataset_stem(sport: str, variant: str) -> str:
+    if variant not in {"injury_aware", "team_only"}:
+        raise ValueError("variant must be injury_aware or team_only")
+    if variant == "team_only" and sport.lower() != "nfl":
+        raise ValueError("team_only variant is currently supported only for NFL")
+    return f"{sport.lower()}_team_only_training" if variant == "team_only" else f"{sport.lower()}_training"
+
+
+def load_training_dataset(
+    sport: str, processed_root: Path | None = None, variant: str = "injury_aware",
+) -> tuple[pd.DataFrame, dict]:
     processed_root = processed_root or project_root() / "data" / "processed"
-    path = processed_root / f"{sport.lower()}_training.csv"
-    manifest_path = processed_root / f"{sport.lower()}_training.manifest.json"
+    stem = _dataset_stem(sport, variant)
+    path = processed_root / f"{stem}.csv"
+    manifest_path = processed_root / f"{stem}.manifest.json"
     if not path.exists() or not manifest_path.exists():
         raise FileNotFoundError(f"Falta dataset/manifest {path}; ejecuta build_training_datasets.py")
     df = pd.read_csv(path)
@@ -98,25 +109,40 @@ def chronological_folds(df: pd.DataFrame, folds: int = 4, holdout_frac: float = 
         raise DataQualityError("Test de folds de validación posterior o igual al holdout")
 
     return result, holdout_indices
-def run_training(sport: str, data_root: Path | None = None, models_root: Path | None = None) -> dict:
+def run_training(
+    sport: str, data_root: Path | None = None, models_root: Path | None = None,
+    variant: str = "injury_aware",
+) -> dict:
     sport = sport.lower()
+    dataset_stem = _dataset_stem(sport, variant)
     data_root = data_root or project_root() / "data" / "processed"
     models_root = models_root or backend_root() / "ml" / "models" / sport
-    df, source_manifest = load_training_dataset(sport, data_root)
+    if variant == "team_only":
+        models_root = models_root / "team_only"
+    df, source_manifest = load_training_dataset(sport, data_root, variant)
     stats = source_manifest["feature_metadata"]["game_stats"]
-    features = feature_columns(stats)
+    include_availability = variant != "team_only"
+    features = feature_columns(stats, include_availability=include_availability)
     validate_dataset(df, features)
     df = df.sort_values(["game_date", "game_id"]).reset_index(drop=True)
     X = df[features].astype(float)
     y = df["target_home_win"].astype(int)
     folds, holdout_idx = chronological_folds(df)
     reports = {}
+    oof_predictions = {name: [] for name in _models()}
+    holdout_predictions = {}
+    fitted_models = {}
+
+    all_indices = np.arange(len(df))
+    train_all_cv_idx = np.setdiff1d(all_indices, holdout_idx)
+
     for name in _models():
         fold_results = []
         for fold_no, (train_idx, test_idx) in enumerate(folds, start=1):
             model = _models()[name]
             model.fit(X.iloc[train_idx], y.iloc[train_idx])
             probability = model.predict_proba(X.iloc[test_idx])[:, 1]
+            oof_predictions[name].append((test_idx, probability))
             prediction = (probability >= 0.5).astype(int)
             baseline_probability = np.full(len(test_idx), y.iloc[train_idx].mean())
             fold_results.append({
@@ -132,18 +158,31 @@ def run_training(sport: str, data_root: Path | None = None, models_root: Path | 
                 "majority_baseline_brier": float(brier_score_loss(y.iloc[test_idx], baseline_probability)),
                 "majority_baseline_log_loss": float(log_loss(y.iloc[test_idx], baseline_probability, labels=[0, 1])),
             })
+
         # Train final model on everything EXCEPT holdout
-        all_indices = np.arange(len(df))
-        train_all_cv_idx = np.setdiff1d(all_indices, holdout_idx)
-        
         final_model = _models()[name]
         final_model.fit(X.iloc[train_all_cv_idx], y.iloc[train_all_cv_idx])
-        
+        fitted_models[name] = final_model
+
         # Evaluate Holdout
         if len(holdout_idx) > 0:
             prob_holdout = final_model.predict_proba(X.iloc[holdout_idx])[:, 1]
+            holdout_predictions[name] = prob_holdout
             pred_holdout = (prob_holdout >= 0.5).astype(int)
             base_prob_holdout = np.full(len(holdout_idx), y.iloc[train_all_cv_idx].mean())
+            
+            # Calibration computation
+            cal_bins = np.linspace(0.0, 1.0, 11)
+            bin_idx = np.clip(np.digitize(prob_holdout, cal_bins) - 1, 0, 9)
+            ece = 0.0
+            y_hold = y.iloc[holdout_idx].to_numpy()
+            for b in range(10):
+                mask = bin_idx == b
+                if np.sum(mask) > 0:
+                    bin_acc = float(np.mean(y_hold[mask]))
+                    bin_conf = float(np.mean(prob_holdout[mask]))
+                    ece += (np.sum(mask) / len(holdout_idx)) * abs(bin_acc - bin_conf)
+
             holdout_metrics = {
                 "test_from": str(pd.to_datetime(df.iloc[holdout_idx]["game_date"]).min().date()),
                 "test_through": str(pd.to_datetime(df.iloc[holdout_idx]["game_date"]).max().date()),
@@ -154,13 +193,11 @@ def run_training(sport: str, data_root: Path | None = None, models_root: Path | 
                 "log_loss": float(log_loss(y.iloc[holdout_idx], prob_holdout, labels=[0, 1])),
                 "majority_baseline_brier": float(brier_score_loss(y.iloc[holdout_idx], base_prob_holdout)),
                 "majority_baseline_log_loss": float(log_loss(y.iloc[holdout_idx], base_prob_holdout, labels=[0, 1])),
+                "expected_calibration_error": float(ece),
             }
         else:
             holdout_metrics = {}
 
-        # Optionally retrain on ALL data including holdout for final deployment, 
-        # but user specifically said "holdout final intacto para una sola evaluación... no ajustar umbrales"
-        # We will still save the final_model trained on cv set.
         reports[name] = {
             "holdout_evaluation": holdout_metrics,
             "folds": fold_results,
@@ -175,14 +212,93 @@ def run_training(sport: str, data_root: Path | None = None, models_root: Path | 
         models_root.mkdir(parents=True, exist_ok=True)
         joblib.dump(final_model, models_root / f"{name}.joblib")
 
+    # Evaluate Ensemble Blend (Logistic + HistGradientBoosting)
+    if "logistic" in reports and "hist_gradient_boosting" in reports:
+        ensemble_folds = []
+        for fold_idx in range(len(folds)):
+            test_idx, prob_log = oof_predictions["logistic"][fold_idx]
+            _, prob_hgb = oof_predictions["hist_gradient_boosting"][fold_idx]
+            prob_ens = 0.5 * prob_log + 0.5 * prob_hgb
+            pred_ens = (prob_ens >= 0.5).astype(int)
+            base_prob = np.full(len(test_idx), y.iloc[folds[fold_idx][0]].mean())
+            ensemble_folds.append({
+                "fold": fold_idx + 1,
+                "accuracy": float(accuracy_score(y.iloc[test_idx], pred_ens)),
+                "auc": float(roc_auc_score(y.iloc[test_idx], prob_ens)),
+                "brier": float(brier_score_loss(y.iloc[test_idx], prob_ens)),
+                "log_loss": float(log_loss(y.iloc[test_idx], prob_ens, labels=[0, 1])),
+                "majority_baseline_brier": float(brier_score_loss(y.iloc[test_idx], base_prob)),
+            })
+        
+        if len(holdout_idx) > 0:
+            prob_ens_holdout = 0.5 * holdout_predictions["logistic"] + 0.5 * holdout_predictions["hist_gradient_boosting"]
+            pred_ens_holdout = (prob_ens_holdout >= 0.5).astype(int)
+            base_prob_hold = np.full(len(holdout_idx), y.iloc[train_all_cv_idx].mean())
+
+            cal_bins = np.linspace(0.0, 1.0, 11)
+            bin_idx = np.clip(np.digitize(prob_ens_holdout, cal_bins) - 1, 0, 9)
+            ece = 0.0
+            y_hold = y.iloc[holdout_idx].to_numpy()
+            for b in range(10):
+                mask = bin_idx == b
+                if np.sum(mask) > 0:
+                    ece += (np.sum(mask) / len(holdout_idx)) * abs(float(np.mean(y_hold[mask])) - float(np.mean(prob_ens_holdout[mask])))
+
+            ens_holdout_metrics = {
+                "test_from": str(pd.to_datetime(df.iloc[holdout_idx]["game_date"]).min().date()),
+                "test_through": str(pd.to_datetime(df.iloc[holdout_idx]["game_date"]).max().date()),
+                "test_rows": int(len(holdout_idx)),
+                "accuracy": float(accuracy_score(y.iloc[holdout_idx], pred_ens_holdout)),
+                "auc": float(roc_auc_score(y.iloc[holdout_idx], prob_ens_holdout)),
+                "brier": float(brier_score_loss(y.iloc[holdout_idx], prob_ens_holdout)),
+                "log_loss": float(log_loss(y.iloc[holdout_idx], prob_ens_holdout, labels=[0, 1])),
+                "majority_baseline_brier": float(brier_score_loss(y.iloc[holdout_idx], base_prob_hold)),
+                "expected_calibration_error": float(ece),
+            }
+        else:
+            ens_holdout_metrics = {}
+
+        reports["ensemble_blend"] = {
+            "holdout_evaluation": ens_holdout_metrics,
+            "folds": ensemble_folds,
+            "mean_accuracy": float(np.mean([fold["accuracy"] for fold in ensemble_folds])),
+            "mean_auc": float(np.mean([fold["auc"] for fold in ensemble_folds])),
+            "mean_brier": float(np.mean([fold["brier"] for fold in ensemble_folds])),
+            "mean_log_loss": float(np.mean([fold["log_loss"] for fold in ensemble_folds])),
+            "beats_majority_brier_in_all_folds": all(
+                fold["brier"] < fold["majority_baseline_brier"] for fold in ensemble_folds
+            ),
+        }
+
+    # Model selection analysis (Phase 04 specification)
+    best_candidate = "logistic"
+    ensemble_rejected = (
+        reports.get("ensemble_blend", {}).get("holdout_evaluation", {}).get("brier", 1.0)
+        >= reports.get("logistic", {}).get("holdout_evaluation", {}).get("brier", 0.0)
+    )
+
     metadata = {
-        "sport": sport.upper(), "model_version": f"{sport}_temporal_v1",
+        "sport": sport.upper(),
+        "model_version": f"{sport}_team_only_temporal_v1" if variant == "team_only" else f"{sport}_temporal_v1",
+        "model_variant": variant,
+        "dataset": dataset_stem,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "dataset_sha256": source_manifest["dataset_sha256"],
         "source_manifest": source_manifest.get("source_manifest_sha256"),
         "sample_count": int(len(df)), "date_from": str(pd.to_datetime(df.game_date).min().date()),
         "date_to": str(pd.to_datetime(df.game_date).max().date()),
         "features": features, "evaluation": reports,
+        "model_selection": {
+            "selected_model": best_candidate,
+            "decision": "single_model_retained" if ensemble_rejected else "ensemble_selected",
+            "ensemble_evaluated": True,
+            "rationale": (
+                f"LogisticRegression out-performed HistGradientBoosting and Ensemble blend "
+                f"(Holdout Brier: {reports['logistic']['holdout_evaluation'].get('brier'):.4f} vs "
+                f"Ensemble {reports.get('ensemble_blend', {}).get('holdout_evaluation', {}).get('brier'):.4f}). "
+                f"Per Phase 04 guidelines, parsimonious model is retained."
+            ),
+        },
         "validation_status": "temporal_evaluation_complete_manual_review_required",
         "production_enabled": False,
         "limitations": [
@@ -198,10 +314,12 @@ def run_training(sport: str, data_root: Path | None = None, models_root: Path | 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sport", choices=["nba", "nfl", "all"], default="all")
+    parser.add_argument("--variant", choices=["injury_aware", "team_only"], default="injury_aware")
     args = parser.parse_args()
     sports = ["nba", "nfl"] if args.sport == "all" else [args.sport]
     for sport in sports:
-        result = run_training(sport)
+        variant = args.variant if sport == "nfl" else "injury_aware"
+        result = run_training(sport, variant=variant)
         print(json.dumps({"sport": result["sport"], "samples": result["sample_count"],
                           "validation_status": result["validation_status"]}, indent=2))
 

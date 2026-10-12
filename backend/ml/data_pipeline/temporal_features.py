@@ -120,10 +120,10 @@ def build_temporal_dataset(
             row.update(_team_feature_values(home_prior, game_date, "home", stat_names))
             row.update(_team_feature_values(away_prior, game_date, "away", stat_names))
             
-            # Inyectar defaults para lesiones (sobreescrito en build_training_datasets)
+            # Placeholders only; historical coverage must be joined and validated downstream.
             row.update({
-                "home_ppr_lost_pct": 0.0, "home_off_snaps_lost_pct": 0.0, "home_def_snaps_lost_pct": 0.0,
-                "away_ppr_lost_pct": 0.0, "away_off_snaps_lost_pct": 0.0, "away_def_snaps_lost_pct": 0.0,
+                "home_ppr_lost_pct": None, "home_off_snaps_lost_pct": None, "home_def_snaps_lost_pct": None,
+                "away_ppr_lost_pct": None, "away_off_snaps_lost_pct": None, "away_def_snaps_lost_pct": None,
             })
             row["diff_win_rate"] = row["home_win_rate"] - row["away_win_rate"]
             row["diff_avg_margin"] = row["home_avg_margin"] - row["away_avg_margin"]
@@ -160,7 +160,11 @@ def build_temporal_dataset(
         raise DataQualityError(f"{sport}: se detectó un registro de feature no anterior al partido")
     features = feature_columns(stat_names)
     values = result[features].apply(pd.to_numeric, errors="coerce")
-    if values.isna().any().any() or not values.map(lambda x: math.isfinite(float(x))).all().all():
+    checked_values = values.drop(columns=[
+        "home_ppr_lost_pct", "home_off_snaps_lost_pct", "home_def_snaps_lost_pct",
+        "away_ppr_lost_pct", "away_off_snaps_lost_pct", "away_def_snaps_lost_pct",
+    ], errors="ignore")
+    if checked_values.isna().any().any() or not checked_values.map(lambda x: math.isfinite(float(x))).all().all():
         raise DataQualityError(f"{sport}: features incompletas/no finitas; no se imputan")
     result[features] = values
     metadata = {
@@ -173,15 +177,21 @@ def build_temporal_dataset(
     return result, metadata
 
 
-def feature_columns(game_stat_names: Iterable[str]) -> list[str]:
+def feature_columns(
+    game_stat_names: Iterable[str], *, include_availability: bool = True,
+) -> list[str]:
     columns = []
     for side in ("home", "away"):
         columns.extend([
             f"{side}_win_rate", f"{side}_avg_margin",
             f"{side}_avg_points_for", f"{side}_avg_points_against",
             f"{side}_days_rest", f"{side}_is_back_to_back", f"{side}_games_prior",
-            f"{side}_ppr_lost_pct", f"{side}_off_snaps_lost_pct", f"{side}_def_snaps_lost_pct"
         ])
+        if include_availability:
+            columns.extend([
+                f"{side}_ppr_lost_pct", f"{side}_off_snaps_lost_pct",
+                f"{side}_def_snaps_lost_pct",
+            ])
         columns.extend(f"{side}_avg_{metric}" for metric in game_stat_names)
     columns.extend(["diff_win_rate", "diff_avg_margin", "diff_avg_points_for", "diff_days_rest"])
     return columns
@@ -197,8 +207,9 @@ def build_matchup_features(
 ) -> tuple[pd.DataFrame, dict]:
     """Build inference inputs from observed completed games strictly before each target date.
 
-    `as_of` is the last fully observed calendar date. The target must be on a later
-    date; completed games through `as_of` are allowed, matching training semantics.
+    `as_of` is the last fully observed calendar date/time. Targets must be on a later
+    date, or on the same date with a verified kickoff later than the exact `as_of`.
+    Completed games through the observed date are allowed, matching training semantics.
     """
     if window < 1 or minimum_history < 1:
         raise ValueError("window and minimum_history must be positive")
@@ -226,8 +237,17 @@ def build_matchup_features(
         raise DataQualityError("Schedule futuro incompleto para inferencia")
     if targets["game_id"].duplicated().any():
         raise DataQualityError("Schedule futuro contiene game_id duplicados")
-    as_of_date = pd.Timestamp(as_of or datetime.now(timezone.utc)).date()
-    if not targets.empty and not (targets["game_date"] > as_of_date).all():
+    as_of_ts = pd.to_datetime(as_of or datetime.now(timezone.utc), utc=True)
+    as_of_date = as_of_ts.date()
+    target_dates = pd.to_datetime(targets["game_date"], errors="coerce").dt.date
+    kickoff_values = targets["game_start_utc"] if "game_start_utc" in targets else pd.Series(
+        pd.NaT, index=targets.index
+    )
+    same_day_kickoff = pd.to_datetime(kickoff_values, errors="coerce", utc=True)
+    is_future_target = (target_dates > as_of_date) | (
+        (target_dates == as_of_date) & same_day_kickoff.notna() & (same_day_kickoff > as_of_ts)
+    )
+    if not targets.empty and not is_future_target.all():
         raise DataQualityError("El schedule de inferencia contiene partidos no futuros al cutoff as_of")
     metrics = [f"{side}_{stat}" for side in ("home", "away") for stat in stats]
     values = past[metrics].apply(pd.to_numeric, errors="coerce")
@@ -282,12 +302,12 @@ def build_matchup_features(
             "schedule_source_ref": target["source_ref"],
             "feature_source_refs": sorted(observed["source_ref"].dropna().unique().tolist()),
         }
-        for column in ("home_team_name", "away_team_name", "home_team_abbreviation", "away_team_abbreviation"):
+        for column in ("game_start_utc", "season", "week", "home_team_name", "away_team_name", "home_team_abbreviation", "away_team_abbreviation"):
             if column in target:
                 row[column] = target[column]
         row.update(_team_feature_values(home_prior, target_date, "home", stats))
         row.update(_team_feature_values(away_prior, target_date, "away", stats))
-        row.update({"home_ppr_lost_pct": 0.0, "home_off_snaps_lost_pct": 0.0, "home_def_snaps_lost_pct": 0.0, "away_ppr_lost_pct": 0.0, "away_off_snaps_lost_pct": 0.0, "away_def_snaps_lost_pct": 0.0})
+        row.update({"home_ppr_lost_pct": None, "home_off_snaps_lost_pct": None, "home_def_snaps_lost_pct": None, "away_ppr_lost_pct": None, "away_off_snaps_lost_pct": None, "away_def_snaps_lost_pct": None})
         row["diff_win_rate"] = row["home_win_rate"] - row["away_win_rate"]
         row["diff_avg_margin"] = row["home_avg_margin"] - row["away_avg_margin"]
         row["diff_avg_points_for"] = row["home_avg_points_for"] - row["away_avg_points_for"]
@@ -299,7 +319,11 @@ def build_matchup_features(
         raise DataQualityError(f"Ningún partido tiene historial prepartido suficiente: {skipped_games[:5]}")
     result = pd.DataFrame(rows)
     numeric = result[features].apply(pd.to_numeric, errors="coerce")
-    if numeric.isna().any().any() or not numeric.map(lambda x: math.isfinite(float(x))).all().all():
+    checked_numeric = numeric.drop(columns=[
+        "home_ppr_lost_pct", "home_off_snaps_lost_pct", "home_def_snaps_lost_pct",
+        "away_ppr_lost_pct", "away_off_snaps_lost_pct", "away_def_snaps_lost_pct",
+    ], errors="ignore")
+    if checked_numeric.isna().any().any() or not checked_numeric.map(lambda x: math.isfinite(float(x))).all().all():
         raise DataQualityError("Inferencia produjo features nulas/no finitas")
     result[features] = numeric
     return result, {

@@ -1,0 +1,129 @@
+{
+  "audit_timestamp_utc": "2026-10-12T00:34:30.356307+00:00",
+  "seasons_audited": [
+    2020,
+    2021,
+    2022,
+    2023,
+    2024
+  ],
+  "total_records": 28744,
+  "status_distribution": {
+    "None": {
+      "count": 15347,
+      "percentage": 53.39
+    },
+    "Questionable": {
+      "count": 7598,
+      "percentage": 26.43
+    },
+    "Out": {
+      "count": 4979,
+      "percentage": 17.32
+    },
+    "Doubtful": {
+      "count": 814,
+      "percentage": 2.83
+    },
+    "Note": {
+      "count": 6,
+      "percentage": 0.02
+    }
+  },
+  "timing_verification": {
+    "total_records": 28744,
+    "cutoff_hours_before_kickoff": 2.0,
+    "pre_cutoff_verified": 28709,
+    "pre_cutoff_pct": 99.88,
+    "in_cutoff_window_excluded": 1,
+    "in_cutoff_window_pct": 0.0035,
+    "post_kickoff_excluded": 17,
+    "post_kickoff_pct": 0.0591,
+    "missing_date_modified": 0,
+    "missing_date_modified_pct": 0.0
+  },
+  "roster_integrity": {
+    "rostered_count": 28734,
+    "rostered_pct": 99.97,
+    "unrostered_count": 10,
+    "unrostered_pct": 0.03
+  },
+  "ground_truth_participation": {
+    "Out": {
+      "pre_cutoff_observed_total": 3964,
+      "did_play_count": 1,
+      "actual_play_rate": 0.0003,
+      "actual_absence_rate": 0.9997,
+      "descriptive_baseline_p_play": 0.0,
+      "descriptive_brier_score": 0.0003
+    },
+    "Doubtful": {
+      "pre_cutoff_observed_total": 745,
+      "did_play_count": 7,
+      "actual_play_rate": 0.0094,
+      "actual_absence_rate": 0.9906,
+      "descriptive_baseline_p_play": 0.15,
+      "descriptive_brier_score": 0.0291
+    },
+    "Questionable": {
+      "pre_cutoff_observed_total": 7178,
+      "did_play_count": 5079,
+      "actual_play_rate": 0.7076,
+      "actual_absence_rate": 0.2924,
+      "descriptive_baseline_p_play": 0.75,
+      "descriptive_brier_score": 0.2087
+    },
+    "None": {
+      "pre_cutoff_observed_total": 14650,
+      "did_play_count": 14164,
+      "actual_play_rate": 0.9668,
+      "actual_absence_rate": 0.0332,
+      "descriptive_baseline_p_play": 1.0,
+      "descriptive_brier_score": 0.0332
+    }
+  },
+  "descriptive_empirical_baseline_brier": 0.128,
+  "calibration_audit_notice": {
+    "claims_calibration": false,
+    "evaluation_type": "descriptive_empirical_baseline_on_historical_observations",
+    "note": "Este Brier score es un baseline descriptivo emp\u00edrico sobre categor\u00edas hist\u00f3ricas nflverse. NO representa un modelo predictivo calibrado ni evaluaci\u00f3n out-of-fold. Las claims de calibraci\u00f3n quedan diferidas hasta entrenar y validar un modelo formal con corte temporal cronol\u00f3gico."
+  },
+  "unknown_breakdown": {
+    "missing_report_status": {
+      "count": 15347,
+      "rate_pct": 53.39,
+      "description": "Jugadores en el reporte de pr\u00e1cticas pero sin designaci\u00f3n m\u00e9dica de partido asignada"
+    },
+    "post_cutoff_or_window_observation": {
+      "count": 18,
+      "rate_pct": 0.0626,
+      "description": "Reporte observado dentro de la ventana de 2 horas pregame o posterior al kickoff (excluido pregame)"
+    },
+    "missing_date_modified": {
+      "count": 0,
+      "rate_pct": 0.0,
+      "description": "Reporte sin timestamp upstream verificable (falla cerrado a unknown)"
+    },
+    "missing_snap_record": {
+      "count": 2183,
+      "rate_pct": 7.59,
+      "description": "Sin registro en snaps del juego (distinguido de no participaci\u00f3n comprobada 0 snaps)"
+    },
+    "observed_inactive_roster": {
+      "count": 7288,
+      "rate_pct": 25.35,
+      "description": "Label did_play=False respaldado expl\u00edcitamente por status INA del roster semanal"
+    },
+    "unrostered_with_status": {
+      "count": 4,
+      "rate_pct": 0.01,
+      "description": "Jugadores reportados con estado m\u00e9dico que no figuran en el roster activo semanal"
+    },
+    "unresolved_canonical_id": {
+      "count": 0,
+      "rate_pct": 0.0,
+      "description": "Identidad sin mapeo verificado a GSIS ID can\u00f3nico"
+    }
+  },
+  "resolver_version": "nfl_availability_v2"
+}

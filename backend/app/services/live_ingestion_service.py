@@ -9,6 +9,11 @@ from sqlalchemy import select, delete
 from app.core.config import settings
 from app.models.game import Team, Game, OddsSnapshot, Prediction
 from app.services.odds_service import fetch_odds
+from app.services.odds_quota_service import (
+    CircuitBreakerOpenError,
+    OddsQuotaService,
+    QuotaExceededError,
+)
 from app.services.math.odds_converter import (
     american_to_decimal,
     american_to_implied_prob,
@@ -17,15 +22,23 @@ from app.services.math.odds_converter import (
 
 logger = structlog.get_logger(__name__)
 
+quota_service = OddsQuotaService()
+
 BASE_URL = settings.ODDS_API_BASE_URL
 API_KEY = settings.ODDS_API_KEY
 
 async def fetch_real_player_props(event_id: str, sport: str = "NFL") -> List[Dict[str, Any]]:
     """
     Obtiene líneas de Player Props en VIVO desde The Odds API para un partido específico.
+    Gestionado bajo el sobre 'props' (tope 320 créditos) con registro en ledger.
+    En Fase 01, la ingesta está restringida exclusivamente a NFL.
     Si las casas de apuestas aún no publican props (o si el plan no tiene acceso),
     retorna lista vacía []. NUNCA inventa jugadores ni líneas ficticias.
     """
+    if sport.upper() != "NFL":
+        logger.warning("fetch_real_player_props rechazado para deporte no NFL en Fase 01", sport=sport)
+        return []
+
     if not API_KEY or not event_id:
         return []
 
@@ -36,22 +49,56 @@ async def fetch_real_player_props(event_id: str, sport: str = "NFL") -> List[Dic
         else "player_points,player_rebounds,player_assists"
     )
 
-    url = f"{BASE_URL}/sports/{sport_key}/events/{event_id}/odds"
-    params = {
-        "apiKey": API_KEY,
+    endpoint = f"/sports/{sport_key}/events/{event_id}/odds"
+    url = f"{BASE_URL}{endpoint}"
+    req_params = {
         "regions": "us",
         "markets": markets,
         "oddsFormat": "american",
     }
 
+    reservation = None
+    try:
+        reservation = quota_service.reserve_quota(
+            endpoint=endpoint,
+            params=req_params,
+            envelope="props",
+            api_key=API_KEY,
+        )
+    except (QuotaExceededError, CircuitBreakerOpenError) as exc:
+        logger.warning("Player props fetch bloqueado por control de cuota/reserva", error=str(exc), event_id=event_id)
+        return []
+
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params={"apiKey": API_KEY, **req_params})
+            if reservation:
+                quota_service.record_transaction(
+                    reservation=reservation,
+                    status_code=resp.status_code,
+                    response_headers=dict(resp.headers),
+                )
+                reconciled_reservation = reservation
+                reservation = None
+            else:
+                reconciled_reservation = None
+
             if resp.status_code != 200:
                 logger.warning("Player props not available from API", status=resp.status_code, event_id=event_id)
                 return []
 
             data = resp.json()
+            captured_at = datetime.now(timezone.utc).isoformat()
+            if reconciled_reservation:
+                try:
+                    quota_service.persist_raw_response(
+                        endpoint=endpoint,
+                        params={"sport": sport_key, "event_id": event_id, **req_params},
+                        response_body=data,
+                        response_headers=dict(resp.headers),
+                    )
+                except Exception as pe:
+                    logger.warning("Error al persistir props crudas (no afecta cuota)", error=str(pe))
             bookmakers = data.get("bookmakers", [])
             if not bookmakers:
                 return []
@@ -112,9 +159,12 @@ async def fetch_real_player_props(event_id: str, sport: str = "NFL") -> List[Dic
                         p_over, p_under, _ = remove_vig(prob_over_raw, prob_under_raw)
 
                         parsed_props.append({
+                            "event_id": event_id,
+                            "timestamp": captured_at,
                             "player_name": player,
                             "prop_type": prop_type,
                             "market_line": line,
+                            "price": price_over,
                             "over_odds_american": price_over,
                             "under_odds_american": under_data["price"],
                             "over_implied_probability": round(p_over, 4),
@@ -126,14 +176,32 @@ async def fetch_real_player_props(event_id: str, sport: str = "NFL") -> List[Dic
 
             return parsed_props[:100]
 
+    except (httpx.TimeoutException, httpx.ConnectError) as e:
+        logger.warning("Error de timeout o conexión en player props", error=str(e), event_id=event_id)
+        if reservation:
+            quota_service.record_transaction(
+                reservation=reservation,
+                is_timeout=True,
+                error_message=f"Timeout/Network error in props: {str(e)}",
+            )
+            reservation = None
+        return []
     except Exception as e:
         logger.error("Error fetching live player props", event_id=event_id, error=str(e))
+        if reservation:
+            quota_service.record_transaction(
+                reservation=reservation,
+                is_timeout=True,
+                error_message=f"Unexpected exception post-dispatch in props: {str(e)}",
+            )
+            reservation = None
         return []
 
 
 async def sync_real_games(sport: str, db: AsyncSession) -> Dict[str, Any]:
     """
     Sincroniza partidos 100% reales desde The Odds API a la base de datos PostgreSQL.
+    En Fase 01, la ingesta está restringida exclusivamente a NFL.
     Persiste solo cuotas recibidas; no estima ni rellena mercados ausentes.
     """
     sport_upper = sport.upper()
@@ -141,6 +209,14 @@ async def sync_real_games(sport: str, db: AsyncSession) -> Dict[str, Any]:
     
     try:
         odds_list = await fetch_odds(sport=sport_upper)
+    except ValueError as e:
+        logger.warning("sync_real_games rechazado para deporte no NFL en Fase 01", sport=sport_upper, error=str(e))
+        return {
+            "status": "error",
+            "sport": sport_upper,
+            "error_type": "sport_not_allowed",
+            "detail": str(e),
+        }
     except ProviderError as e:
         logger.error("Provider error during odds fetch", sport=sport_upper, error=str(e))
         return {

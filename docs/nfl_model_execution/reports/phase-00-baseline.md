@@ -23,8 +23,51 @@ Adicionalmente, se reforzó `backend/app/api/v1/predictions.py` en `get_game_pre
 | `POST /api/v1/predictions/simulate` | `predictions.py:448-454` | Incondicional fail-closed | **CERRADO** (Siempre 503) | HTTP 503 (`Predicción deshabilitada: faltan features...`) |
 | `GET /api/v1/predictions/experimental/nfl` | `predictions.py:228-318` | Requiere manifest y CSV con hash coincidente y timestamps < 24h | **EXPERIMENTAL ONLY** | Probabilidades puras; `predictions_enabled: false`, `production_eligible: false`. Sin EV/tiers/picks. |
 | `GET /api/v1/predictions/model-info` | `predictions.py:410-445` | Lee metadata de cada deporte | **DIAGNÓSTICO** | Reporta `production_enabled: false` para NFL |
-| `GET /api/v1/parlay/recommended` | `parlay.py:34-54`, `parlay_service.py` | Consulta predicciones en DB relacional | **AUDITADO** | No se persisten predicciones oficiales NFL; devuelve lista vacía o fallback mock preexistente |
+| `GET /api/v1/parlay/recommended` | `parlay.py:34-64`, `parlay_service.py:114-175` | `_production_model_enabled(sport)` + gate check por partido | **CERRADO / SANITIZADO** | Fallback ficticio eliminado. Con gate NFL cerrado o <2 candidatos devuelve `status: "unavailable"` (si `sport=NFL`) o lista vacía `total: 0, parlays: []`. Cero datos inventados. |
 | Celery task `evaluate_predictions_task("NFL")` | `celery_app.py:118-205` | `meta.get("production_eligible")` derivado de `production_enabled` | **CERRADO** | `production_eligible: False`. Tarea registra advertencia y descarta inserción en PostgreSQL |
+
+### 1.1 Corrección Bloqueante: Eliminación de Fallback Ficticio, Alcance Exclusivo NFL y Validación de Versión Exacta de Modelo
+
+En las revisiones de Codex se identificaron dos bloqueos en el Parlay Service y su ruta asociada:
+1. `backend/app/services/parlay_service.py` contenía un fallback con 4 candidatos ficticios hardcodeados (Boston Celtics, Denver Nuggets, etc.) cuando había menos de 2 candidatos en DB. Además, `GET /api/v1/parlay/recommended` no forzaba deporte por defecto, permitiendo que llamadas sin parámetro `sport` sirvieran recomendaciones de NBA (cuyo gate estaba abierto en `nba/model_metadata.json`).
+2. El filtrado de candidatos en base de datos solo revisaba si el gate del deporte estaba abierto, permitiendo que predicciones con versiones legacy o arbitrarias (`catboost_v1`, `xgboost_v1`, etc.) se convirtieran en candidatos si el gate estuviese abierto.
+
+**Acciones de saneamiento aplicadas:**
+1. **Eliminación total del mock fallback:** Se eliminó incondicionalmente la inyección de candidatos ficticios en `generate_recommended_parlays`. Si `len(candidates) < 2`, la función retorna incondicionalmente `[]`.
+2. **Alcance exclusivo a NFL por defecto en ruta y servicio:**
+   - La ruta `GET /api/v1/parlay/recommended` ahora define `sport: str = Query(default="NFL")`. Si se consulta sin parámetro (como hace el frontend actual), opera exclusivamente sobre NFL.
+   - Cualquier solicitud explícita con deporte distinto a NFL (e.g. `sport=NBA`) es rechazada con `status: "unavailable"` y `reason` explícito.
+   - `generate_recommended_parlays` valida `target_sport == "NFL"` como precondición; si se solicita otro deporte retorna `[]`.
+3. **Validación estricta y blindaje fail-closed de metadata (`get_approved_model_version`):**
+   - Se implementó y blindó `get_approved_model_version(sport: str) -> Optional[str]` en `backend/app/api/v1/predictions.py`:
+     - Acepta únicamente deportes permitidos (`ALLOWED_SPORTS = {"NFL", "NBA"}`) antes de construir cualquier ruta a disco, rechazando inputs vacíos, no-string, desconocidos o con secuencias de alteración de ruta (`../../`, etc.).
+     - Engloba incondicionalmente la resolución de ruta (`Path(__file__).resolve()`), la comprobación de existencia (`metadata_path.is_file()`), la lectura de disco (`read_text`) y el parseo JSON (`json.loads`) dentro del bloque `try ... except Exception: return None`, impidiendo que fallos de filesystem, permisos o `OSError` se propaguen al endpoint.
+     - Verifica que el JSON raíz sea estrictamente un objeto/dict (rechazando listas, escalares, o null).
+     - Comprueba que el campo `sport` en la metadata coincida exactamente con el deporte solicitado.
+     - Exige `production_enabled is True`.
+     - Exige que `model_version` sea string y no quede vacío tras `strip()`.
+     - Cualquier fallo de validación o I/O retorna `None`, garantizando que `_production_model_enabled()` retorne `False` sin filtrar excepciones a los endpoints.
+   - `generate_recommended_parlays` obtiene la versión aprobada y filtra estrictamente en SQL: `.where(Game.sport == target_sport).where(Prediction.model_version == approved_version)`.
+   - Se incluye validación de seguridad en el procesamiento de registros (`getattr(game, "sport", None) != target_sport or pred.model_version != approved_version: continue`). Registros legacy o no autorizados son descartados incondicionalmente.
+4. **Suite de pruebas de parlay y metadata (`backend/tests/test_parlay.py` y `test_prediction_gate.py`):**
+   - 8 pruebas automatizadas en `test_parlay.py` que cubren:
+     - Precondición de gate NFL cerrado y versión aprobada nula.
+     - Retorno de lista vacía en escenarios con 0 o 1 candidato (regresión del mock anterior).
+     - Rechazo de candidatos cuando el gate de NFL está cerrado.
+     - Rechazo estricto de predicciones legacy (`catboost_legacy_v1`, `xgboost_v1`) aun cuando el gate esté simuladamente abierto, y aceptación exclusiva de `nfl_temporal_v1`.
+     - Exclusión total de partidos NBA.
+     - Comportamiento de la ruta sin parámetro: adopta NFL por defecto y responde sin picks con gate cerrado.
+     - Rechazo explícito de `sport=NBA` en la ruta.
+     - Validación de piernas mínimas en evaluador de parlay personalizado.
+   - 7 pruebas adicionales en `test_prediction_gate.py` que validan el blindaje fail-closed de metadata y filesystem:
+     - Rechazo de deportes no permitidos, inputs vacíos y path traversal.
+     - Rechazo de JSON raíz que no sea dict (listas, escalares, booleanos, null).
+     - Rechazo de JSON malformado, `OSError` de lectura y errores de decodificación UTF-8 sin fuga de excepciones.
+     - Rechazo de `OSError` en `is_file()` y en `Path.resolve()` sin permitir propagación de excepciones.
+     - Rechazo de discrepancias en el campo `sport` de la metadata.
+     - Rechazo de `model_version` vacío, con solo espacios, no-string o faltante.
+     - Aceptación limpia y stripped únicamente ante metadata válida con `production_enabled=True`.
+
 
 ---
 
@@ -166,12 +209,12 @@ Se verificó el estado de trabajo del repositorio. Los 19 archivos modificados e
 
 Ejecutadas dentro del contenedor Docker oficial (`sports_api`):
 ```bash
-docker exec -e PYTHONPATH=/app sports_api pytest -v tests/test_prediction_gate.py tests/test_temporal_pipeline.py
+docker exec -e PYTHONPATH=/app sports_api pytest -v tests/test_prediction_gate.py tests/test_temporal_pipeline.py tests/test_parlay.py
 ```
-**Resultado:** `25 passed in 3.97s`
+**Resultado:** `40 passed in 4.58s` (incluye 8 pruebas de parlay service y rutas, 26 pruebas de prediction gate/metadata/filesystem y 6 pruebas de pipeline temporal).
 
 Validación completa de la suite del sistema:
 ```bash
-docker exec -e PYTHONPATH=/app sports_api pytest -q tests/test_prediction_gate.py tests/test_temporal_pipeline.py tests/test_math.py tests/test_nfl_analytics.py tests/test_persistence.py tests/test_cards.py tests/test_provider.py tests/test_freshness.py tests/test_live_ingestion_integration.py
+docker exec -e PYTHONPATH=/app sports_api pytest -v -k "not test_exhaustive_idempotency and not test_exhaustive_multiple"
 ```
-**Resultado:** `69 passed, 9 warnings in 4.44s`
+**Resultado:** `88 passed, 2 deselected, 9 warnings in 7.64s` (suite completa operativa; 2 tests omitidos por requerir driver opcional `aiosqlite` no instalado en la imagen base).

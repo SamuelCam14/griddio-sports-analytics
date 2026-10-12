@@ -2,7 +2,9 @@ import pandas as pd
 import pytest
 
 from ml.data_pipeline.common import DataQualityError
-from ml.data_pipeline.temporal_features import build_matchup_features, build_temporal_dataset
+from ml.data_pipeline.temporal_features import (
+    NFL_GAME_STATS, build_matchup_features, build_temporal_dataset, feature_columns,
+)
 from ml.training.train_temporal import validate_dataset
 
 
@@ -29,6 +31,15 @@ def test_same_day_games_are_not_used_as_features():
     # A's Jan 2 game must not count in Jan 2 games on same day; at Jan 3 both Jan 1 and Jan 2 qualify.
     assert target.home_games_prior == 3
     assert target.feature_max_observed_game_date == "2024-01-02"
+
+
+def test_nfl_team_only_feature_schema_excludes_optional_availability():
+    features = feature_columns(NFL_GAME_STATS, include_availability=False)
+    assert len(features) == 26
+    assert "home_win_rate" in features
+    assert "away_avg_off_epa_per_play" in features
+    assert not any("ppr_lost_pct" in column for column in features)
+    assert not any("snaps_lost_pct" in column for column in features)
 
 
 def test_missing_source_metric_is_rejected_without_imputation():

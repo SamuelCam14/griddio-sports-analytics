@@ -1,5 +1,16 @@
 # Fase 02 — Disponibilidad NFL e injuries point-in-time
 
+## Enmienda de alcance — 2026-10-12
+
+Esta enmienda prevalece sobre cualquier paso o criterio abajo que haga obligatoria availability para todo pick o partido.
+
+- El modelo NFL base es team-only y usa el historial local completo disponible. Availability/lesiones/props son un ajuste independiente y opcional; su ausencia no cancela la probabilidad base.
+- Ningún variant recibe valores de lesión ausentes como cero. El variant injury-aware solo se ejecuta con sus inputs; el team-only tiene schema propio de 26 features y no incluye columnas de lesiones.
+- Las cachés legacy pueden servir para pruebas exploratorias del parser o como contexto actual débil, pero sus datos sin timestamp no se usan como conocimiento point-in-time histórico ni justifican asumir que un equipo sin registros está sano.
+- Para lesiones actuales, usar el tiempo real de recuperación (`retrieved_at`) como captura si lo genera el fetcher. No rebautizarlo como timestamp de observación del proveedor. Si no hay props archivadas, no entrenar una señal histórica de mercado; en vivo, no tener props significa signal unavailable, no “no jugará”. Consultar solo cuestionables/dudosos según ventana de actualización y presupuesto.
+- No exigir identidad de Odds API para correr el modelo base. Para comparar EV, vincular las líneas disponibles con schedule por deporte/equipos/kickoff y exigir vínculo único; ambigüedades excluyen solo la comparación de mercado.
+- El backtest team-only de este addendum reporta 4,398 juegos y holdout de 824 (Brier 0.2267, AUC 0.6682 para logística). No es evidencia de rentabilidad. Toda ruta queda experimental hasta probar calibración y retorno prospectivo contra cuotas actuales sin vig.
+
 ## Objetivo
 
 Representar lo que se sabía sobre los jugadores antes de la decisión. Separar el predictor de disponibilidad del resultado real del partido. Esta fase no modifica NBA.

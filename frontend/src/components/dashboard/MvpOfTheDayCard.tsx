@@ -8,18 +8,15 @@ interface MvpOfTheDayCardProps {
 }
 
 export function MvpOfTheDayCard({ sport, topPick }: MvpOfTheDayCardProps) {
-  const isNba = sport === 'NBA'
+  const hasPick = Boolean(topPick && topPick.tiene_ventaja)
 
   const playerName = topPick?.best_bet?.selection?.includes('OVER') || topPick?.best_bet?.selection?.includes('UNDER')
-    ? topPick.player_props?.[0]?.player_name ?? (isNba ? 'Nikola Jokić' : 'Patrick Mahomes')
-    : isNba
-    ? 'Nikola Jokić'
-    : 'Patrick Mahomes'
+    ? topPick.player_props?.[0]?.player_name ?? topPick.pick_team_name
+    : topPick?.pick_team_name
 
-  const teamName = topPick?.home_team?.name ?? (isNba ? 'Denver Nuggets' : 'Kansas City Chiefs')
-  const position = isNba ? 'Center · All-Star' : 'Quarterback · MVP'
-  const ratingScore = topPick?.prob_modelo ? Math.round(topPick.prob_modelo * 100) : 92
-  const advantageText = topPick?.ev_dolares ? `+$${topPick.ev_dolares.toFixed(1)} EV` : '+14.8% EV'
+  const teamName = topPick?.home_team?.name ?? ''
+  const ratingScore = topPick?.prob_modelo ? Math.round(topPick.prob_modelo * 100) : null
+  const advantageText = topPick?.ev_dolares ? `+$${topPick.ev_dolares.toFixed(1)} EV` : null
 
   return (
     <motion.div
@@ -36,40 +33,54 @@ export function MvpOfTheDayCard({ sport, topPick }: MvpOfTheDayCardProps) {
             AI · MVP OF THE DAY
           </span>
         </div>
-        <div className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.06] px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-200">
-          <Trophy className="h-3 w-3 text-apple-orange" />
-          <span>Score {ratingScore}</span>
-        </div>
+        {ratingScore !== null ? (
+          <div className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.06] px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-200">
+            <Trophy className="h-3 w-3 text-apple-orange" />
+            <span>Score {ratingScore}</span>
+          </div>
+        ) : (
+          <span className="text-[10px] font-mono text-slate-500 uppercase">OFFLINE</span>
+        )}
       </div>
 
       {/* Player content */}
-      <div className="mt-3.5 flex items-center gap-3.5">
-        {/* Player Image with subtle hairline border */}
-        <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-white/[0.1] bg-black/30 sm:h-18 sm:w-18">
-          <img
-            src="/images/mvp_portrait.jpg"
-            alt={playerName}
-            className="h-full w-full object-cover object-top"
-            loading="lazy"
-          />
-        </div>
+      {hasPick && playerName ? (
+        <div className="mt-3.5 flex items-center gap-3.5">
+          {/* Player Image with subtle hairline border */}
+          <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-white/[0.1] bg-black/30 sm:h-18 sm:w-18">
+            <img
+              src="/images/mvp_portrait.jpg"
+              alt={playerName}
+              className="h-full w-full object-cover object-top"
+              loading="lazy"
+            />
+          </div>
 
-        {/* Player Metadata */}
-        <div className="min-w-0 flex-1">
-          <h4 className="truncate text-base font-semibold text-white tracking-tight">{playerName}</h4>
-          <p className="truncate text-xs text-slate-300">{teamName}</p>
-          <p className="mt-0.5 text-[11px] text-slate-400">{position}</p>
+          {/* Player Metadata */}
+          <div className="min-w-0 flex-1">
+            <h4 className="truncate text-base font-semibold text-white tracking-tight">{playerName}</h4>
+            <p className="truncate text-xs text-slate-300">{teamName}</p>
 
-          <div className="mt-2 flex items-center gap-2">
-            <span className="rounded border border-apple-green/20 bg-apple-green/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#54e378]">
-              {advantageText}
-            </span>
-            <span className="text-[10px] text-slate-400">
-              {sport} · Confiabilidad 98%
-            </span>
+            <div className="mt-2 flex items-center gap-2">
+              {advantageText && (
+                <span className="rounded border border-apple-green/20 bg-apple-green/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#54e378]">
+                  {advantageText}
+                </span>
+              )}
+              <span className="text-[10px] text-slate-400">
+                {sport} · Recomendación calculada por backend
+              </span>
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="mt-3 flex flex-col items-center justify-center rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 text-center">
+          <p className="text-xs font-medium text-slate-300">Sin pick MVP activo hoy</p>
+          <p className="mt-1 text-[11px] text-slate-500 leading-relaxed max-w-[260px]">
+            El modelo NFL opera en modo experimental (gate de producción cerrado). No se emiten recomendaciones ficticias.
+          </p>
+        </div>
+      )}
     </motion.div>
   )
 }

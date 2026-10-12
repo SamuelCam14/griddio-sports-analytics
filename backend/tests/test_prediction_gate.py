@@ -5,7 +5,7 @@ from fastapi import HTTPException
 
 from ml.data_pipeline.common import project_root
 from app.api.v1.predictions import (
-    _production_model_enabled, get_experimental_predictions, get_game_prediction,
+    _production_model_enabled, get_approved_model_version, get_experimental_predictions, get_game_prediction,
     get_model_info, get_today_picks,
 )
 
@@ -226,4 +226,162 @@ def test_game_prediction_nfl_fails_closed_when_model_is_nfl():
         asyncio.run(get_game_prediction(game_id=999, db=mock_db))
     assert exc.value.status_code == 503
     assert "NFL" in exc.value.detail
+
+
+def test_approved_model_version_rejects_unallowed_sports_and_path_traversal():
+    """Verify that empty, non-string, unknown sports or path traversal attempts return None and False."""
+    invalid_inputs = [
+        "",
+        "   ",
+        "\t\n",
+        None,
+        123,
+        [],
+        {},
+        "UNKNOWN",
+        "SOCCER",
+        "BASEBALL",
+        "../../etc/passwd",
+        "../nfl",
+        "nfl/foo",
+        "nba/..",
+    ]
+    for invalid_sport in invalid_inputs:
+        assert get_approved_model_version(invalid_sport) is None
+        assert _production_model_enabled(invalid_sport) is False
+
+
+def test_approved_model_version_rejects_non_object_root_json(tmp_path, monkeypatch):
+    """Verify that root JSON that is not a dictionary (e.g. list, string, number, null) returns None and False."""
+    non_dict_payloads = [
+        '[{"sport": "NFL", "production_enabled": true, "model_version": "v1"}]',
+        '"just_a_string"',
+        "12345",
+        "true",
+        "null",
+    ]
+    dummy_meta = tmp_path / "model_metadata.json"
+    monkeypatch.setattr(
+        "app.api.v1.predictions.Path.is_file",
+        lambda self: True,
+    )
+
+    for payload in non_dict_payloads:
+        dummy_meta.write_text(payload, encoding="utf-8")
+        monkeypatch.setattr(
+            "app.api.v1.predictions.Path.read_text",
+            lambda self, encoding="utf-8": payload,
+        )
+        assert get_approved_model_version("NFL") is None
+        assert _production_model_enabled("NFL") is False
+
+
+def test_approved_model_version_rejects_invalid_json_and_read_errors(monkeypatch):
+    """Verify that malformed JSON or read/encoding errors fail closed without leaking exceptions."""
+    monkeypatch.setattr("app.api.v1.predictions.Path.is_file", lambda self: True)
+
+    # Malformed JSON
+    monkeypatch.setattr(
+        "app.api.v1.predictions.Path.read_text",
+        lambda self, encoding="utf-8": "{broken_json: definitely_not_valid",
+    )
+    assert get_approved_model_version("NFL") is None
+    assert _production_model_enabled("NFL") is False
+
+    # OSError / permission / read error
+    def raise_oserror(self, encoding="utf-8"):
+        raise OSError("Disk read error")
+
+    monkeypatch.setattr("app.api.v1.predictions.Path.read_text", raise_oserror)
+    assert get_approved_model_version("NFL") is None
+    assert _production_model_enabled("NFL") is False
+
+    # UnicodeDecodeError
+    def raise_decode_error(self, encoding="utf-8"):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr("app.api.v1.predictions.Path.read_text", raise_decode_error)
+    assert get_approved_model_version("NFL") is None
+    assert _production_model_enabled("NFL") is False
+
+
+def test_approved_model_version_rejects_filesystem_oserror_on_is_file_and_resolve(monkeypatch):
+    """Verify that OSError in Path.is_file() or Path.resolve() fails closed without leaking exceptions."""
+    # 1. OSError in Path.is_file()
+    def raise_is_file_error(self):
+        raise OSError("Permission denied or disk I/O failure on is_file")
+
+    monkeypatch.setattr("app.api.v1.predictions.Path.is_file", raise_is_file_error)
+    assert get_approved_model_version("NFL") is None
+    assert _production_model_enabled("NFL") is False
+
+    # 2. OSError in Path.resolve()
+    def raise_resolve_error(self):
+        raise OSError("Path resolution failed")
+
+    monkeypatch.setattr("app.api.v1.predictions.Path.resolve", raise_resolve_error)
+    assert get_approved_model_version("NFL") is None
+    assert _production_model_enabled("NFL") is False
+
+
+def test_approved_model_version_rejects_mismatched_sport_in_metadata(monkeypatch):
+    """Verify that if sport in metadata does not match requested sport, it fails closed."""
+    monkeypatch.setattr("app.api.v1.predictions.Path.is_file", lambda self: True)
+
+    mismatched_payloads = [
+        json.dumps({"sport": "NBA", "production_enabled": True, "model_version": "nfl_v1"}),
+        json.dumps({"sport": "UNKNOWN", "production_enabled": True, "model_version": "nfl_v1"}),
+        json.dumps({"production_enabled": True, "model_version": "nfl_v1"}),  # missing sport
+        json.dumps({"sport": None, "production_enabled": True, "model_version": "nfl_v1"}),
+        json.dumps({"sport": 123, "production_enabled": True, "model_version": "nfl_v1"}),
+    ]
+
+    for payload in mismatched_payloads:
+        monkeypatch.setattr(
+            "app.api.v1.predictions.Path.read_text",
+            lambda self, encoding="utf-8", p=payload: p,
+        )
+        assert get_approved_model_version("NFL") is None
+        assert _production_model_enabled("NFL") is False
+
+
+def test_approved_model_version_rejects_empty_or_whitespace_version(monkeypatch):
+    """Verify that empty, whitespace-only, non-string, or missing model_version fails closed."""
+    monkeypatch.setattr("app.api.v1.predictions.Path.is_file", lambda self: True)
+
+    invalid_version_payloads = [
+        json.dumps({"sport": "NFL", "production_enabled": True, "model_version": ""}),
+        json.dumps({"sport": "NFL", "production_enabled": True, "model_version": "   "}),
+        json.dumps({"sport": "NFL", "production_enabled": True, "model_version": "\t\n  "}),
+        json.dumps({"sport": "NFL", "production_enabled": True, "model_version": None}),
+        json.dumps({"sport": "NFL", "production_enabled": True, "model_version": 123}),
+        json.dumps({"sport": "NFL", "production_enabled": True}),  # missing model_version
+    ]
+
+    for payload in invalid_version_payloads:
+        monkeypatch.setattr(
+            "app.api.v1.predictions.Path.read_text",
+            lambda self, encoding="utf-8", p=payload: p,
+        )
+        assert get_approved_model_version("NFL") is None
+        assert _production_model_enabled("NFL") is False
+
+
+def test_approved_model_version_accepts_valid_metadata_when_production_enabled(monkeypatch):
+    """Verify that valid metadata with production_enabled=True returns the clean stripped version."""
+    monkeypatch.setattr("app.api.v1.predictions.Path.is_file", lambda self: True)
+
+    valid_payload = json.dumps({
+        "sport": "NFL",
+        "production_enabled": True,
+        "model_version": "  nfl_temporal_v1  ",
+    })
+    monkeypatch.setattr(
+        "app.api.v1.predictions.Path.read_text",
+        lambda self, encoding="utf-8": valid_payload,
+    )
+    assert get_approved_model_version("NFL") == "nfl_temporal_v1"
+    assert get_approved_model_version("nfl") == "nfl_temporal_v1"
+    assert _production_model_enabled("NFL") is True
+    assert _production_model_enabled("nfl") is True
 

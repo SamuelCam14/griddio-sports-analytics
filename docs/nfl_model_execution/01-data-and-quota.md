@@ -56,7 +56,7 @@ No duplicar automáticamente la frecuencia. Primeros límites: 150 reserva, 90 l
 - Lee y persiste headers de cada respuesta. Si headers faltan, calcular coste esperado y parar si excedería el sobre; no asumir coste cero.
 - El costo estimado se reserva **antes** de la petición. Al completarse, ajustar al coste real del header.
 - Tope de gasto disponible = saldo reportado − reserva protegida. Un job no puede cruzarlo.
-- Circuit breaker al llegar a 20% restante del saldo total, al consumir el sobre de props o ante respuesta de cuota agotada. A 429, usar backoff con jitter y máximo de reintentos limitado; no lanzar loops.
+- Circuit breaker al llegar a 20% restante del saldo total, al consumir el sobre de props o ante respuesta de cuota agotada. Ante HTTP 429, abrir el breaker y terminar el job sin reintento automático; solo introducir backoff/jitter en una futura política de retry explícitamente limitada y probada.
 - No realizar peticiones deportivas por cada reload/poll de frontend. Scheduler única, deduplicación por evento+ventana, caché local de respuesta y locks de job.
 - Actualizar la fecha exacta de reset desde cuenta/metadata del proveedor; no asumir que es medianoche del día 1.
 - No guardar ni loguear key. Ocultar query params de credenciales en exceptions, access logs y reports.

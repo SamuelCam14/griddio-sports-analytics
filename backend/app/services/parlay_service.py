@@ -17,6 +17,7 @@ from app.services.ev_engine import (
     decimal_to_american,
     calculate_ev,
 )
+from app.api.v1.predictions import _production_model_enabled, get_approved_model_version
 
 
 def evaluate_custom_parlay(
@@ -114,17 +115,30 @@ async def generate_recommended_parlays(
     db: AsyncSession,
     bankroll: float = 1000.0,
     max_combos: int = 5,
+    sport: str = "NFL",
 ) -> List[Dict[str, Any]]:
     """
     Escanea la base de datos buscando partidos programados con predicciones y momios,
     identifica los candidatos con prob > 60% y genera combinaciones óptimas de 2 y 3 legs.
+    Opera exclusivamente sobre el deporte especificado (NFL por defecto en esta fase).
+    Solo considera predicciones cuya versión coincida exactamente con la aprobada en model_metadata.json.
     """
-    # Consultar partidos con predicciones y momios
+    target_sport = (sport or "NFL").upper()
+    if target_sport != "NFL":
+        return []
+
+    approved_version = get_approved_model_version(target_sport)
+    if not approved_version:
+        return []
+
+    # Consultar partidos con predicciones y momios estrictamente para NFL y versión aprobada
     stmt = (
         select(Prediction, Game, Team)
         .join(Game, Prediction.game_id == Game.id)
         .join(Team, Game.home_team_id == Team.id)
+        .where(Game.sport == target_sport)
         .where(Game.status == "scheduled")
+        .where(Prediction.model_version == approved_version)
         .order_by(Game.game_date)
     )
     res = await db.execute(stmt)
@@ -133,6 +147,10 @@ async def generate_recommended_parlays(
     candidates: List[Dict[str, Any]] = []
 
     for pred, game, home_team in rows:
+        # Validación de seguridad: rechazar registros que no coincidan con el deporte o versión aprobada
+        if getattr(game, "sport", None) != target_sport or pred.model_version != approved_version:
+            continue
+
         # Determinar si el favorito tiene ventaja
         h_prob = pred.home_win_prob
         a_prob = pred.away_win_prob
@@ -172,14 +190,9 @@ async def generate_recommended_parlays(
                     "tier": pred.confluence_tier,
                 })
 
-    # Si hay menos de 2 candidatos en DB, generamos ejemplos canónicos con equipos activos
+    # Si hay menos de 2 candidatos reales con gate aprobado en DB, no hay parlay viable
     if len(candidates) < 2:
-        candidates = [
-            {"team_name": "Boston Celtics", "prob_model": 0.73, "odds_american": -140, "tier": "PREMIUM"},
-            {"team_name": "Denver Nuggets", "prob_model": 0.70, "odds_american": -125, "tier": "PREMIUM"},
-            {"team_name": "Oklahoma City Thunder", "prob_model": 0.68, "odds_american": -120, "tier": "VALUE"},
-            {"team_name": "Minnesota Timberwolves", "prob_model": 0.66, "odds_american": -115, "tier": "VALUE"},
-        ]
+        return []
 
     # Ordenar candidatos por ventaja descendente
     candidates.sort(key=lambda x: x.get("edge_pct", x["prob_model"]), reverse=True)

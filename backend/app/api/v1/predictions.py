@@ -25,16 +25,59 @@ from ml.data_pipeline.common import project_root
 router = APIRouter()
 
 
+ALLOWED_SPORTS = {"NFL", "NBA"}
+
+
+def get_approved_model_version(sport: str) -> Optional[str]:
+    """Retorna la versión exacta del modelo aprobada en metadata si production_enabled es True.
+
+    Falla cerrado (retorna None) ante:
+    - Deporte no permitido, vacío, no-string o intentos de alteración de ruta.
+    - Archivo de metadata inexistente o con errores de lectura/codificación/parseo.
+    - JSON raíz que no sea un objeto/dict.
+    - Discrepancia entre el deporte solicitado y el campo 'sport' de la metadata.
+    - 'production_enabled' que no sea estrictamente True.
+    - 'model_version' faltante, no-string, o vacío tras strip().
+    """
+    if not isinstance(sport, str):
+        return None
+    normalized_sport = sport.strip().upper()
+    if normalized_sport not in ALLOWED_SPORTS:
+        return None
+
+    try:
+        backend_root = Path(__file__).resolve().parents[3]
+        metadata_path = backend_root / "ml" / "models" / normalized_sport.lower() / "model_metadata.json"
+        if not metadata_path.is_file():
+            return None
+        raw_text = metadata_path.read_text(encoding="utf-8")
+        data = json.loads(raw_text)
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    metadata_sport = data.get("sport")
+    if not isinstance(metadata_sport, str) or metadata_sport.strip().upper() != normalized_sport:
+        return None
+
+    if data.get("production_enabled") is not True:
+        return None
+
+    version = data.get("model_version")
+    if not isinstance(version, str):
+        return None
+    clean_version = version.strip()
+    if not clean_version:
+        return None
+
+    return clean_version
+
+
 def _production_model_enabled(sport: str) -> bool:
     """Require explicit per-sport approval before any stored prediction is served."""
-    backend_root = Path(__file__).resolve().parents[3]
-    metadata = backend_root / "ml" / "models" / sport.lower() / "model_metadata.json"
-    if not metadata.is_file():
-        return False
-    try:
-        return json.loads(metadata.read_text(encoding="utf-8")).get("production_enabled") is True
-    except (OSError, json.JSONDecodeError):
-        return False
+    return get_approved_model_version(sport) is not None
 
 
 @router.get("/today", summary="Todos los picks y cartelera deportiva")
@@ -266,12 +309,14 @@ async def get_experimental_predictions(
             run_as_of = pd.to_datetime(run["as_of"], utc=True, errors="coerce")
             schedule_retrieved = pd.to_datetime(run["schedule_retrieved_at"], utc=True, errors="coerce")
             if (pd.isna(run_as_of) or pd.isna(schedule_retrieved)
-                    or run_as_of > pd.Timestamp(now) + pd.Timedelta(minutes=5)
+                    or run_as_of > pd.Timestamp(now) + timedelta(minutes=5)
                     or now - run_as_of.to_pydatetime() > timedelta(hours=24)
                     or now - schedule_retrieved.to_pydatetime() > timedelta(days=7)):
                 raise ValueError("La corrida o el calendario están vencidos")
-            expected_model = f"{sport_lower}_temporal_v1"
-            if run.get("model_version") != expected_model:
+            allowed_models = {f"{sport_lower}_temporal_v1"}
+            if sport_lower == "nfl":
+                allowed_models.add("nfl_team_only_temporal_v1")
+            if run.get("model_version") not in allowed_models:
                 raise ValueError(f"Versión de modelo desconocida o no autorizada para {sport_lower}")
             csv_path = manifest_path.with_name(run["output_file"])
             if hashlib.sha256(csv_path.read_bytes()).hexdigest() != run.get("output_sha256"):
@@ -419,6 +464,10 @@ async def get_model_info():
     for sport in ("nba", "nfl"):
         model_root = backend_root / "ml" / "models" / sport
         metadata_path = model_root / "model_metadata.json"
+        if sport == "nfl":
+            team_only_path = model_root / "team_only" / "model_metadata.json"
+            if team_only_path.is_file():
+                metadata_path = team_only_path
         if not metadata_path.is_file():
             models[sport.upper()] = {"status": "unavailable", "production_enabled": False}
             continue

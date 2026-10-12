@@ -13,8 +13,15 @@ import httpx
 import structlog
 
 from app.core.config import settings
+from app.services.odds_quota_service import (
+    CircuitBreakerOpenError,
+    OddsQuotaService,
+    QuotaExceededError,
+)
 
 logger = structlog.get_logger(__name__)
+
+quota_service = OddsQuotaService()
 
 BASE_URL = settings.ODDS_API_BASE_URL
 API_KEY = settings.ODDS_API_KEY
@@ -52,13 +59,15 @@ class OddsApiKeyManager:
         import os
         from pathlib import Path
         
-        raw_keys = [settings.ODDS_API_KEY, getattr(settings, "ODDS_API_KEY_2", ""), os.getenv("ODDS_API_KEY"), os.getenv("ODDS_API_KEY_2")]
+        # En Fase 01, la API secundaria tiene presupuesto 0 hasta verificación funcional.
+        # Solo se utiliza la clave primaria autorizada.
+        raw_keys = [settings.ODDS_API_KEY, os.getenv("ODDS_API_KEY")]
         
         # Fallback directo al archivo .env si docker no ha recargado las variables
         for p in [Path(".env"), Path("../.env"), Path("/app/.env"), Path("/app/../.env")]:
             if p.exists():
                 for line in p.read_text().splitlines():
-                    if line.startswith("ODDS_API_KEY=") or line.startswith("ODDS_API_KEY_2="):
+                    if line.startswith("ODDS_API_KEY="):
                         val = line.split("=", 1)[1].strip().strip('"').strip("'")
                         if val:
                             raw_keys.append(val)
@@ -216,6 +225,13 @@ async def fetch_odds(
     
     Returns: Lista de partidos con estructura estandarizada.
     """
+    # En Fase 01, la consulta externa a The Odds API está estrictamente restringida a NFL.
+    if sport.upper() != "NFL":
+        logger.warning("fetch_odds rechazado para deporte no NFL en Fase 01", sport=sport)
+        if allow_db_fallback:
+            return await fetch_odds_from_db(sport)
+        raise ValueError(f"Deporte '{sport}' no permitido en Fase 01. Solo NFL está habilitado.")
+
     if API_KEY == "":
         logger.warning("ODDS_API_KEY not configured — skipping odds fetch")
         from app.services.freshness_service import ConfigurationError
@@ -238,6 +254,30 @@ async def fetch_odds(
         from app.services.freshness_service import ConfigurationError
         raise ConfigurationError("ODDS_API_KEY not configured")
 
+    endpoint = f"/sports/{sport_key}/odds/"
+    request_params = {
+        "regions": regions,
+        "markets": markets,
+        "oddsFormat": odds_format,
+        "dateFormat": "iso",
+    }
+    reservation = None
+    try:
+        reservation = quota_service.reserve_quota(
+            endpoint=endpoint,
+            params=request_params,
+            envelope="main_lines",
+            api_key=active_key,
+        )
+    except (QuotaExceededError, CircuitBreakerOpenError) as exc:
+        logger.warning("Odds fetch bloqueado por control de cuota/reserva", error=str(exc))
+        if allow_db_fallback:
+            db_odds = await fetch_odds_from_db(sport)
+            if db_odds:
+                _ODDS_CACHE[cache_key] = (monotonic(), db_odds)
+                return db_odds
+        raise
+
     last_http_error: Optional[httpx.HTTPStatusError] = None
     last_error: Optional[Exception] = None
 
@@ -245,30 +285,64 @@ async def fetch_odds(
         while active_key:
             try:
                 response = await client.get(
-                    f"{BASE_URL}/sports/{sport_key}/odds/",
-                    params={
-                        "apiKey": active_key,
-                        "regions": regions,
-                        "markets": markets,
-                        "oddsFormat": odds_format,
-                        "dateFormat": "iso",
-                    },
+                    f"{BASE_URL}{endpoint}",
+                    params={"apiKey": active_key, **request_params},
                 )
 
                 if response.status_code in (401, 429):
+                    if reservation:
+                        quota_service.record_transaction(
+                            reservation=reservation,
+                            status_code=response.status_code,
+                            response_headers=dict(response.headers),
+                            error_message=f"HTTP {response.status_code}",
+                        )
+                        reservation = None
                     api_key_manager.mark_exhausted(active_key, reason=f"HTTP {response.status_code}")
                     active_key = api_key_manager.get_active_key()
+                    if active_key and not reservation:
+                        try:
+                            reservation = quota_service.reserve_quota(
+                                endpoint=endpoint,
+                                params=request_params,
+                                envelope="main_lines",
+                                api_key=active_key,
+                            )
+                        except (QuotaExceededError, CircuitBreakerOpenError) as exc:
+                            logger.warning("Odds fetch bloqueado por cuota en rotación de clave", error=str(exc))
+                            break
                     continue
 
                 response.raise_for_status()
 
-                # Actualizar cuota con headers
+                # Actualizar cuota con headers y ledger
+                if reservation:
+                    quota_service.record_transaction(
+                        reservation=reservation,
+                        status_code=response.status_code,
+                        response_headers=dict(response.headers),
+                    )
+                    reconciled_reservation = reservation
+                    reservation = None
+                else:
+                    reconciled_reservation = None
+
                 remaining = response.headers.get("x-requests-remaining")
                 used = response.headers.get("x-requests-used")
                 api_key_manager.update_headers(active_key, remaining, used)
                 logger.info("Odds API response", remaining=remaining, used=used, sport=sport, key_prefix=f"{active_key[:6]}...")
 
                 raw_games = response.json()
+                if reconciled_reservation:
+                    try:
+                        quota_service.persist_raw_response(
+                            endpoint=endpoint,
+                            params={"sport": sport_key, **request_params},
+                            response_body=raw_games,
+                            response_headers=dict(response.headers),
+                        )
+                    except Exception as pe:
+                        logger.warning("Error al persistir raw snapshot (no afecta cuota)", error=str(pe))
                 parsed = _parse_odds_response(raw_games)
                 if parsed:
                     _ODDS_CACHE[cache_key] = (monotonic(), parsed)
@@ -282,8 +356,42 @@ async def fetch_odds(
                     detail=str(e),
                     key_prefix=f"{active_key[:6]}...",
                 )
+                if reservation:
+                    quota_service.record_transaction(
+                        reservation=reservation,
+                        status_code=e.response.status_code,
+                        response_headers=dict(e.response.headers) if e.response else None,
+                        error_message=f"HTTP {e.response.status_code}",
+                    )
+                    reservation = None
                 api_key_manager.mark_exhausted(active_key, reason=f"HTTP {e.response.status_code}")
                 active_key = api_key_manager.get_active_key()
+                if active_key and not reservation:
+                    try:
+                        reservation = quota_service.reserve_quota(
+                            endpoint=endpoint,
+                            params=request_params,
+                            envelope="main_lines",
+                            api_key=active_key,
+                        )
+                    except (QuotaExceededError, CircuitBreakerOpenError) as exc:
+                        logger.warning("Odds fetch bloqueado por cuota en rotación de clave tras error", error=str(exc))
+                        break
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_error = e
+                logger.warning(
+                    "Odds API timeout o error de conexión (posiblemente cobrado)",
+                    error=str(e),
+                    key_prefix=f"{active_key[:6]}...",
+                )
+                if reservation:
+                    quota_service.record_transaction(
+                        reservation=reservation,
+                        is_timeout=True,
+                        error_message=f"Network/Timeout exception: {str(e)}",
+                    )
+                    reservation = None
+                break
             except Exception as e:
                 last_error = e
                 logger.warning(
@@ -291,6 +399,13 @@ async def fetch_odds(
                     error=str(e),
                     key_prefix=f"{active_key[:6]}...",
                 )
+                if reservation:
+                    quota_service.record_transaction(
+                        reservation=reservation,
+                        is_timeout=True,
+                        error_message=f"Unexpected exception post-dispatch: {str(e)}",
+                    )
+                    reservation = None
                 break
 
     # Si todas las claves fallaron, fallback opcional a la base de datos

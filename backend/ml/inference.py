@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Mapping
 import joblib
 import numpy as np
 import pandas as pd
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 from ml.data_pipeline.common import DataQualityError, backend_root, project_root
 from ml.data_pipeline.temporal_features import (
@@ -24,6 +28,7 @@ def _digest(path: Path) -> str:
 def load_temporal_model(
     sport: str, model_name: str = "logistic", *, allow_experimental: bool = False,
     models_root: Path | None = None, processed_root: Path | None = None,
+    model_variant: str = "injury_aware",
 ):
     """Load only an artifact whose dataset, schema and approval state match.
 
@@ -33,17 +38,34 @@ def load_temporal_model(
     sport = sport.lower()
     if sport not in SPORT_STATS:
         raise ValueError(f"Deporte no soportado: {sport}")
+    if model_variant not in {"injury_aware", "team_only"}:
+        raise ValueError(f"Variante de modelo no soportada: {model_variant}")
+    if model_variant == "team_only" and sport != "nfl":
+        raise ValueError("La variante team_only solo está disponible para NFL")
     models_root = models_root or backend_root() / "ml" / "models" / sport
     processed_root = processed_root or project_root() / "data" / "processed"
+    if model_variant == "team_only":
+        models_root = models_root / "team_only"
+        dataset_stem = f"{sport}_team_only_training"
+    else:
+        dataset_stem = f"{sport}_training"
     metadata_path = models_root / "model_metadata.json"
-    dataset_path = processed_root / f"{sport}_training.csv"
-    dataset_manifest_path = processed_root / f"{sport}_training.manifest.json"
+    dataset_path = processed_root / f"{dataset_stem}.csv"
+    dataset_manifest_path = processed_root / f"{dataset_stem}.manifest.json"
     artifact_path = models_root / f"{model_name}.joblib"
     for required_path in (metadata_path, dataset_path, dataset_manifest_path, artifact_path):
         if not required_path.is_file():
             raise FileNotFoundError(f"Falta archivo requerido de inferencia: {required_path}")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     manifest = json.loads(dataset_manifest_path.read_text(encoding="utf-8"))
+    expected_variant = model_variant
+    dataset_variant = manifest.get("feature_metadata", {}).get("variant", "injury_aware")
+    metadata_variant = metadata.get("model_variant", "injury_aware")
+    if dataset_variant != expected_variant or metadata_variant != expected_variant:
+        raise DataQualityError(
+            f"Variante solicitada {expected_variant} no coincide con dataset/modelo "
+            f"({dataset_variant}/{metadata_variant})"
+        )
     if not metadata.get("production_enabled") and not allow_experimental:
         raise DataQualityError(f"{sport.upper()}: modelo experimental; producción está deshabilitada")
     dataset_hash = _digest(dataset_path)
@@ -54,7 +76,9 @@ def load_temporal_model(
         raise DataQualityError("El manifiesto de snapshots cambió después de construir el dataset")
     if manifest.get("source_manifest_sha256") != metadata.get("source_manifest"):
         raise DataQualityError("El modelo no referencia el manifiesto de snapshots vigente")
-    features = feature_columns(SPORT_STATS[sport])
+    features = feature_columns(
+        SPORT_STATS[sport], include_availability=model_variant != "team_only",
+    )
     if metadata.get("features") != features:
         raise DataQualityError("El schema de features del artefacto no coincide con inferencia")
     model = joblib.load(artifact_path)
@@ -77,53 +101,194 @@ def predict_matchups(
     minimum_history: int = 1,
     as_of: pd.Timestamp | None = None,
     allow_experimental: bool = False,
+    availability_by_game: Mapping[str, Mapping[str, Any]] | None = None,
+    model_variant: str = "injury_aware",
+    allow_baseline_fallback: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
-    """Create per-match probabilities with strict training/inference feature parity."""
+    """Create per-match probabilities with strict training/inference feature parity.
+
+    NFL availability is an explicit, precomputed input. This function never fetches
+    ESPN/Odds data or treats an omitted snapshot as a healthy team.
+    """
     sport = sport.lower()
+    if model_variant not in {"injury_aware", "team_only"}:
+        raise ValueError(f"Variante de modelo no soportada: {model_variant}")
+    uses_availability = sport == "nfl" and model_variant == "injury_aware"
     model, metadata, manifest = load_temporal_model(
-        sport, model_name, allow_experimental=allow_experimental
+        sport, model_name, allow_experimental=allow_experimental,
+        model_variant=model_variant,
     )
     stats = SPORT_STATS[sport]
+    decision_now = pd.Timestamp.now(tz="UTC")
     features, provenance = build_matchup_features(
         completed_games, upcoming_games, stats, window=window,
-        minimum_history=minimum_history, as_of=as_of,
+        minimum_history=minimum_history, as_of=as_of or decision_now,
     )
     
-    # Inyectar features de lesiones en vivo
-    features['home_ppr_lost_pct'] = 0.0
-    features['home_off_snaps_lost_pct'] = 0.0
-    features['home_def_snaps_lost_pct'] = 0.0
-    features['away_ppr_lost_pct'] = 0.0
-    features['away_off_snaps_lost_pct'] = 0.0
-    features['away_def_snaps_lost_pct'] = 0.0
+    # NFL has no neutral injury default: each target game needs verified coverage.
+    injury_columns = [
+        "home_ppr_lost_pct", "home_off_snaps_lost_pct", "home_def_snaps_lost_pct",
+        "away_ppr_lost_pct", "away_off_snaps_lost_pct", "away_def_snaps_lost_pct",
+    ]
+    if uses_availability:
+        features[injury_columns] = np.nan
+    elif sport != "nfl":
+        features[injury_columns] = 0.0
     
-    if not upcoming_games.empty:
-        import structlog
-        from app.services.fantasy_injury_service import FantasyInjuryService
-        logger = structlog.get_logger(__name__)
-        try:
-            svc = FantasyInjuryService()
-            injury_data = svc.get_live_production_lost(sport)
-            
-            for idx, row in features.iterrows():
-                home_abbr = str(row.get('home_team_abbreviation') or row.get('home_team_name') or row.get('home_team_id', '')).upper()
-                away_abbr = str(row.get('away_team_abbreviation') or row.get('away_team_name') or row.get('away_team_id', '')).upper()
-                
-                h_inj = injury_data.get(home_abbr) or injury_data.get(home_abbr.lower()) or {}
-                a_inj = injury_data.get(away_abbr) or injury_data.get(away_abbr.lower()) or {}
-                
-                features.at[idx, 'home_ppr_lost_pct'] = h_inj.get('ppr_lost_pct', 0.0)
-                features.at[idx, 'home_off_snaps_lost_pct'] = h_inj.get('off_snaps_lost_pct', 0.0)
-                features.at[idx, 'home_def_snaps_lost_pct'] = h_inj.get('def_snaps_lost_pct', 0.0)
-                
-                features.at[idx, 'away_ppr_lost_pct'] = a_inj.get('ppr_lost_pct', 0.0)
-                features.at[idx, 'away_off_snaps_lost_pct'] = a_inj.get('off_snaps_lost_pct', 0.0)
-                features.at[idx, 'away_def_snaps_lost_pct'] = a_inj.get('def_snaps_lost_pct', 0.0)
-        except Exception as e:
-            logger.error("Error inyectando live injuries", sport=sport, error=str(e))
-    if features[feature_columns(stats)].columns.tolist() != feature_columns(stats):
+    availability_coverage = {
+        "has_verified_snapshots": False,
+        "mode": "required" if uses_availability else "not_used_by_model",
+        "covered_teams": [],
+        "source_refs": {},
+        "decision_cutoffs_utc": {},
+    }
+    if uses_availability and not upcoming_games.empty:
+        requested_as_of = pd.to_datetime(as_of or decision_now, errors="coerce", utc=True)
+        if (
+            pd.isna(requested_as_of)
+            or requested_as_of < decision_now - timedelta(minutes=15)
+            or requested_as_of > decision_now + timedelta(minutes=5)
+        ):
+            raise DataQualityError(
+                "NFL live availability requiere un as_of de ejecución actual (ventana de 15 minutos)"
+            )
+        if not isinstance(availability_by_game, Mapping):
+            if allow_baseline_fallback:
+                return predict_matchups(
+                    sport, completed_games, upcoming_games,
+                    model_name=model_name, window=window, minimum_history=minimum_history,
+                    as_of=as_of, allow_experimental=allow_experimental,
+                    model_variant="team_only",
+                )
+            raise DataQualityError("NFL requiere snapshots de availability explícitos por game_id; inference no consulta fuentes externas")
+
+        from app.services.nfl_availability_service import CoverageState
+
+        for idx, row in features.iterrows():
+            game_id = str(row.get("game_id") or "").strip()
+            kickoff = pd.to_datetime(row.get("game_start_utc"), errors="coerce", utc=True)
+            if pd.isna(kickoff):
+                raise DataQualityError(f"NFL game {game_id} sin kickoff UTC verificable")
+            if kickoff <= decision_now:
+                raise DataQualityError(f"NFL game {game_id} ya inició o finalizó; no se acepta availability pregame")
+            if not game_id or game_id not in availability_by_game:
+                if allow_baseline_fallback:
+                    return predict_matchups(
+                        sport, completed_games, upcoming_games,
+                        model_name=model_name, window=window, minimum_history=minimum_history,
+                        as_of=as_of, allow_experimental=allow_experimental,
+                        model_variant="team_only",
+                    )
+                raise DataQualityError(f"NFL availability snapshot ausente para game_id={game_id or 'unknown'}")
+            snapshot = availability_by_game[game_id]
+            if not isinstance(snapshot, Mapping) or str(snapshot.get("game_id")) != game_id:
+                raise DataQualityError(f"NFL availability snapshot con identidad de partido inválida: {game_id}")
+
+            def verified_utc(value: Any, field: str) -> pd.Timestamp:
+                parsed = pd.to_datetime(value, errors="coerce", utc=True)
+                if pd.isna(parsed):
+                    raise DataQualityError(f"NFL availability {game_id} carece de {field} verificable")
+                return parsed
+
+            snapshot_cutoff = verified_utc(snapshot.get("decision_cutoff_utc"), "decision_cutoff_utc")
+            captured_at = verified_utc(snapshot.get("captured_at_utc"), "captured_at_utc")
+
+            # Cutoff debe ser prepartido (al menos 90 min antes del kickoff) y no en el futuro
+            if snapshot_cutoff > kickoff - timedelta(minutes=90):
+                raise DataQualityError(f"NFL availability cutoff no coincide con el juego {game_id}: posterior al horizonte prepartido de 90 minutos")
+            if snapshot_cutoff > decision_now + timedelta(minutes=5):
+                raise DataQualityError(f"NFL game {game_id} aún está fuera de la ventana de decisión")
+
+            source_obs_val = snapshot.get("source_observed_at_utc")
+            source_observed_at = None
+            if source_obs_val is not None and str(source_obs_val).strip() not in ("", "None", "null", "nan"):
+                source_observed_at = verified_utc(source_obs_val, "source_observed_at_utc")
+
+            if not isinstance(snapshot.get("resolver_version"), str) or not snapshot["resolver_version"].strip():
+                raise DataQualityError(f"NFL availability snapshot sin resolver_version para {game_id}")
+
+            cadence = snapshot.get("cadence")
+            is_pregame_snap = cadence in ("near_kickoff", "pre_kickoff") or snapshot_cutoff >= kickoff - timedelta(minutes=95)
+            if is_pregame_snap:
+                # La predicción final puede consumir la captura oficial de 90 minutos antes del kickoff.
+                # Se permite captured_at y source_observed_at dentro de la ventana oficial prepartido (hasta cutoff + 5m de tolerancia)
+                # siempre que sea estrictamente antes del inicio del juego (kickoff).
+                if captured_at > snapshot_cutoff + timedelta(minutes=5) or captured_at >= kickoff:
+                    raise DataQualityError(f"NFL availability snapshot prepartido posterior a la ventana de decisión de {game_id}")
+                if source_observed_at is not None and (source_observed_at > snapshot_cutoff + timedelta(minutes=5) or source_observed_at >= kickoff):
+                    raise DataQualityError(f"NFL availability observación prepartido posterior a la ventana de decisión de {game_id}")
+            else:
+                # Snapshots no prepartido (start_of_day): deben ser estrictamente anteriores al cutoff
+                if captured_at >= snapshot_cutoff or (source_observed_at is not None and source_observed_at >= snapshot_cutoff):
+                    raise DataQualityError(f"NFL availability snapshot posterior o igual al cutoff de {game_id}")
+
+            if source_observed_at is not None and captured_at < source_observed_at - timedelta(seconds=1):
+                raise DataQualityError(f"NFL availability captura anterior a la observación fuente de {game_id}")
+
+            known_by_system_val = snapshot.get("known_by_system_at_utc") or snapshot.get("captured_at_utc")
+            if known_by_system_val:
+                known_by_sys = verified_utc(known_by_system_val, "known_by_system_at_utc")
+                if known_by_sys > requested_as_of + timedelta(minutes=5):
+                    raise DataQualityError(f"NFL availability snapshot aún no conocido por el sistema al momento as_of en {game_id}")
+
+            home_abbr = str(row.get("home_team_abbreviation") or row.get("home_team_name") or row.get("home_team_id", "")).upper()
+            away_abbr = str(row.get("away_team_abbreviation") or row.get("away_team_name") or row.get("away_team_id", "")).upper()
+            teams = snapshot.get("teams")
+            refs_by_team = snapshot.get("source_refs_by_team")
+            if not isinstance(teams, Mapping) or set(teams) != {home_abbr, away_abbr}:
+                raise DataQualityError(f"NFL availability debe cubrir exactamente {home_abbr} y {away_abbr} para {game_id}")
+            if not isinstance(refs_by_team, Mapping) or set(refs_by_team) != {home_abbr, away_abbr}:
+                raise DataQualityError(f"NFL availability carece de referencias de fuente por equipo para {game_id}")
+
+            for prefix, team in (("home", home_abbr), ("away", away_abbr)):
+                injury = teams[team]
+                if not isinstance(injury, Mapping):
+                    raise DataQualityError(f"NFL availability inválida para {team}, game {game_id}")
+                state = injury.get("coverage_state")
+                if state == CoverageState.NO_INJURIES_LISTED.value:
+                    logger.info("Equipo omitido en captura ESPN sin lesiones listadas; continuando con modelo base NFL", team=team, game_id=game_id)
+                    return predict_matchups(
+                        sport, completed_games, upcoming_games,
+                        model_name=model_name, window=window, minimum_history=minimum_history,
+                        as_of=as_of, allow_experimental=allow_experimental,
+                        model_variant="team_only",
+                    )
+                if state not in (CoverageState.COVERED_HEALTHY.value, CoverageState.COVERED_WITH_INJURIES.value):
+                    if allow_baseline_fallback:
+                        return predict_matchups(
+                            sport, completed_games, upcoming_games,
+                            model_name=model_name, window=window, minimum_history=minimum_history,
+                            as_of=as_of, allow_experimental=allow_experimental,
+                            model_variant="team_only",
+                        )
+                    raise DataQualityError(f"NFL availability desconocida para {team}, game {game_id}: {state}")
+                refs = refs_by_team.get(team)
+                if not isinstance(refs, (list, tuple)) or not refs or not all(isinstance(ref, str) and ref.strip() for ref in refs):
+                    raise DataQualityError(f"NFL availability sin provenance verificable para {team}, game {game_id}")
+                if state == CoverageState.COVERED_HEALTHY.value and not injury.get("clean_report_evidence_ref"):
+                    raise DataQualityError(f"NFL equipo {team} sin lesionados carece de evidencia explícita de reporte limpio")
+                if injury.get("decision_cutoff"):
+                    team_cutoff = verified_utc(injury["decision_cutoff"], f"decision_cutoff de {team}")
+                    if team_cutoff != snapshot_cutoff:
+                        raise DataQualityError(f"NFL availability del equipo {team} tiene cutoff distinto en {game_id}")
+                for metric in ("ppr_lost_pct", "off_snaps_lost_pct", "def_snaps_lost_pct"):
+                    value = injury.get(metric)
+                    if not isinstance(value, (int, float)) or not np.isfinite(value) or not 0.0 <= float(value) <= 1.0:
+                        raise DataQualityError(f"NFL métrica {metric} inválida/desconocida para {team}, game {game_id}")
+                    features.at[idx, f"{prefix}_{metric}"] = float(value)
+
+            availability_coverage["has_verified_snapshots"] = True
+            availability_coverage["covered_teams"] = sorted(
+                set(availability_coverage["covered_teams"]) | {home_abbr, away_abbr}
+            )
+            availability_coverage["decision_cutoffs_utc"][game_id] = snapshot_cutoff.isoformat()
+            availability_coverage["source_refs"][game_id] = {
+                team: list(refs_by_team[team]) for team in (home_abbr, away_abbr)
+            }
+    model_features = feature_columns(stats, include_availability=model_variant != "team_only")
+    if features[model_features].columns.tolist() != model_features:
         raise DataQualityError("El orden de features de inferencia no coincide con el contrato del modelo")
-    X = features[feature_columns(stats)].astype(float)
+    X = features[model_features].astype(float)
     matrix = X.to_numpy()
     if not np.isfinite(matrix).all():
         raise DataQualityError("Features de inferencia no finitas; no se imputan")
@@ -133,6 +298,8 @@ def predict_matchups(
     features["home_win_probability"] = probabilities
     features["away_win_probability"] = 1.0 - probabilities
     features["model_version"] = metadata["model_version"]
+    features["model_variant"] = model_variant
+    features["used_injury_adjustment"] = (model_variant == "injury_aware")
     features["model_artifact"] = model_name
     features["model_dataset_sha256"] = metadata["dataset_sha256"]
     features["model_artifact_sha256"] = metadata["_artifact_sha256"]
@@ -141,6 +308,8 @@ def predict_matchups(
     run_metadata = {
         "sport": sport.upper(), "model_version": metadata["model_version"],
         "artifact": model_name, "dataset_sha256": metadata["dataset_sha256"],
+        "model_variant": model_variant,
+        "used_injury_adjustment": (model_variant == "injury_aware"),
         "artifact_sha256": metadata["_artifact_sha256"],
         "dataset_manifest_sha256": metadata["source_manifest"],
         "as_of": pd.Timestamp(as_of or datetime.now(timezone.utc)).isoformat(),
@@ -149,5 +318,6 @@ def predict_matchups(
         "source_refs": provenance["source_refs"],
         "schedule_source_refs": sorted(features["schedule_source_ref"].dropna().unique().tolist()),
         "skipped_games": provenance["skipped_games"],
+        "availability_coverage": availability_coverage,
     }
     return features, run_metadata

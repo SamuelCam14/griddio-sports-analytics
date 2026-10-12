@@ -36,6 +36,7 @@ def main() -> None:
         predictions, run = predict_matchups(
             sport, history, upcoming, model_name="logistic", as_of=as_of,
             allow_experimental=True,
+            model_variant="team_only" if sport == "nfl" else "injury_aware",
         )
         path = output_root / f"{sport}_predictions_{as_of:%Y%m%dT%H%M%SZ}.csv"
         predictions.to_csv(path, index=False)

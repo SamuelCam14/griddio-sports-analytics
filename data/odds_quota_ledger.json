@@ -1,0 +1,145 @@
+{
+  "version": "1.0",
+  "updated_at_utc": "2026-10-11T19:24:11.254317+00:00",
+  "config": {
+    "total_budget": 500,
+    "protected_reserve": 75,
+    "main_lines_budget": 45,
+    "props_budget": 320,
+    "operational_budget": 60,
+    "circuit_breaker_pct": 0.2
+  },
+  "summary": {
+    "requests_used": 225,
+    "requests_remaining": 275,
+    "spent_by_envelope": {
+      "main_lines": 12,
+      "props": 0,
+      "operational": 1
+    },
+    "circuit_breaker_open": false,
+    "circuit_breaker_reason": null
+  },
+  "reconciliation": {
+    "status": "reconciled_provisional",
+    "provisional_requests_remaining": 275,
+    "keys_breakdown": {
+      "key_sha_b5a2c962": {
+        "transactions_count": 4,
+        "local_cost_sum": 12,
+        "note": "Tx 1, 2, 4, 5. Cuota inicial observada con base de 500 créditos."
+      },
+      "key_sha_de093685": {
+        "transactions_count": 1,
+        "local_cost_sum": 1,
+        "provider_reported_used_at_tx": 219,
+        "provider_reported_remaining_at_tx": 281,
+        "historical_debt_note": "El salto de requests_used de 6 a 219 en Tx 3 (f5a11f02f257) se originó porque esta clave (key_sha_de093685) fue introducida con uso previo externo de 218 créditos en la cuenta del proveedor The Odds API antes de su primera invocación registrada en este ledger local."
+      }
+    },
+    "explanation": "El cambio de API key en Tx 3 introdujo la deuda histórica acumulada en el proveedor para key_sha_de093685 (x-requests-used: 219). El ledger sincronizó el saldo global informado por el proveedor. Se conservan 275 créditos restantes como saldo provisional hermético sin consultar nuevamente al proveedor."
+  },
+  "pending_reservations": {},
+  "transactions": [
+    {
+      "reservation_id": "d7afaf917a06",
+      "timestamp_utc": "2026-10-11T18:19:55.984981+00:00",
+      "api_key_id": "key_sha_b5a2c962",
+      "envelope": "main_lines",
+      "endpoint": "/sports/basketball_nba/odds/",
+      "params": {
+        "regions": "us",
+        "markets": "h2h,spreads,totals",
+        "oddsFormat": "american",
+        "dateFormat": "iso"
+      },
+      "estimated_cost": 3,
+      "actual_cost": 3,
+      "status_code": 200,
+      "status": "success",
+      "requests_used": 3,
+      "requests_remaining": 497,
+      "error_message": null
+    },
+    {
+      "reservation_id": "1e8ff638af10",
+      "timestamp_utc": "2026-10-11T18:20:14.548146+00:00",
+      "api_key_id": "key_sha_b5a2c962",
+      "envelope": "main_lines",
+      "endpoint": "/sports/basketball_nba/odds/",
+      "params": {
+        "regions": "us",
+        "markets": "h2h,spreads,totals",
+        "oddsFormat": "american",
+        "dateFormat": "iso"
+      },
+      "estimated_cost": 3,
+      "actual_cost": 3,
+      "status_code": 200,
+      "status": "success",
+      "requests_used": 6,
+      "requests_remaining": 494,
+      "error_message": null
+    },
+    {
+      "reservation_id": "f5a11f02f257",
+      "timestamp_utc": "2026-10-11T18:20:48.954565+00:00",
+      "api_key_id": "key_sha_de093685",
+      "envelope": "operational",
+      "endpoint": "/sports/americanfootball_nfl/odds",
+      "params": {
+        "regions": "us",
+        "markets": "h2h",
+        "oddsFormat": "american",
+        "dateFormat": "iso"
+      },
+      "estimated_cost": 1,
+      "actual_cost": 1,
+      "status_code": 200,
+      "status": "success",
+      "requests_used": 219,
+      "requests_remaining": 281,
+      "error_message": null
+    },
+    {
+      "reservation_id": "0b2e4f5d877d",
+      "timestamp_utc": "2026-10-11T18:23:20.155835+00:00",
+      "api_key_id": "key_sha_b5a2c962",
+      "envelope": "main_lines",
+      "endpoint": "/sports/basketball_nba/odds/",
+      "params": {
+        "regions": "us",
+        "markets": "h2h,spreads,totals",
+        "oddsFormat": "american",
+        "dateFormat": "iso"
+      },
+      "estimated_cost": 3,
+      "actual_cost": 3,
+      "status_code": 200,
+      "status": "success",
+      "requests_used": 222,
+      "requests_remaining": 278,
+      "error_message": null
+    },
+    {
+      "reservation_id": "d78548134b3f",
+      "timestamp_utc": "2026-10-11T19:24:11.253450+00:00",
+      "api_key_id": "key_sha_b5a2c962",
+      "envelope": "main_lines",
+      "endpoint": "/sports/basketball_nba/odds/",
+      "params": {
+        "regions": "us",
+        "markets": "h2h,spreads,totals",
+        "oddsFormat": "american",
+        "dateFormat": "iso"
+      },
+      "estimated_cost": 3,
+      "actual_cost": 3,
+      "status_code": 200,
+      "status": "success",
+      "requests_used": 225,
+      "requests_remaining": 275,
+      "error_message": null
+    }
+  ]
+}

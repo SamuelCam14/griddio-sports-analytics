@@ -14,6 +14,25 @@
 
 ---
 
+> [!IMPORTANT]
+> ## Estado vigente verificado — 2026-10-12
+> - NFL es el alcance actual. Fases 00 y 01 aceptadas; Fase 02 permanece en `review`; producción cerrada.
+> - Está implementado un variant experimental `team_only` con 26 features de equipo y 4,398 juegos locales. No usa lesiones, no las rellena con cero y no requiere snapshots `availability_by_game`. El variant `injury_aware` sigue separado y exige availability explícita.
+> - Backtest team-only: holdout 824 juegos; LogisticRegression Brier 0.2267, AUC 0.6682, accuracy 0.6299; HistGradientBoosting fue peor. No prueba edge ni ROI contra Vegas; faltan odds históricos point-in-time.
+> - Smoke de calendario local: 193 inferencias experimentales en memoria; `production_eligible=false`; no se escribieron picks ni filas DB.
+> - Suite operativa: 172 passed, 2 deselected, 0 warnings. Ledger: 275 restantes / 225 usados, SHA-256 `13e43e0c675cf6c17946e3b3e03df639dbe2e96ab0786680c4a6d37c9ab028be`; cero llamadas externas.
+> - No usar cachés ESPN sin timestamp fuente como historial point-in-time ni para inferir equipo sano automáticamente. No gastar cuota de props para OUT/IR. NBA fuera de alcance; preservar los archivos frontend preexistentes.
+
+> ## Estado histórico del 2026-10-11 (supersedido por el estado vigente anterior)
+> - La fase de ejecución actual `docs/nfl_model_execution/` es **NFL-first**. Fases 00 y 01 están aceptadas (`done`); Fase 02 sigue en `review`. La reauditoría Codex v2 reprodujo 30 tests, pero rechazó aceptación por falta de contexto por juego, procedencia de cache/fetch incompleta, props sin identidad/evento y unknown histórico convertido en cero. No iniciar Fase 03 ni habilitar producción: `production_enabled` permanece `false`. Hallazgos: `docs/nfl_model_execution/reports/phase-02-codex-audit.md`.
+> - La segunda entrega arregló validaciones puntuales (timestamps estrictos, retiro de props sintéticas y priors manuales de impacto, Brier descriptivo), pero no integra ESPN→GSIS con caller live ni entrega cutoff/kickoff por partido. Inference usa cutoff compartido o fecha `now` si falta calendario.
+> - No tratar props como verificadas si falta timestamp/precio o no se vinculan al event_id correcto. No considerar `fetched_at` recién creado al procesar cache ESPN como evidencia del fetch original. El builder histórico todavía convierte reportes no verificables en p_absence 0 y rellena agregados con cero.
+> - Codex reprodujo `tests/test_nfl_availability_phase02.py`: 30 passed. Hash de ledger idéntico antes/después; sin llamadas externas en la auditoría. El verde no cambia el dictamen funcional.
+> - Odds API: ledger `data/odds_quota_ledger.json` intacto en 275 restantes / 225 usados; SHA-256 inalterado: `13e43e0c675cf6c17946e3b3e03df639dbe2e96ab0786680c4a6d37c9ab028be`; 0 llamadas live externas durante el desarrollo y pruebas.
+> - NBA se mantiene fuera del alcance actual. No tocar los 19 archivos preexistentes del frontend.
+
+---
+
 
 > [!CAUTION]
 > ## Estado verificado del flujo de datos (2026-10-01)
@@ -210,6 +229,15 @@ sports_analytics/
 * **Historial de afirmaciones heredadas (no usar como estado actual):** La sección anterior de “Fase 8” afirmaba métricas 64.8%/AUC 0.7192, picks PREMIUM, NFL live y props como verificados. La auditoría encontró leakage temporal, defaults sintéticos y ausencia de fuentes/timestamps; no son resultados vigentes. `train_models.py` y `generate_predictions.py` ahora apuntan al flujo temporal nuevo o se cierran; no consumas el CSV/artefactos legacy.
 # Fuente de verdad del pipeline de datos y ML (2026-10-01)
 
+## Handoff vigente entre Codex y Gemini — Fase 02 NFL (2026-10-11)
+
+- Codex es orquestador, auditor y responsable de aceptación; Gemini implementa tareas asignadas y realiza barridos independientes cuando Codex lo solicita. Samuel es el puente humano: los agentes deben dirigirse entre sí en los prompts/documentos de handoff, no pedirle al usuario que vuelva a asignar fases ya autorizadas.
+- La Fase 02 permanece en `review`; el último pase Codex corrigió parcialmente el contexto por partido, provenance, props incompletas, unknown histórico y ground truth. No asumir aceptación ni avanzar a Fase 03 hasta que Codex lo registre explícitamente en `docs/nfl_model_execution/EXECUTION_STATE.md`.
+- Bloqueos vigentes: (1) conectar el Odds API `event_id` correspondiente y las props reales, con sobre/cuota/persistencia y corte verificables, al caller NFL; (2) cargar priors individuales live solo de snapshots semanales estrictamente anteriores; (3) evaluar la cobertura resultante y el tamaño/calidad del dataset (el smoke más reciente conservó 110 de 4,398 juegos).
+- No hacer peticiones live ni gastar créditos en la revalidación pendiente. No habilitar producción. Toda prueba debe conservar el SHA-256 del ledger; unknown/unavailable nunca se convierten en cero.
+- Para Gemini: revisar solo el diff/evidencia de la corrección Codex, buscar hallazgos nuevos y revalidar suites; no editar código ni iniciar Fase 03 en esta revalidación. Reportar discrepancias a Codex con ruta, función, consecuencia y reproducción exacta.
+- Fuente de estado y resultados: `docs/nfl_model_execution/EXECUTION_STATE.md`; dictámenes y pendientes: `docs/nfl_model_execution/reports/phase-02-codex-audit.md`.
+
 Para estado de continuidad, comandos exactos, resultados de validación y roadmap con criterios de aceptación, consultar [`docs/CONTINUATION_HANDOFF_2026-10-01.md`](docs/CONTINUATION_HANDOFF_2026-10-01.md). Este archivo fija las reglas que deben respetarse; el handoff contiene una fotografía fechada y no debe tratarse como métricas vigentes después de cambios.
 
 - Usa `backend/ml/data_pipeline/` como pipeline canónico; no entrenes con `data/nba_historical_rolling.csv` ni con los scripts/artefactos antiguos.
@@ -236,3 +264,27 @@ Para estado de continuidad, comandos exactos, resultados de validación y roadma
   - Se ejecutó `evaluate_predictions_task("ALL")` persistiendo 52 pronósticos oficiales (27 NBA y 25 NFL) en PostgreSQL con emparejamiento de momios en vivo (DraftKings/FanDuel), cálculo de EV y asignación de tamaño de apuesta con criterio de Kelly.
   - Endpoints `/api/v1/predictions/today` y vistas de dashboard frontend ahora desbloqueados y sirviendo picks PREMIUM, VALUE y SKIP en tiempo real.
 
+
+## Contrato Codex: inferencia NFL solo con availability explícita — 2026-10-11
+
+- `predict_matchups()` ya no descarga ni invoca ESPN/Odds API ni servicios de lesiones. NFL recibe `availability_by_game` explícito; la clave debe ser el `game_id` y el paquete declara kickoff, cutoff exacto (kickoff−2h), `captured_at_utc`, `source_observed_at_utc`, `resolver_version`, referencias por equipo y resúmenes de ambos equipos.
+- El snapshot falla cerrado si falta, pertenece a otro juego, tiene timestamps inválidos/posteriores al cutoff, no cubre exactamente ambos equipos, carece de provenance, reporta estados desconocidos o métricas fuera de [0,1]. `covered_healthy` requiere además `clean_report_evidence_ref` explícita.
+- No existe todavía un productor live que cumpla el contrato; los callers Celery/CLI que no pasen snapshots se abstienen. Esto es intencional y evita fabricar availability. No equivale a integrar props, priors live ni autorizar producción.
+- La inferencia conserva las referencias y decision cutoffs usados en metadata de corrida. Suite focalizada de Fase 02: 37 passed; warnings de NumPy/Pandas por timedeltas quedan pendientes de limpieza. No hubo llamadas externas ni consumo de ledger.
+- Fase 02 permanece `review`; Fase 03 `pending`; producción cerrada. Próximo trabajo de Codex: validar suites combinadas y conectar un productor de snapshots solo después de verificar IDs, timestamps, coverage evidence y fuentes disponibles. La ausencia de assets player_stats/snaps/rosters/injuries de 2025/2026 mantiene priors live bloqueados.
+
+- Verificación Codex posterior de la corrección de inference NFL (2026-10-11): suite combinada Fases 00–02 `122 passed`; regresión operativa `170 passed, 2 deselected`. `git diff --check` limpio y `backend/ml/inference.py` sin llamadas a red ni `FantasyInjuryService`. Ledger: SHA-256 `13e43e0c675cf6c17946e3b3e03df639dbe2e96ab0786680c4a6d37c9ab028be`, 275 créditos restantes, 0 llamadas externas. Fase 02 permanece `review`: la corrección no crea un productor de snapshots, no integra props/event IDs ni genera priors live actuales; ninguna inferencia NFL se habilita hasta que exista fuente real que cumpla el contrato.
+
+- Revalidación Gemini + cambios Codex (2026-10-11): Gemini confirmó aislamiento de red/fail-closed y suites históricas. Codex sustituyó `pd.Timedelta` por `datetime.timedelta` en la ruta relevante y cambió Celery de `as_of=now−1 día` a hora actual; se añadió cobertura para el timestamp reciente. Docker: `tests/test_celery_tasks.py tests/test_nfl_availability_phase02.py tests/test_prediction_gate.py` → 67 passed, 0 warnings. Ledger intacto (275 créditos, SHA-256 `13e43e0c675cf6c17946e3b3e03df639dbe2e96ab0786680c4a6d37c9ab028be`), 0 llamadas externas. Sigue faltando el productor real `availability_by_game`, por tanto la inferencia NFL continúa absteniéndose y la Fase 02 sigue en review.
+
+- Revalidación final Gemini y regresión Codex (2026-10-11): discrepancias de contrato: ninguna. Codex reprodujo la suite operativa: 171 passed, 2 deselected, 0 warnings. Ledger intacto: 275 créditos, SHA-256 `13e43e0c675cf6c17946e3b3e03df639dbe2e96ab0786680c4a6d37c9ab028be`, sin llamadas externas. La integración completa de availability sigue bloqueada por ausencia de productor/artefactos reales para `availability_by_game`; Fase 02 continúa en review.
+## Corrección de enfoque vigente NFL — 2026-10-12
+
+No bloquear la inferencia base NFL por ausencia de datos opcionales de lesiones/props. La ausencia impide el ajuste de availability y debe registrarse como unknown/unavailable; el modelo team-only debe usar únicamente las estadísticas de equipo observadas con su schema independiente, sin completar las seis features de lesión con cero. Entrenar/evaluar por separado los variants team-only e injury-aware. La caché ESPN sin timestamp fuente y el JSON agregado legacy no cuentan como observación point-in-time; un timestamp real de descarga puede llamarse retrieved_at, no reconstruirse como fecha de observación histórica. No declarar edge/ROI frente a Vegas sin odds históricos; usar comparación prospectiva de probabilidad calibrada vs probabilidad implícita sin vig del mercado actual. Toda producción permanece apagada hasta superar validación y retorno prospectivo.
+
+Codex evaluó localmente, en solo lectura y sin escribir artefactos, 4,398 juegos de NFL con 26 features team-only: regresión logística holdout Brier 0.2267, log loss 0.6446, AUC 0.6682, accuracy 0.6299; HistGradientBoosting holdout Brier 0.2491, log loss 0.7048, AUC 0.6327, accuracy 0.5947. Es evidencia predictiva preliminar, no evidencia de rentabilidad. El detalle y siguiente tarea están en docs/nfl_model_execution/EXECUTION_STATE.md.
+## Modelo NFL con availability opcional — implementación vigente 2026-10-12
+
+Codex implementó una ruta NFL team-only basada en todos los juegos completos locales; el entrenamiento/inferencia usa schema propio de 26 features y no exige ni rellena lesiones. El artefacto experimental se guarda separado del injury-aware; los valores de availability no se usan en este variant y el gate de producción permanece cerrado. El variant injury-aware continúa disponible por separado y exige sus datos/cobertura.
+
+Evidencia reproducida: 4,398 juegos de 2010-09-19 a 2026-10-05, holdout temporal 824 juegos; LogisticRegression Brier 0.2267, AUC 0.6682, accuracy 0.6299; smoke con calendario local produjo 193 resultados experimentales en memoria. Esto no demuestra rentabilidad ni ventaja sobre Vegas. Sin odds históricos, el edge se mide prospectivamente contra línea actual sin vig. No se escribieron picks/DB; no hubo llamadas externas; ledger de 275 créditos intacto. Suite operativa: 172 passed, 2 deselected, 0 warnings. Ver EXECUTION_STATE.md para los detalles.

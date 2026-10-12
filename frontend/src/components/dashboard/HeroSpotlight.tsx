@@ -22,11 +22,10 @@ export function HeroSpotlight({
   sport,
   onAnalyze,
 }: HeroSpotlightProps) {
-  const isNba = sport === 'NBA'
-
-  const awayTeam = match?.odds.away_team ?? (isNba ? 'Los Angeles Lakers' : 'San Francisco 49ers')
-  const homeTeam = match?.odds.home_team ?? (isNba ? 'Boston Celtics' : 'Kansas City Chiefs')
-  const commenceTime = match?.odds.commence_time ?? new Date().toISOString()
+  const hasMatch = Boolean(match)
+  const awayTeam = match?.odds.away_team ?? 'Equipo Visitante'
+  const homeTeam = match?.odds.home_team ?? 'Equipo Local'
+  const commenceTime = match?.odds.commence_time ?? ''
   const isLive = match?.game.status === 'live'
 
   return (
@@ -57,9 +56,11 @@ export function HeroSpotlight({
             )}
           </div>
 
-          <span className="hidden sm:inline-block text-xs font-mono text-slate-400">
-            {formatMatchDate(commenceTime, { weekday: 'short', month: 'short', day: 'numeric' })} · {formatMatchTime(commenceTime)}
-          </span>
+          {commenceTime && (
+            <span className="hidden sm:inline-block text-xs font-mono text-slate-400">
+              {formatMatchDate(commenceTime, { weekday: 'short', month: 'short', day: 'numeric' })} · {formatMatchTime(commenceTime)}
+            </span>
+          )}
         </div>
 
         {/* Center Headline */}
@@ -69,21 +70,36 @@ export function HeroSpotlight({
             <span>PARTIDO DESTACADO DE LA JORNADA</span>
           </div>
 
-          <h2 className="mt-1.5 text-2xl font-bold tracking-tight text-white sm:text-3xl">
-            {awayTeam} <span className="text-slate-500 font-normal">@</span> {homeTeam}
-          </h2>
+          {hasMatch ? (
+            <>
+              <h2 className="mt-1.5 text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                {awayTeam} <span className="text-slate-500 font-normal">@</span> {homeTeam}
+              </h2>
 
-          <p className="mt-1.5 text-xs text-slate-300 line-clamp-2">
-            {match?.prediction?.best_bet
-              ? `Recomendación AI: ${match.prediction.best_bet.selection} (${match.prediction.best_bet.odds_american > 0 ? '+' : ''}${match.prediction.best_bet.odds_american}) · Ventaja: ${match.prediction.best_bet.edge_pct.toFixed(1)}%`
-              : `Inferencia cuantitativa de ensamble CatBoost + XGBoost con probabilidades implícitas y momios de mercado.`}
-          </p>
+              <p className="mt-1.5 text-xs text-slate-300 line-clamp-2">
+                {match?.prediction?.best_bet
+                  ? `Recomendación AI: ${match.prediction.best_bet.selection} (${match.prediction.best_bet.odds_american > 0 ? '+' : ''}${match.prediction.best_bet.odds_american}) · Ventaja: ${match.prediction.best_bet.edge_pct.toFixed(1)}%`
+                  : `Probabilidades cuantitativas temporales point-in-time del modelo base NFL.`}
+              </p>
+            </>
+          ) : (
+            <>
+              <h2 className="mt-1.5 text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                Sin partido seleccionado
+              </h2>
+
+              <p className="mt-1.5 text-xs text-slate-400 line-clamp-2">
+                Selecciona un partido del calendario para inspeccionar las métricas de inferencia.
+              </p>
+            </>
+          )}
 
           <div className="mt-4 flex flex-wrap items-center gap-2.5">
             <button
               type="button"
               onClick={onAnalyze}
-              className="macos-btn-primary"
+              disabled={!hasMatch}
+              className="macos-btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <span>Ver Análisis Integral</span>
               <ArrowRight className="h-3.5 w-3.5" />

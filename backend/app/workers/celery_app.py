@@ -1,6 +1,7 @@
 """Celery schedule for real market ingestion and explicitly gated ML tasks."""
 import asyncio
 from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
 from celery import Celery
 from celery.schedules import crontab
 import structlog
@@ -29,18 +30,19 @@ celery_app.conf.update(
 # Enrutamiento de tareas a sus respectivas colas
 celery_app.conf.task_routes = {
     "app.workers.celery_app.ingest_odds_*": {"queue": "ingestion"},
+    "app.workers.celery_app.capture_nfl_injuries_*": {"queue": "ingestion"},
     "app.workers.celery_app.evaluate_predictions_*": {"queue": "ml"},
     "app.workers.celery_app.audit_card_*": {"queue": "alerts"},
 }
 
 # ─── Programación de Tareas Recurrentes (Celery Beat Schedule) ───────────────
 celery_app.conf.beat_schedule = {
-    # --- NBA Odds Ingestion: 2 veces al día (11:00 AM ET y 5:30 PM ET antes de los partidos) ---
-    "ingest-nba-odds-optimized": {
-        "task": "app.workers.celery_app.ingest_odds_task",
-        "schedule": crontab(minute=0, hour="15,21"),
-        "args": ("NBA",),
-    },
+    # --- NBA Odds Ingestion: Deshabilitada en Fase 01 (NBA diferida a plan independiente) ---
+    # "ingest-nba-odds-optimized": {
+    #     "task": "app.workers.celery_app.ingest_odds_task",
+    #     "schedule": crontab(minute=0, hour="15,21"),
+    #     "args": ("NBA",),
+    # },
     # --- NFL Odds Ingestion: Solo días de juego (Jueves, Sábado víspera, Domingo matutino/tarde, Lunes) ---
     "ingest-nfl-odds-optimized": {
         "task": "app.workers.celery_app.ingest_odds_task",
@@ -54,6 +56,16 @@ celery_app.conf.beat_schedule = {
     "ingest-nfl-schedule-weekly": {
         "task": "app.workers.celery_app.ingest_nfl_schedule_task",
         "schedule": crontab(minute=0, hour=4, day_of_week="2"),  # Martes 4 AM
+    },
+    # --- NFL Injury Captures: Coordinadas dinámicamente con el calendario real de juegos ---
+    # capture-nfl-injuries-start-of-day y capture-nfl-injuries-pre-kickoff (horarios fijos 13:00/16:30 UTC)
+    # han sido REEMPLAZADOS por el orquestador dinámico schedule-nfl-gameday-captures que:
+    #  1. Dispara la captura de inicio de jornada al arrancar (12:00 UTC días de juego).
+    #  2. Por cada kickoff real del día, programa una captura prepartido 90 minutos antes del kickoff.
+    # No usar horarios fijos; el calendario local de la NFL es la única fuente de verdad para las ventanas.
+    "schedule-nfl-gameday-captures": {
+        "task": "app.workers.celery_app.schedule_nfl_gameday_captures_task",
+        "schedule": crontab(minute=0, hour=12, day_of_week="0,1,4,6"),
     },
     "evaluate-nba-predictions-optimized": {
         "task": "app.workers.celery_app.evaluate_predictions_task",
@@ -82,8 +94,21 @@ from app.services.freshness_service import ProviderError
     retry_backoff_max=600,
     retry_jitter=True
 )
-def ingest_odds_task(self, sport: str = "NBA"):
+def ingest_odds_task(self, sport: str = "NFL"):
     """Fetch and persist market data through the same path as the API sync. Retries on failures."""
+    sport_upper = (sport or "").strip().upper()
+    if sport_upper != "NFL":
+        logger.warning(
+            "ingest_odds_task rechazado para deporte no NFL en Fase 01",
+            sport=sport,
+        )
+        return {
+            "status": "skipped",
+            "sport": sport,
+            "error_type": "sport_not_allowed",
+            "detail": f"Deporte '{sport}' no permitido en Fase 01. Solo NFL está habilitado.",
+        }
+
     from app.core.database import AsyncSessionLocal
     from app.services.live_ingestion_service import sync_real_games
 
@@ -107,7 +132,7 @@ def ingest_odds_task(self, sport: str = "NBA"):
 
 
 @celery_app.task(name="app.workers.celery_app.evaluate_predictions_task", queue="ml")
-def evaluate_predictions_task(sport: str = "ALL"):
+def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] = None):
     """Run fail-closed inference to update daily predictions for upcoming games."""
     from app.core.database import AsyncSessionLocal
     import asyncio
@@ -127,7 +152,10 @@ def evaluate_predictions_task(sport: str = "ALL"):
             results = []
             for sp in sports_to_run:
                 try:
-                    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=1)
+                    # Inference must use the current decision time. A stale daily
+                    # cutoff can include started games and cannot satisfy the NFL
+                    # live-availability freshness contract.
+                    cutoff = pd.Timestamp.now(tz="UTC")
                     if sp == "NBA":
                         from ml.data_pipeline.nba_source import load_nba_games, load_nba_upcoming_games
                         completed = load_nba_games()
@@ -136,6 +164,8 @@ def evaluate_predictions_task(sport: str = "ALL"):
                         from ml.data_pipeline.nfl_source import load_nfl_games, load_nfl_upcoming_games
                         completed = load_nfl_games()
                         upcoming = load_nfl_upcoming_games(as_of=cutoff)
+                        if game_ids:
+                            upcoming = upcoming[upcoming["game_id"].astype(str).isin([str(g) for g in game_ids])]
                     else:
                         continue
                         
@@ -143,10 +173,49 @@ def evaluate_predictions_task(sport: str = "ALL"):
                         logger.info(f"No upcoming games to predict for {sp}")
                         continue
                         
-                    preds_df, meta = predict_matchups(sp.lower(), completed, upcoming, as_of=cutoff, allow_experimental=True)
+                    availability_by_game = None
+                    if sp == "NFL":
+                        from app.services.nfl_availability_service import NFLAvailabilityService
+                        avail_svc = NFLAvailabilityService()
+                        availability_by_game = {}
+                        for _, up_row in upcoming.iterrows():
+                            g_id = str(up_row.get("game_id", "") or "")
+                            h_t = str(up_row.get("home_team_abbreviation") or up_row.get("home_team_name") or up_row.get("home_team_id", "") or "")
+                            a_t = str(up_row.get("away_team_abbreviation") or up_row.get("away_team_name") or up_row.get("away_team_id", "") or "")
+                            k_utc = up_row.get("game_start_utc")
+                            if g_id and h_t and a_t and k_utc:
+                                try:
+                                    g_snap = avail_svc.build_game_availability_snapshot(
+                                        game_id=g_id,
+                                        home_team=h_t,
+                                        away_team=a_t,
+                                        kickoff_utc=k_utc,
+                                        as_of=cutoff,
+                                    )
+                                    if g_snap:
+                                        availability_by_game[g_id] = g_snap
+                                except Exception as exc:
+                                    logger.warning("No se pudo construir availability snapshot para juego", game_id=g_id, error=str(exc))
+
+                    target_variant = "injury_aware" if (sp == "NFL" and availability_by_game) else ("team_only" if sp == "NFL" else "injury_aware")
+                    preds_df, meta = predict_matchups(
+                        sp.lower(), completed, upcoming, as_of=cutoff,
+                        allow_experimental=True,
+                        model_variant=target_variant,
+                        availability_by_game=availability_by_game,
+                        allow_baseline_fallback=True,
+                    )
                     
                     if not meta.get("production_eligible"):
                         logger.warning(f"Model for {sp} is not production eligible. Skipping DB insert.")
+                        results.append({
+                            "sport": sp,
+                            "predicted": len(preds_df) if preds_df is not None else 0,
+                            "model_variant": meta.get("model_variant", target_variant),
+                            "used_injury_adjustment": meta.get("model_variant") == "injury_aware",
+                            "production_eligible": False,
+                            "skipped_db_insert": True,
+                        })
                         continue
                         
                     from app.workers.espn_map import ESPN_NBA_ID_TO_ABBR, ESPN_NFL_ABBR_TO_ABBR
@@ -228,6 +297,8 @@ def evaluate_predictions_task(sport: str = "ALL"):
                         pred_dict = {
                             "game_id": internal_id,
                             "model_version": meta["model_version"],
+                            "model_variant": meta.get("model_variant", target_variant),
+                            "used_injury_adjustment": meta.get("model_variant") == "injury_aware",
                             "dataset_sha256": meta["dataset_sha256"],
                             "artifact_sha256": meta["artifact_sha256"],
                             "inference_input_sha256": str(hash("".join(meta.get("schedule_source_refs", [])))),
@@ -248,7 +319,12 @@ def evaluate_predictions_task(sport: str = "ALL"):
                         
                     await append_predictions(session, predictions_data)
                     await session.commit()
-                    results.append({"sport": sp, "predicted": len(predictions_data)})
+                    results.append({
+                        "sport": sp,
+                        "predicted": len(predictions_data),
+                        "model_variant": meta.get("model_variant", target_variant),
+                        "used_injury_adjustment": meta.get("model_variant") == "injury_aware",
+                    })
                     
                 except Exception as e:
                     logger.error(f"Error predicting {sp}", exc_info=True)
@@ -292,3 +368,170 @@ def ingest_nfl_schedule_task():
         async with AsyncSessionLocal() as db:
             await sync_nfl_games_from_source(db=db)
     asyncio.run(_run())
+
+
+@celery_app.task(name="app.workers.celery_app.capture_nfl_injuries_task", queue="ingestion")
+def capture_nfl_injuries_task(cadence: str = "start_of_day", affected_game_ids: Optional[List[str]] = None):
+    """Captura la lista de lesiones ESPN para NFL y la guarda como snapshot point-in-time."""
+    from app.services.matchup_context_service import fetch_live_injuries_response, get_live_injuries
+    from app.services.nfl_availability_service import NFLAvailabilityService
+
+    logger.info("Executing ESPN NFL injuries capture", cadence=cadence, affected_game_ids=affected_game_ids)
+    resp = fetch_live_injuries_response("NFL")
+    mocked_check = get_live_injuries("NFL")
+    if mocked_check is not resp.get("teams") and mocked_check != resp.get("teams"):
+        raw_data = mocked_check
+        raw_payload = mocked_check
+        captured_at = datetime.now(timezone.utc).isoformat()
+        is_cache = False
+    else:
+        raw_data = resp.get("teams", {})
+        captured_at = resp.get("captured_at_utc") or datetime.now(timezone.utc).isoformat()
+        raw_payload = resp.get("raw_payload") or resp.get("raw_bytes") or raw_data
+        is_cache = resp.get("is_from_cache", False)
+
+    svc = NFLAvailabilityService()
+    snapshot = svc.save_espn_injury_snapshot(
+        raw_teams_data=raw_data or {},
+        cadence=cadence,
+        captured_at_utc=captured_at,
+        raw_payload=raw_payload,
+        metadata={
+            "is_from_cache": is_cache,
+            "known_by_system_at_utc": resp.get("received_at_utc") or captured_at,
+        },
+    )
+
+    # Post-pregame capture evaluation trigger:
+    # Después de la captura prepartido (near_kickoff), programar evaluación para los juegos afectados
+    if cadence in ("near_kickoff", "pre_kickoff"):
+        try:
+            if affected_game_ids:
+                evaluate_predictions_task.apply_async(args=("NFL",), kwargs={"game_ids": affected_game_ids}, queue="ml")
+            else:
+                evaluate_predictions_task.apply_async(args=("NFL",), queue="ml")
+            logger.info("Evaluación de predicciones programada tras captura prepartido", cadence=cadence, affected_game_ids=affected_game_ids)
+        except Exception as exc:
+            logger.warning("No se pudo programar evaluación tras captura prepartido", error=str(exc))
+
+    return {
+        "status": "success",
+        "snapshot_id": snapshot.snapshot_id,
+        "cadence": cadence,
+        "captured_at_utc": snapshot.captured_at_utc,
+        "known_by_system_at_utc": snapshot.known_by_system_at_utc,
+        "payload_sha256": snapshot.payload_sha256,
+        "teams_count": len(snapshot.teams),
+        "omitted_teams_count": len(snapshot.omitted_teams),
+        "is_from_cache": is_cache,
+        "affected_game_ids": affected_game_ids,
+    }
+
+
+@celery_app.task(name="app.workers.celery_app.schedule_nfl_gameday_captures_task", queue="ingestion")
+def schedule_nfl_gameday_captures_task():
+    """
+    Coordina dinámicamente las capturas de lesiones de la jornada según los kickoffs reales
+    de los partidos programados para hoy.
+    - Dispara inmediatamente una captura de inicio operativo de jornada ('start_of_day').
+    - Por cada ventana de kickoff real del día, programa una captura prepartido ('near_kickoff')
+      con apply_async(eta=...) 90 minutos antes del kickoff.
+    - La captura prepartido puede usarse en predicciones realizadas después de su recepción;
+      no queda excluida por un cutoff fijo anterior.
+    - Guarda el as_of real de cada decisión.
+    """
+    import pandas as pd
+    from datetime import timezone as _tz, timedelta as _dt_timedelta
+    from ml.data_pipeline.nfl_source import load_nfl_upcoming_games
+
+    now = pd.Timestamp.now(tz="UTC")
+    today = now.date()
+
+    # --- Captura de inicio operativo: se dispara inmediatamente al ejecutar este orquestador ---
+    try:
+        capture_nfl_injuries_task.apply_async(
+            args=("start_of_day",),
+            queue="ingestion",
+        )
+        logger.info("Captura start_of_day despachada", gameday=today.isoformat())
+    except Exception as exc:
+        logger.warning("No se pudo despachar captura start_of_day", error=str(exc))
+
+    # --- Capturas prepartido coordinadas con kickoffs reales ---
+    try:
+        upcoming = load_nfl_upcoming_games(as_of=now)
+    except Exception as exc:
+        logger.warning("No se pudo cargar el calendario de próximos juegos NFL", error=str(exc))
+        return {"status": "error", "detail": str(exc)}
+
+    if upcoming.empty:
+        logger.info("No hay juegos próximos para programar capturas dinámicas")
+        return {"status": "no_games", "start_of_day_dispatched": True, "scheduled_pregame": 0}
+
+    # Filtrar juegos de hoy
+    todays_games = upcoming[pd.to_datetime(upcoming["game_date"]).dt.date == today]
+    if todays_games.empty:
+        logger.info("No hay juegos NFL hoy para capturas prepartido")
+        return {"status": "no_games_today", "start_of_day_dispatched": True, "scheduled_pregame": 0}
+
+    # Agrupar por hora de kickoff (una captura por ventana única de kickoff)
+    kickoff_times = sorted(todays_games["game_start_utc"].dropna().unique())
+    scheduled_pregame = []
+    for ko_str in kickoff_times:
+        ko_dt = pd.to_datetime(ko_str, utc=True)
+        # Captura prepartido: 90 minutos antes del kickoff (cuando la NFL publica inactivos oficiales)
+        pregame_capture_dt = ko_dt - _dt_timedelta(minutes=90)
+        pregame_capture_py = pregame_capture_dt.to_pydatetime().replace(tzinfo=_tz.utc)
+
+        if pregame_capture_py > now.to_pydatetime().replace(tzinfo=_tz.utc):
+            # Captura futura: programar con ETA real y los juegos afectados de esta ventana
+            window_games = todays_games[todays_games["game_start_utc"] == ko_str]["game_id"].dropna().astype(str).tolist()
+            try:
+                capture_nfl_injuries_task.apply_async(
+                    args=("near_kickoff",),
+                    kwargs={"affected_game_ids": window_games},
+                    eta=pregame_capture_py,
+                    queue="ingestion",
+                )
+                scheduled_pregame.append({
+                    "kickoff_utc": ko_dt.isoformat(),
+                    "capture_eta_utc": pregame_capture_py.isoformat(),
+                    "affected_games": window_games,
+                    "dispatched": True,
+                })
+                logger.info(
+                    "Captura near_kickoff programada",
+                    kickoff_utc=ko_dt.isoformat(),
+                    eta_utc=pregame_capture_py.isoformat(),
+                )
+            except Exception as exc:
+                logger.warning("No se pudo programar captura near_kickoff", kickoff=ko_str, error=str(exc))
+                scheduled_pregame.append({
+                    "kickoff_utc": ko_dt.isoformat(),
+                    "capture_eta_utc": pregame_capture_py.isoformat(),
+                    "dispatched": False,
+                    "error": str(exc),
+                })
+        else:
+            # Ventana pasada: no se programa (kickoff ya ocurrió o captura ya debería haber sido hecha)
+            scheduled_pregame.append({
+                "kickoff_utc": ko_dt.isoformat(),
+                "capture_eta_utc": pregame_capture_py.isoformat(),
+                "dispatched": False,
+                "reason": "pregame_window_already_passed",
+            })
+
+    logger.info(
+        "Capturas de jornada NFL coordinadas con kickoffs reales",
+        gameday=today.isoformat(),
+        games=len(todays_games),
+        pregame_windows=len(scheduled_pregame),
+    )
+    return {
+        "status": "success",
+        "gameday": today.isoformat(),
+        "games_count": len(todays_games),
+        "start_of_day_dispatched": True,
+        "scheduled_pregame": scheduled_pregame,
+    }
+
