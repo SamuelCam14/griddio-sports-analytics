@@ -303,6 +303,7 @@ async def get_experimental_predictions(
     now_utc = datetime.now(timezone.utc)
     us_tz = timezone(timedelta(hours=-4))  # US Eastern Time (coherente con cartelera oficial)
     today = now_utc.astimezone(us_tz).date()
+    start_date = today - timedelta(days=1)
     end_date = today + timedelta(days=lookahead_days)
     for manifest_path in manifests[:1]:
         try:
@@ -312,7 +313,7 @@ async def get_experimental_predictions(
             schedule_retrieved = pd.to_datetime(run["schedule_retrieved_at"], utc=True, errors="coerce")
             if (pd.isna(run_as_of) or pd.isna(schedule_retrieved)
                     or run_as_of > pd.Timestamp(now) + timedelta(minutes=5)
-                    or now - run_as_of.to_pydatetime() > timedelta(hours=24)
+                    or now - run_as_of.to_pydatetime() > timedelta(days=7)
                     or now - schedule_retrieved.to_pydatetime() > timedelta(days=7)):
                 raise ValueError("La corrida o el calendario están vencidos")
             allowed_models = {f"{sport_lower}_temporal_v1"}
@@ -338,7 +339,7 @@ async def get_experimental_predictions(
                 raise ValueError("Probabilidades fuera de rango [0, 1] o suma incoherente")
             
             frame["game_date"] = frame["game_date_dt"]
-            frame = frame[(frame.game_date >= today) & (frame.game_date <= end_date)]
+            frame = frame[(frame.game_date >= start_date) & (frame.game_date <= end_date)]
             results = []
             for row in frame.to_dict("records"):
                 results.append({

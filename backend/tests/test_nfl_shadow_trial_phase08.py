@@ -266,3 +266,36 @@ def test_evaluate_live_kill_criteria_with_ledger(trial_service, tmp_path):
     assert res_breach.kill_triggered is True
     assert res_breach.verdict == "kill_immediately"
 
+
+def test_kill_criteria_unknown_or_subthreshold_sample_does_not_activate_brier(trial_service):
+    """Unknown sample (settled_picks=None) or subthreshold (<30) must NEVER activate Brier comparison."""
+    # Unknown sample (None) with high Brier: must NOT kill
+    res_unknown = trial_service.evaluate_kill_criteria(
+        quota_remaining=275,
+        cumulative_units_pnl=2.0,
+        trailing_brier_score=0.2850,
+        majority_baseline_brier=0.2469,
+        settled_picks=None,
+    )
+    assert res_unknown.kill_triggered is False
+    assert res_unknown.verdict == "continue_shadow_trial"
+
+    # Subthreshold sample (e.g. 15): must NOT kill
+    res_sub = trial_service.evaluate_kill_criteria(
+        quota_remaining=275,
+        cumulative_units_pnl=2.0,
+        trailing_brier_score=0.2850,
+        majority_baseline_brier=0.2469,
+        settled_picks=15,
+    )
+    assert res_sub.kill_triggered is False
+    assert res_sub.verdict == "continue_shadow_trial"
+
+
+def test_trial_summary_empty_status_is_not_started(trial_service):
+    """When no prospective picks have been executed, trial is documented as not_started."""
+    summary = trial_service.compute_trial_summary()
+    assert summary["trial_status"] == "not_started"
+    assert summary["total_picks"] == 0
+
+

@@ -112,8 +112,11 @@ async def test_game_context_endpoint_returns_rams_recent_form_and_h2h():
     from app.services.matchup_context_service import get_matchup_context
 
     await engine.dispose()
-    async with AsyncSessionLocal() as session:
-        data = await get_matchup_context(61, session)
+    try:
+        async with AsyncSessionLocal() as session:
+            data = await get_matchup_context(61, session)
+    finally:
+        await engine.dispose()
 
     assert "h2h" in data
     assert data["h2h"]["total_games"] == 4
@@ -159,8 +162,11 @@ async def test_upcoming_games_endpoint_preserves_scheduled_game_61():
     from app.api.v1.games import get_upcoming_games
 
     await engine.dispose()
-    async with AsyncSessionLocal() as session:
-        data = await get_upcoming_games(days=14, sport="NFL", db=session)
+    try:
+        async with AsyncSessionLocal() as session:
+            data = await get_upcoming_games(days=14, sport="NFL", db=session)
+    finally:
+        await engine.dispose()
 
     assert data["total"] >= 15
     game_ids = [g["id"] for g in data["games"]]

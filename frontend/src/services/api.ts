@@ -40,20 +40,41 @@ export interface Game {
   team_stats: { home: TeamStats; away: TeamStats }
 }
 
+export interface MarketProvenanceInfo {
+  bookmaker: string | null
+  observed_at: string | null
+  captured_at: string | null
+}
+
 export interface OddsData {
   external_id: string
   home_team: string
   away_team: string
   commence_time: string
   best_bookmaker: string | null
+  spread_bookmaker?: string | null
+  total_bookmaker?: string | null
+  h2h_bookmaker?: string | null
+  h2h_observed_at?: string | null
+  spread_observed_at?: string | null
+  total_observed_at?: string | null
   home_ml: number | null
   away_ml: number | null
   home_spread: number | null
+  home_spread_ml?: number | null
+  away_spread?: number | null
+  away_spread_ml?: number | null
   total_line: number | null
   over_ml?: number | null
   under_ml?: number | null
   home_implied_prob: number | null
   away_implied_prob: number | null
+  captured_at?: string | null
+  markets_provenance?: {
+    moneyline?: MarketProvenanceInfo
+    spread?: MarketProvenanceInfo
+    total?: MarketProvenanceInfo
+  }
 }
 
 export interface EVResult {
@@ -457,34 +478,45 @@ export const evApi = {
     api.post<MonteCarloResult>('/ev/montecarlo', { prob, odds_decimal: oddsDecimal, ...options }),
 }
 
-// ─── Parlay Builder ─────────────────────────────────────────────────────────
-
 export interface RecommendedParlay {
-  type: string
+  type?: string
   viable: boolean
   razon: string
   n_legs: number
-  prob_combinada: number
-  momio_decimal: number
-  momio_americano: number
-  ev_dolares: number
-  kelly_fraccion: number
-  kelly_monto: number
+  prob_combinada?: number | null
+  momio_decimal?: number | null
+  momio_americano?: number | null
+  ev_dolares?: number | null
+  kelly_fraccion?: number | null
+  kelly_monto?: number | null
+  confidence_level?: string | null
+  has_sufficient_model_data?: boolean
+  has_correlated_legs?: boolean
+  is_manual_calculation?: boolean
   legs_evaluadas: Array<{
     team_name: string
-    prob_model: number
-    odds_american: number
-    odds_decimal: number
-    edge_pct: number
-    has_individual_edge: boolean
-    tier: string
+    market?: string
+    prob_model?: number | null
+    odds_american?: number | null
+    odds_decimal?: number | null
+    edge_pct?: number | null
+    has_individual_edge?: boolean
+    tier?: string
+    bookmaker?: string | null
+    observed_at?: string | null
+    missing_reason?: string | null
+    source?: string
   }>
 }
 
 export interface CustomLegPayload {
-  team_name: string
-  prob_model: number
-  odds_american: number
+  game_id?: string
+  side?: string
+  market?: string
+  team_name?: string
+  prob_model?: number | null
+  odds_american?: number | null
+  source?: string
 }
 
 export const parlayApi = {

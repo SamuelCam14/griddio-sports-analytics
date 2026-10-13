@@ -14,6 +14,7 @@ from app.core.database import get_db
 from app.services.parlay_service import (
     evaluate_custom_parlay,
     generate_recommended_parlays,
+    resolve_and_evaluate_parlay,
 )
 from app.api.v1.predictions import _production_model_enabled
 
@@ -21,9 +22,13 @@ router = APIRouter()
 
 
 class CustomLeg(BaseModel):
-    team_name: str = Field(..., description="Nombre del equipo o evento seleccionado")
-    prob_model: float = Field(..., ge=0.05, le=0.99, description="Probabilidad estimada por el modelo (0 a 1)")
-    odds_american: int = Field(..., description="Momio americano de la casa de apuestas (ej. -130)")
+    game_id: Optional[str] = Field(default=None, description="Identificador de evento / partido")
+    side: Optional[str] = Field(default=None, description="Lado de la selección: home, away, over, under")
+    market: Optional[str] = Field(default="h2h", description="Mercado: h2h (moneyline), spreads, totals")
+    team_name: Optional[str] = Field(default=None, description="Nombre descriptivo del equipo o selección")
+    prob_model: Optional[float] = Field(default=None, description="Probabilidad manual (solo calculadora manual)")
+    odds_american: Optional[int] = Field(default=None, description="Momio americano (opcional si se resuelve del backend)")
+    source: Optional[str] = Field(default="real", description="'real' para selecciones del sistema, 'manual' para calculadora")
 
 
 class EvaluateParlayRequest(BaseModel):
@@ -81,19 +86,24 @@ async def get_recommended_parlays(
     }
 
 
-@router.post("/evaluate", summary="Evaluar un parlay personalizado en tiempo real")
-async def evaluate_parlay(req: EvaluateParlayRequest):
+@router.post("/evaluate", summary="Evaluar un parlay personalizado en tiempo real (Backend SSOT)")
+async def evaluate_parlay(
+    req: EvaluateParlayRequest,
+    db: AsyncSession = Depends(get_db),
+):
     """
-    Recibe entre 2 y 6 patas personalizadas y calcula:
+    Backend SSOT: Recibe entre 2 y 6 patas (identificadores reales o entradas manuales),
+    resuelve probabilidades y cuotas observadas en DB, valida procedencia y calcula:
     - Probabilidad conjunta independiente
     - Cuota decimal y americana combinada
-    - Valor Esperado (Expected Value)
+    - Valor Esperado (Expected Value) — nulo si faltan datos de modelo (p. ej. totales)
     - Monto sugerido por Criterio de Kelly fraccional
-    - Diagnóstico de viabilidad matemática
+    - Diagnóstico de viabilidad y rechazo de eventos correlacionados
     """
     legs_dicts = [leg.model_dump() for leg in req.legs]
-    result = evaluate_custom_parlay(
+    result = await resolve_and_evaluate_parlay(
         legs=legs_dicts,
+        db=db,
         bankroll=req.bankroll,
         kelly_fraction=req.kelly_fraction,
     )

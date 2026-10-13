@@ -266,3 +266,215 @@ def test_evaluate_custom_parlay_insufficient_legs():
     assert res["viable"] is False
     assert res["n_legs"] == 1
     assert "al menos 2 eventos" in res["razon"].lower()
+
+
+def test_evaluate_custom_parlay_rejects_correlated_same_event_legs():
+    """Combining sides/markets of the same event as independent legs must be rejected."""
+    # Two legs from game 61 (Moneyline and Total Over)
+    res = evaluate_custom_parlay(legs=[
+        {"game_id": "61", "event_id": "game_61", "team_name": "Buffalo Bills", "prob_model": 0.57, "odds_american": 145},
+        {"game_id": "61", "event_id": "game_61", "team_name": "OVER 54.5", "prob_model": 0.52, "odds_american": -110},
+    ])
+    assert res["viable"] is False
+    assert res["has_correlated_legs"] is True
+    assert res["ev_dolares"] is None
+    assert "mismo evento" in res["razon"].lower()
+
+
+def test_evaluate_custom_parlay_totals_lacks_model_prob_and_omits_ev():
+    """Totals Over/Under lack corresponding model probabilities; EV must NOT be calculated."""
+    res = evaluate_custom_parlay(legs=[
+        {"game_id": "61", "event_id": "game_61", "team_name": "Buffalo Bills", "prob_model": 0.57, "odds_american": 145},
+        {"game_id": "62", "event_id": "game_62", "team_name": "OVER 48.5", "market": "totals", "prob_model": None, "odds_american": -110},
+    ])
+    assert res["viable"] is False
+    assert res["has_sufficient_model_data"] is False
+    assert res["ev_dolares"] is None
+    assert res["prob_combinada"] is None
+    assert "datos insuficientes" in res["razon"].lower() or "totales" in res["razon"].lower()
+
+
+def test_evaluate_custom_parlay_manual_calculator_is_clearly_segregated():
+    """Manual inputs are clearly tagged as manual calculator, not presented as model picks."""
+    res = evaluate_custom_parlay(legs=[
+        {"team_name": "Chiefs ML", "prob_model": 0.65, "odds_american": -120, "source": "manual"},
+        {"team_name": "Eagles ML", "prob_model": 0.62, "odds_american": -110, "source": "manual"},
+    ])
+    assert res["is_manual_calculation"] is True
+    assert "calculadora manual" in res["razon"].lower()
+    assert "no constituyen picks del modelo" in res["razon"].lower()
+
+
+def test_team_normalization_and_unambiguous_matching_without_hardcoded_exception():
+    """Normalize team aliases and reject ambiguous multi-matches without hardcoded LA/BUF exceptions."""
+    import pandas as pd
+    from app.services.parlay_service import normalize_nfl_team, match_game_in_predictions
+    from datetime import datetime
+
+    # Verify normalization across abbreviations and full names
+    assert normalize_nfl_team("Los Angeles Rams") == "LAR"
+    assert normalize_nfl_team("LA") == "LAR"
+    assert normalize_nfl_team("LAR") == "LAR"
+    assert normalize_nfl_team("Los Angeles Chargers") == "LAC"
+    assert normalize_nfl_team("LAC") == "LAC"
+    assert normalize_nfl_team("Buffalo Bills") == "BUF"
+    assert normalize_nfl_team("BUF") == "BUF"
+
+    # Synthetic test fixture: unambiguous 1 match
+    df_single = pd.DataFrame([
+        {
+            "game_id": "2026_05_BUF_LA",
+            "home_team_name": "Los Angeles Rams",
+            "away_team_name": "Buffalo Bills",
+            "game_date": "2026-10-12",
+            "home_win_probability": 0.4283,
+            "away_win_probability": 0.5717,
+        }
+    ])
+    matched = match_game_in_predictions("Los Angeles Rams", "Buffalo Bills", datetime(2026, 10, 13), df_single)
+    assert matched is not None
+    assert matched["game_id"] == "2026_05_BUF_LA"
+
+    # Synthetic test fixture: ambiguous 2 matches -> must reject
+    df_ambiguous = pd.DataFrame([
+        {
+            "game_id": "2026_05_BUF_LA_1",
+            "home_team_name": "Los Angeles Rams",
+            "away_team_name": "Buffalo Bills",
+            "game_date": "2026-10-12",
+        },
+        {
+            "game_id": "2026_05_BUF_LA_2",
+            "home_team_name": "Los Angeles Rams",
+            "away_team_name": "Buffalo Bills",
+            "game_date": "2026-10-12",
+        },
+    ])
+    matched_ambiguous = match_game_in_predictions("Los Angeles Rams", "Buffalo Bills", datetime(2026, 10, 13), df_ambiguous)
+    assert matched_ambiguous is None  # Ambiguous match strictly rejected
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_evaluate_parlay_db_resolution():
+    """Verify backend SSOT resolves real game 61 odds and flags correlated same-game legs."""
+    from app.core.database import AsyncSessionLocal, engine
+    from app.services.parlay_service import resolve_and_evaluate_parlay
+
+    await engine.dispose()
+    try:
+        async with AsyncSessionLocal() as session:
+            # Same event: game 61 moneyline + game 61 totals
+            res = await resolve_and_evaluate_parlay(
+                legs=[
+                    {"game_id": "61", "side": "away", "market": "h2h"},
+                    {"game_id": "61", "side": "over", "market": "totals"},
+                ],
+                db=session,
+            )
+    finally:
+        await engine.dispose()
+
+    assert res["viable"] is False
+    assert res["has_correlated_legs"] is True
+    assert res["ev_dolares"] is None
+
+
+def test_all_32_nfl_teams_normalize_unambiguously_without_collisions():
+    """Verify all 32 NFL teams normalize to unique canonical codes with zero substring collisions."""
+    from app.services.parlay_service import normalize_nfl_team
+
+    expected_32 = [
+        ("ARI", "Arizona Cardinals"), ("ATL", "Atlanta Falcons"), ("BAL", "Baltimore Ravens"),
+        ("BUF", "Buffalo Bills"), ("CAR", "Carolina Panthers"), ("CHI", "Chicago Bears"),
+        ("CIN", "Cincinnati Bengals"), ("CLE", "Cleveland Browns"), ("DAL", "Dallas Cowboys"),
+        ("DEN", "Denver Broncos"), ("DET", "Detroit Lions"), ("GB", "Green Bay Packers"),
+        ("HOU", "Houston Texans"), ("IND", "Indianapolis Colts"), ("JAX", "Jacksonville Jaguars"),
+        ("KC", "Kansas City Chiefs"), ("LV", "Las Vegas Raiders"), ("LAC", "Los Angeles Chargers"),
+        ("LAR", "Los Angeles Rams"), ("MIA", "Miami Dolphins"), ("MIN", "Minnesota Vikings"),
+        ("NE", "New England Patriots"), ("NO", "New Orleans Saints"), ("NYG", "New York Giants"),
+        ("NYJ", "New York Jets"), ("PHI", "Philadelphia Eagles"), ("PIT", "Pittsburgh Steelers"),
+        ("SF", "San Francisco 49ers"), ("SEA", "Seattle Seahawks"), ("TB", "Tampa Bay Buccaneers"),
+        ("TEN", "Tennessee Titans"), ("WAS", "Washington Commanders"),
+    ]
+
+    for code, full_name in expected_32:
+        assert normalize_nfl_team(full_name) == code, f"{full_name} failed to normalize to {code}"
+        assert normalize_nfl_team(code) == code, f"{code} abbreviation failed to normalize"
+
+    # Specific collision regression checks:
+    # 1. New Orleans Saints must NOT match NE
+    assert normalize_nfl_team("New Orleans Saints") == "NO"
+    # 2. New York Giants and Jets must NOT match NE
+    assert normalize_nfl_team("New York Giants") == "NYG"
+    assert normalize_nfl_team("New York Jets") == "NYJ"
+    # 3. Kansas City Chiefs must NOT match CHI
+    assert normalize_nfl_team("Kansas City Chiefs") == "KC"
+    # 4. Philadelphia Eagles must NOT match LAR
+    assert normalize_nfl_team("Philadelphia Eagles") == "PHI"
+    # 5. Tampa Bay Buccaneers must NOT match NE
+    assert normalize_nfl_team("Tampa Bay Buccaneers") == "TB"
+    # 6. Tennessee Titans must NOT match NE
+    assert normalize_nfl_team("Tennessee Titans") == "TEN"
+
+
+def test_match_game_in_predictions_accepts_iso_string_date():
+    """Verify match_game_in_predictions handles string ISO target_date without TypeError."""
+    import pandas as pd
+    from app.services.parlay_service import match_game_in_predictions
+
+    df = pd.DataFrame([
+        {
+            "game_id": "2026_05_BUF_LA",
+            "home_team_name": "Los Angeles Rams",
+            "away_team_name": "Buffalo Bills",
+            "game_date": "2026-10-12",
+            "home_win_probability": 0.4283,
+            "away_win_probability": 0.5717,
+        }
+    ])
+    # Target date passed as string "2026-10-12"
+    matched = match_game_in_predictions("Los Angeles Rams", "Buffalo Bills", "2026-10-12", df)
+    assert matched is not None
+    assert matched["game_id"] == "2026_05_BUF_LA"
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_evaluate_parlay_omits_ev_and_rejects_client_odds_when_snapshot_missing():
+    """Verify backend SSOT ignores client-provided odds for real legs if DB lacks snapshot, omitting EV."""
+    from app.core.database import AsyncSessionLocal, engine
+    from app.services.parlay_service import resolve_and_evaluate_parlay
+
+    await engine.dispose()
+    try:
+        async with AsyncSessionLocal() as session:
+            # Game 999999 does not exist in odds_snapshots, but client tries to supply odds_american: +500
+            res = await resolve_and_evaluate_parlay(
+                legs=[
+                    {"game_id": "999999", "side": "home", "market": "h2h", "odds_american": 500, "source": "real"},
+                    {"game_id": "61", "side": "away", "market": "h2h", "source": "real"},
+                ],
+                db=session,
+            )
+    finally:
+        await engine.dispose()
+
+    # The unobserved leg must have odds_american: None, causing all_odds_present: False and ev_dolares: None
+    assert res["viable"] is False
+    assert res["ev_dolares"] is None
+    evaluated_999999 = [l for l in res["legs_evaluadas"] if "999999" in str(l.get("game_id", "")) or "999999" in str(l.get("team_name", ""))]
+    if evaluated_999999:
+        assert evaluated_999999[0]["odds_american"] is None
+
+
+def test_evaluate_custom_parlay_rejects_correlated_legs_from_matchup_pair():
+    """Verify evaluate_custom_parlay detects correlated legs sharing the same game matchup pair."""
+    from app.services.parlay_service import evaluate_custom_parlay
+
+    res = evaluate_custom_parlay(legs=[
+        {"team_name": "Buffalo Bills", "matchup": "Bills @ Rams", "prob_model": 0.57, "odds_american": 145},
+        {"team_name": "Los Angeles Rams", "matchup": "Bills @ Rams", "prob_model": 0.43, "odds_american": -165},
+    ])
+    assert res["viable"] is False
+    assert res["has_correlated_legs"] is True
+    assert res["ev_dolares"] is None
+

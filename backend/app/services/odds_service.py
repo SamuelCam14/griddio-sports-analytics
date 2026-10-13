@@ -206,6 +206,27 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
                 "best_bookmaker": latest_h2h.bookmaker if latest_h2h else latest_any.bookmaker,
                 "spread_bookmaker": latest_spread.bookmaker if latest_spread else None,
                 "total_bookmaker": latest_total.bookmaker if latest_total else None,
+                "h2h_bookmaker": latest_h2h.bookmaker if latest_h2h else None,
+                "h2h_observed_at": latest_h2h.observed_at.isoformat() if latest_h2h and latest_h2h.observed_at else None,
+                "spread_observed_at": latest_spread.observed_at.isoformat() if latest_spread and latest_spread.observed_at else None,
+                "total_observed_at": latest_total.observed_at.isoformat() if latest_total and latest_total.observed_at else None,
+                "markets_provenance": {
+                    "moneyline": {
+                        "bookmaker": latest_h2h.bookmaker if latest_h2h else None,
+                        "observed_at": latest_h2h.observed_at.isoformat() if latest_h2h and latest_h2h.observed_at else None,
+                        "captured_at": latest_h2h.captured_at.isoformat() if latest_h2h and latest_h2h.captured_at else None,
+                    },
+                    "spread": {
+                        "bookmaker": latest_spread.bookmaker if latest_spread else None,
+                        "observed_at": latest_spread.observed_at.isoformat() if latest_spread and latest_spread.observed_at else None,
+                        "captured_at": latest_spread.captured_at.isoformat() if latest_spread and latest_spread.captured_at else None,
+                    },
+                    "total": {
+                        "bookmaker": latest_total.bookmaker if latest_total else None,
+                        "observed_at": latest_total.observed_at.isoformat() if latest_total and latest_total.observed_at else None,
+                        "captured_at": latest_total.captured_at.isoformat() if latest_total and latest_total.captured_at else None,
+                    },
+                },
                 "home_ml": latest_h2h.home_ml if latest_h2h else None,
                 "away_ml": latest_h2h.away_ml if latest_h2h else None,
                 "home_spread": latest_spread.home_spread if latest_spread else None,
@@ -217,7 +238,7 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
                 "under_ml": latest_total.under_ml if latest_total else None,
                 "home_implied_prob": latest_h2h.home_implied_prob if latest_h2h else None,
                 "away_implied_prob": latest_h2h.away_implied_prob if latest_h2h else None,
-                "captured_at": latest_any.captured_at.isoformat() if latest_any.captured_at else None,
+                "captured_at": latest_any.captured_at.isoformat() if latest_any and latest_any.captured_at else None,
                 "is_cached_snapshot": True,
             })
         logger.info("Retrieved odds from database fallback", sport=sport, total=len(result))

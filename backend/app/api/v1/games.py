@@ -57,7 +57,7 @@ async def get_upcoming_games(
 ):
     """Obtiene partidos de los próximos N días."""
     now = datetime.now(timezone.utc)
-    start = now - timedelta(hours=6)
+    start = now - timedelta(hours=24)
     end = now + timedelta(days=days)
 
     stmt = (

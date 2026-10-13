@@ -179,6 +179,7 @@ class NFLShadowTrialService:
         trailing_brier = (sum(brier_scores) / len(brier_scores)) if brier_scores else None
 
         return {
+            "trial_status": "not_started" if total_picks == 0 else "active",
             "total_picks": total_picks,
             "settled_picks": len(settled_entries),
             "pending_picks": pending_picks,
@@ -253,14 +254,17 @@ class NFLShadowTrialService:
             reasons.append(f"drawdown_{abs(cumulative_units_pnl):.1f}u_exceeds_max_limit_{self.MAX_LOSS_LIMIT_UNITS}u")
 
         # Brier drift kill evaluation:
-        # Require minimum settled sample size to prevent premature termination on minuscule sample noise.
+        # Require sample size to be KNOWN and meet or exceed the minimum operational threshold (>= 30).
+        # An unknown sample (settled_picks is None) or a sample below the threshold (< 30)
+        # MUST NOT activate this comparison.
+        # NOTE on populations: selective EV+ picks represent a distinct conditional subpopulation
+        # from unselected league-wide games; evaluating selected picks against an unselected all-games
+        # baseline treats them as the same population, which is statistically unsound. The threshold
+        # of 30 is purely an operational checkpoint milestone, not statistically sufficient proof on its own.
         min_sample = min_settled_picks_for_brier if min_settled_picks_for_brier is not None else self.MIN_SETTLED_PICKS_FOR_BRIER
-        if trailing_brier_score is not None:
-            if settled_picks is not None and settled_picks < min_sample:
-                # Sample size too small (< 30 settled picks); do not trigger noise-driven kill
-                pass
-            elif trailing_brier_score > majority_baseline_brier:
-                reasons.append(f"model_drift_brier_{trailing_brier_score:.4f}_worse_than_majority_{majority_baseline_brier:.4f}")
+        if trailing_brier_score is not None and settled_picks is not None and settled_picks >= min_sample:
+            if trailing_brier_score > majority_baseline_brier:
+                reasons.append(f"model_drift_brier_{trailing_brier_score:.4f}_worse_than_baseline_{majority_baseline_brier:.4f}")
 
         if reasons:
             return TrialKillCheckResult(
