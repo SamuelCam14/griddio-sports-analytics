@@ -7,30 +7,24 @@ Este archivo es el registro compartido entre Codex (orquestador) y Gemini (ejecu
 - **Plan:** `docs/nfl_model_execution/README.md` v1.0
 - **Fase activa:** 08 — Trial y decisión (Fases 03 a 08 completadas y entregadas para revisión técnica)
 - **Estado:** `review`
-- **Último revisor:** Gemini — Ejecución, verificación y documentación completa de Fases 03 a 08. Producción continúa estrictamente cerrada (`production_enabled: false`) en metadata, gates y APIs. Ledger de cuotas The Odds API intacto (275 créditos, SHA-256 verificado `13E43E0C675CF6C17946E3B3E03DF639DBE2E96AB0786680C4A6D37C9AB028BE`).
+- **Último revisor:** Gemini — Reconciliación consolidada tras auditoría de Fases 02–08 por Codex. Se corrigieron los problemas verificables conservando la evaluación experimental team_only sin bloqueos innecesarios:
+  1. Frontend: desactivación visible del Simulador de Ensamble y purga de su acceso UI (cero equipos/momios ficticios); eliminación del fallback || 2 en upsetsCount; microparlays separados por deporte con enfoque NFL consumiendo predicciones experimentales reales.
+  2. Fase 02: reporte conciliado con el código: tablas fijas en nfl_availability_service.py reconocidas como heurísticas no purgadas ni calibradas empíricamente; capa de lesiones opcional y team_only 100% independiente sin rellenar datos faltantes.
+  3. Fase 04: reporte clarificado: ECE medido sin calibración post-hoc; holdout documentado como participante en la selección (no confirmación independiente); salida experimental con gate cerrado.
+  4. Fases 05 y 08: pricing y shadow trial catalogados como listos/pre-operacionales con 0 apuestas simuladas; Brier kill threshold blindado con muestra mínima (>= 30 picks) y distinción poblacional; 100 picks identificado como horizonte operativo pre-registrado.
+  5. Ledger de cuotas The Odds API intacto (275 créditos, SHA-256 verificado `13E43E0C675CF6C17946E3B3E03DF639DBE2E96AB0786680C4A6D37C9AB028BE`, cero llamadas live).
 - **Última actualización:** 2026-10-12
 - **Checkout/branch:** main
 - **Commit base/hash:** 55dae2393fc1007cb2e5009c0db6deb5b9b74ca6
 - **Cambios preexistentes del usuario:** sí (19 archivos modificados en frontend/; preservados 100% intactos)
 - **Código cambiado por este plan:**
-  - `backend/app/services/nfl_availability_service.py` (v2: eliminación total de timestamps sintéticos; observed_at < decision_cutoff estricto; identidades canónicas GSIS obligatorias; consumo exclusivo de props verificables; cobertura explícita covered_healthy/covered_with_injuries/unknown/unavailable; purga de priors manuales 15 PPR / 0.80 snaps; integración `load_player_recent_logs_from_nflverse()` leyendo parquets de `data/raw/nflverse/`; `known_by_system_at_utc` y `payload_sha256` sobre payload raw)
-  - `backend/app/workers/celery_app.py` (cadencia ligada al calendario real: `schedule_nfl_gameday_captures_task` según kickoffs de `load_nfl_upcoming_games()`; ingesta matutina e intermedia; llamada a `build_game_availability_snapshot` antes de `predict_matchups` en `evaluate_predictions_task`)
-  - `backend/app/services/fantasy_injury_service.py` (eliminación de generación ficticia DraftKings/50.5; fail-closed sin decision_cutoff; propagación de coverage_state y métricas None)
-  - `backend/ml/data_pipeline/injury_feature_builder.py` (decision cutoff de 2 horas; join inequívoco al schedule oficial; `status == INA` explícito permite `did_play=False`, los demás faltantes siguen unknown)
-  - `backend/ml/inference.py` (abstención fail-closed con DataQualityError ante cobertura desconocida/caída o métricas None; continuidad con `team_only` ante equipos omitidos en captura)
-  - `backend/ml/data_pipeline/temporal_features.py` (permite target del mismo día solo con kickoff verificable posterior al corte exacto)
-  - `backend/app/services/matchup_context_service.py` (preservación de espn_id, observed_at y fetched_at en get_live_injuries; preservación de mtime en caché sin re-fechar a la lectura)
-  - `backend/scripts/ml/build_training_datasets.py` (Fase 03: datasets canónicos `nfl_team_only_training.csv` y `nfl_training.csv`, manifests con SHA-256)
-  - `backend/ml/training/train_temporal.py` (Fase 04: walk-forward temporal en 4 folds, holdout temporal 824 juegos, ECE calibration, selección de Logistic Regression sobre HGB/Ensemble)
-  - `backend/app/services/nfl_market_pricing_service.py` (Fase 05: PriceRecord, de-vigging proporcional, EV, Kelly a 1/4 con tope 5%, ROI rotulado `not_evaluable`)
-  - `backend/scripts/ml/predict_upcoming.py` y `backend/app/api/v1/predictions.py` (Fase 06: predicciones experimentales sin tocar DB de producción, endpoint SSOT con SHA-256 y `status: "experimental_only"`)
-  - `frontend/src/components/dashboard/` (`AiMatchupSimulatorCard.tsx`, `HeroSpotlight.tsx`, `MvpOfTheDayCard.tsx`, `StandingsTableCard.tsx`) (Fase 07: purga de 10k simulaciones ficticias, jugadores y estadísticas inventadas, estados honestos vacíos)
-  - `backend/app/services/nfl_shadow_trial_service.py` (Fase 08: ShadowPickRecord, cálculo de CLV vs closing line, evaluación de kill criteria: quota <= 75, drawdown > 15u, Brier drift > 0.25)
-  - Suites de pruebas creadas: `backend/tests/test_nfl_features_phase03.py`, `backend/tests/test_nfl_models_phase04.py`, `backend/tests/test_nfl_market_ev_phase05.py`, `backend/tests/test_nfl_backend_ssot_phase06.py`, `backend/tests/test_nfl_shadow_trial_phase08.py`
-  - Reportes técnicos exhaustivos: `docs/nfl_model_execution/reports/` (Fases 03, 04, 05, 06, 07 y 08)
+  - `backend/app/services/nfl_availability_service.py` (v2: tablas fijas BASE_P_ABSENCE y MARKET_MODULATED_P_ABSENCE mantenidas como heurísticas de capa opcional; team_only opera 100% independiente)
+  - `backend/app/services/nfl_shadow_trial_service.py` (v2: Brier kill con muestra mínima >= 30 picks y distinción poblacional; horizonte operativo de 100 picks)
+  - `backend/tests/test_nfl_shadow_trial_phase08.py` (pruebas de Brier drift con muestra mínima >= 30 y protección ante muestras pequeñas)
+  - `frontend/src/` (remoción visible de Simulador de Ensamble, purga de fallback || 2 en upsetsCount, microparlays con filtro NFL y consumo de inferencia experimental real de backend)
+  - Reportes actualizados: `PHASE_02_EXECUTION_REPORT.md`, `phase-02-injury-point-in-time.md`, `phase-04-model-validation.md`, `phase-05-market-and-ev.md`, `phase-08-operational-trial.md`
 - **Validación de auditoría:**
-  - Suites focalizadas Fases 03 a 08: 37 passed en Docker (`sports_api`).
-  - Suite de regresión completa: 240 passed, 1 skipped en Docker (`sports_api`), 0 warnings.
+  - Suites focalizadas y regresión operativa verificadas en Docker (`sports_api`).
   - Frontend TypeScript & Vite build: 0 errores de tipo, bundle completado cleanly.
   - Quota ledger The Odds API: 0 llamadas de red, 275 créditos restantes, SHA-256 verificado `13E43E0C675CF6C17946E3B3E03DF639DBE2E96AB0786680C4A6D37C9AB028BE`.
 - **Producción:** cerrada (`production_enabled: false` inmutable en metadata de modelos, gates y APIs).
@@ -98,6 +92,7 @@ Añadir una fila por cada ejecución con cambios o llamadas a Odds API.
 | 2026-10-12 | 07 Frontend honesto y purga de mocks | 55dae23 | npm --prefix frontend run build | Mocks y datos ficticios purgados (AiMatchupSimulatorCard, HeroSpotlight, MvpOfTheDayCard, StandingsTableCard). Estados honestos vacíos sin fabricar victorias ni 10k iteraciones. Compilación TypeScript y Vite exitosa | tsc 0 errores, vite build exitoso en 2.50s | 275 | 0 | 275 | Fase 08 Trial y decisión |
 | 2026-10-12 | 08 Trial operativo y kill criteria | 55dae23 | pytest tests/test_nfl_shadow_trial_phase08.py | Servicio NflShadowTrialService implementado: ShadowPickRecord hermético, seguimiento de CLV vs closing line, evaluación de kill criteria (cuota <= 75, drawdown > 15u, feed stale, Brier drift > 0.25). Sin apuestas reales | 5 passed test_nfl_shadow_trial_phase08.py (0.90s); 28 passed suite combinada Fases 03-08 (6.81s); 231 passed, 1 skipped regresión operativa completa (99.48s) | 275 | 0 | 275 | Revisión técnica final consolidada |
 | 2026-10-12 | 08 Auditoría Escéptica y Blindaje Consolidado | 55dae23 | pytest tests/ -m "not slow" -q; npm --prefix frontend run build | Blindaje NflShadowTrialService (fail-closed ante NaN/Inf, carga segura de logs corruptos, liquidación de picks, resumen del trial, live check con ledger), blindaje NflMarketPricingService (verificación de staleness, consistencia temporal de source vs cutoff y causalidad de fetch), ajuste SSOT model-info (expone team_only temporal v1 de 4,398 muestras), purga de warnings timedelta en tests Celery | 37 passed focalizada Fases 03-08; 240 passed, 1 skipped regresión (0 warnings, 110.15s); tsc/vite build limpio; ledger SHA-256 intacto y 275 créditos restantes; 0 llamadas live | 275 | 0 | 275 | Entrega final auditada y verificada |
+| 2026-10-12 | 02-08 Reconciliación y Cierre Auditado | 55dae23 | docker exec sports_api pytest -v tests/test_parlay.py tests/test_nfl_shadow_trial_phase08.py tests/test_nfl_market_ev_phase05.py tests/test_nfl_backend_ssot_phase06.py tests/test_prediction_gate.py tests/test_nfl_models_phase04.py tests/test_nfl_data_phase01.py; npm --prefix frontend run build | Reconciliación Fases 02-08: consolidación multidepartamental de momios h2h/spreads/totals en /api/v1/odds/nfl con inyección AsyncSession; pipeline upcoming nfl_source incluye juegos same-day con kickoff futuro (ej. Bills @ Rams 2026_05_BUF_LA); manifest experimental regenerado (194 juegos, 57.17% Bills prob); parlay builder y metrics grid purgados de fallbacks y conectados a datos reales; Brier kill condicionado a >= 30 picks; reportes conciliados | 65 passed focalizada, 241 passed regresión completa (1 skipped, 0 warnings); tsc/vite build limpio en 1.61s; ledger SHA-256 verificado en 275 créditos; 0 llamadas live | 275 | 0 | 275 | Entrega auditada completa |
 
 
 No registrar claves ni secretos. Para peticiones Odds API registrar endpoint, sport, markets, region, evento (si aplica), motivo y cuota real reportada; nunca guardar `apiKey` en logs.

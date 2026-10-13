@@ -51,8 +51,11 @@ Ejecución de `backend/scripts/ml/audit_nfl_availability.py` con corte de decisi
 | **None / Active** | 12,302 | 11,363 | **92.37%** | **7.63%** | **0.0761** |
 | **Global Descriptivo** | 23,068 | 15,438 | — | — | **0.1321** |
 
-> [!NOTE] Deslinde Explícito de Calibración
-> Conforme al hallazgo P1 de Codex, se retira toda afirmación de que el Brier score de 0.1321 constituya prueba de calibración de un modelo ML. Este resultado se registra formalmente en `data/nfl_availability_audit.json` como `descriptive_empirical_baseline_brier`, con el campo `claims_calibration: false`. La calibración de un modelo probabilístico queda formalmente diferida a una etapa de entrenamiento con validación out-of-fold y partición cronológica.
+> [!NOTE] Deslinde Explícito de Calibración y Estado de Tablas Fijas de Ausencia
+> Conforme al hallazgo P1 de Codex y la auditoría consolidada:
+> 1. Se retira toda afirmación de que el Brier score de 0.1321 constituya prueba de calibración de un modelo ML. Este resultado se registra formalmente en `data/nfl_availability_audit.json` como `descriptive_empirical_baseline_brier`, con el campo `claims_calibration: false`. La calibración de un modelo probabilístico queda formalmente diferida a una etapa de entrenamiento con validación out-of-fold y partición cronológica.
+> 2. `nfl_availability_service.py` todavía define y utiliza tablas fijas de referencia (`BASE_P_ABSENCE`, `MARKET_MODULATED_P_ABSENCE`) para probabilidades de ausencia. Estos valores NO se describen como purgados ni como calibración empírica validada; operan como priors heurísticos de mapeo.
+> 3. La capa de lesiones/disponibilidad se mantiene estrictamente como una capa opcional/experimental, permitiendo que la evaluación y producción experimental `team_only` opere de forma 100% independiente, sin inventar datos ni rellenar faltantes sintéticamente.
 
 ### Desglose Auditado de Causas de 'Unknown' / Falta de Cobertura
 | Causa | Conteo | Tasa (%) | Comportamiento Fail-Closed |

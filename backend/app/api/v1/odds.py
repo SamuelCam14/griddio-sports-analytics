@@ -16,18 +16,18 @@ router = APIRouter()
 
 
 @router.get("/nba", summary="Momios actuales NBA")
-async def get_nba_odds():
+async def get_nba_odds(db: AsyncSession = Depends(get_db)):
     try:
-        data = await fetch_odds_from_db(sport="NBA")
+        data = await fetch_odds_from_db(sport="NBA", session=db)
     except Exception as e:
         data = []
     return {"sport": "NBA", "total_games": len(data), "games": data}
 
 
 @router.get("/nfl", summary="Momios actuales NFL")
-async def get_nfl_odds():
+async def get_nfl_odds(db: AsyncSession = Depends(get_db)):
     try:
-        data = await fetch_odds_from_db(sport="NFL")
+        data = await fetch_odds_from_db(sport="NFL", session=db)
     except Exception as e:
         data = []
     return {"sport": "NFL", "total_games": len(data), "games": data}

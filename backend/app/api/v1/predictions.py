@@ -300,7 +300,9 @@ async def get_experimental_predictions(
     manifests = sorted(output_root.glob(f"{sport_lower}_predictions_*.manifest.json"), reverse=True)
     if not manifests:
         raise HTTPException(status_code=404, detail="No existe una corrida experimental de inferencia")
-    today = datetime.now(timezone.utc).date()
+    now_utc = datetime.now(timezone.utc)
+    us_tz = timezone(timedelta(hours=-4))  # US Eastern Time (coherente con cartelera oficial)
+    today = now_utc.astimezone(us_tz).date()
     end_date = today + timedelta(days=lookahead_days)
     for manifest_path in manifests[:1]:
         try:

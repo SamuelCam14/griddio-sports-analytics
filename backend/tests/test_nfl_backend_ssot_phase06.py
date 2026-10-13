@@ -35,6 +35,17 @@ def test_get_endpoints_do_not_call_external_odds_api(client):
         assert resp_parlay.status_code == 200
         assert resp_odds.status_code == 200
 
+        # Verify odds endpoint consolidates across market snapshots with real DB data
+        odds_data = resp_odds.json()
+        assert odds_data["sport"] == "NFL"
+        assert odds_data["total_games"] >= 1
+        first_odds = odds_data["games"][0]
+        assert first_odds["home_team"] == "Los Angeles Rams"
+        assert first_odds["away_team"] == "Buffalo Bills"
+        assert first_odds["home_ml"] is not None
+        assert first_odds["away_ml"] is not None
+        assert first_odds["total_line"] is not None
+
 
 def test_experimental_predictions_contract_and_provenance(client):
     """Experimental NFL predictions serve pure probabilities with dataset and artifact hashes."""
@@ -92,3 +103,65 @@ def test_ledger_quota_unchanged_across_api_calls(client):
     assert actual_hash == expected_hash
     ledger_data = json.loads(ledger_bytes.decode("utf-8"))
     assert ledger_data["summary"]["requests_remaining"] == 275
+
+
+@pytest.mark.asyncio
+async def test_game_context_endpoint_returns_rams_recent_form_and_h2h():
+    """Verify SofaScore-style matchup context returns authentic Rams form and H2H clashes from nflverse schedules."""
+    from app.core.database import AsyncSessionLocal, engine
+    from app.services.matchup_context_service import get_matchup_context
+
+    await engine.dispose()
+    async with AsyncSessionLocal() as session:
+        data = await get_matchup_context(61, session)
+
+    assert "h2h" in data
+    assert data["h2h"]["total_games"] == 4
+    assert len(data["h2h"]["recent_clashes"]) == 4
+
+    # Verify clashes are between LAR and BUF
+    for clash in data["h2h"]["recent_clashes"]:
+        assert clash["home_team"] in {"LAR", "BUF"}
+        assert clash["away_team"] in {"LAR", "BUF"}
+        assert clash["home_score"] > 0
+        assert clash["away_score"] > 0
+
+    # Verify Rams recent form has official scores
+    assert "recent_form" in data
+    assert "home" in data["recent_form"]
+    home_form = data["recent_form"]["home"]
+    assert len(home_form["games"]) == 5
+    assert home_form["streak"] == ["L", "L", "W", "L", "W"]
+
+    # Verify opponents have proper DB abbreviations
+    opponents = [g["opponent"] for g in home_form["games"]]
+    assert opponents == ["SEA", "SF", "NYG", "DEN", "PHI"]
+
+
+def test_experimental_predictions_includes_full_29_games_and_buf_la(client):
+    """Verify experimental predictions maintain full 29 upcoming games including Monday Night BUF @ LA."""
+    resp = client.get("/api/v1/predictions/experimental/nfl?lookahead_days=14")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["game_count"] >= 29
+    buf_la_matches = [g for g in data["games"] if g["game_id"] == "2026_05_BUF_LA"]
+    assert len(buf_la_matches) == 1
+    buf_la = buf_la_matches[0]
+    assert pytest.approx(buf_la["home_win_probability"], 0.01) == 0.4283
+    assert pytest.approx(buf_la["away_win_probability"], 0.01) == 0.5717
+
+
+@pytest.mark.asyncio
+async def test_upcoming_games_endpoint_preserves_scheduled_game_61():
+    """Verify /games/upcoming retains scheduled games for today's active window."""
+    from app.core.database import AsyncSessionLocal, engine
+    from app.api.v1.games import get_upcoming_games
+
+    await engine.dispose()
+    async with AsyncSessionLocal() as session:
+        data = await get_upcoming_games(days=14, sport="NFL", db=session)
+
+    assert data["total"] >= 15
+    game_ids = [g["id"] for g in data["games"]]
+    assert 61 in game_ids

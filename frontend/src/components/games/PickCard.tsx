@@ -32,6 +32,11 @@ const TIER_STYLES = {
     badge: 'bg-gray-800 text-gray-300',
     glow: '',
   },
+  EXPERIMENTAL: {
+    border: 'border-emerald-700',
+    badge: 'bg-emerald-900 text-emerald-200',
+    glow: 'shadow-emerald-900/30',
+  },
 }
 
 export function PickCard({ pick, bankroll }: Props) {

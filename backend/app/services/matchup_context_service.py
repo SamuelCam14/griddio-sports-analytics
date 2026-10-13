@@ -67,6 +67,10 @@ NBA_ESPN_ID_TO_ABBR = {
 }
 NBA_ABBR_TO_ESPN_ID = {v: k for k, v in NBA_ESPN_ID_TO_ABBR.items()}
 
+# Mapeo de abreviaturas DB <-> nflverse/schedules
+NFL_DB_TO_DF_ABBR = {"LAR": "LA", "WSH": "WAS"}
+NFL_DF_TO_DB_ABBR = {"LA": "LAR", "WAS": "WSH"}
+
 # Cache en memoria de dataframes históricos para velocidad sub-milisegundo
 _HISTORICAL_DF_CACHE: Dict[str, pd.DataFrame] = {}
 
@@ -75,6 +79,24 @@ def _get_historical_df(sport: str) -> Optional[pd.DataFrame]:
     sport_upper = sport.upper()
     if sport_upper in _HISTORICAL_DF_CACHE:
         return _HISTORICAL_DF_CACHE[sport_upper]
+
+    if sport_upper == "NFL":
+        try:
+            import glob
+            files = sorted(glob.glob("data/raw/nflverse/*/schedules_*.parquet"))
+            if files:
+                dfs = [pd.read_parquet(f) for f in files]
+                df = pd.concat(dfs, ignore_index=True)
+                df = df.dropna(subset=["home_score", "away_score"]).copy()
+                df["game_date"] = pd.to_datetime(df["gameday"]).dt.strftime("%Y-%m-%d")
+                df["home_team_id"] = df["home_team"]
+                df["away_team_id"] = df["away_team"]
+                _HISTORICAL_DF_CACHE[sport_upper] = df
+                return df
+            else:
+                logger.warning("No NFL schedules parquet files found")
+        except Exception as e:
+            logger.error("Error loading NFL schedules parquet files", error=str(e))
 
     path = Path("data/processed") / f"{sport_upper.lower()}_training.csv"
     if not path.exists():
@@ -364,8 +386,8 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
         h_id = NBA_ABBR_TO_ESPN_ID.get(home_abbr, game.home_team_id)
         a_id = NBA_ABBR_TO_ESPN_ID.get(away_abbr, game.away_team_id)
     else:
-        h_id = home_abbr
-        a_id = away_abbr
+        h_id = NFL_DB_TO_DF_ABBR.get(home_abbr, home_abbr)
+        a_id = NFL_DB_TO_DF_ABBR.get(away_abbr, away_abbr)
 
     # 2. Historial H2H
     h2h_data = {
@@ -398,8 +420,8 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
 
         for _, row in h2h_matches.tail(5).iterrows():
             is_nba = sport == "NBA"
-            r_home = NBA_ESPN_ID_TO_ABBR.get(row["home_team_id"], str(row["home_team_id"])) if is_nba else str(row["home_team_id"])
-            r_away = NBA_ESPN_ID_TO_ABBR.get(row["away_team_id"], str(row["away_team_id"])) if is_nba else str(row["away_team_id"])
+            r_home = NBA_ESPN_ID_TO_ABBR.get(row["home_team_id"], str(row["home_team_id"])) if is_nba else NFL_DF_TO_DB_ABBR.get(str(row["home_team_id"]), str(row["home_team_id"]))
+            r_away = NBA_ESPN_ID_TO_ABBR.get(row["away_team_id"], str(row["away_team_id"])) if is_nba else NFL_DF_TO_DB_ABBR.get(str(row["away_team_id"]), str(row["away_team_id"]))
             winner = r_home if row["home_score"] > row["away_score"] else (r_away if row["away_score"] > row["home_score"] else "EMPATE")
 
             h2h_data["recent_clashes"].append({
@@ -425,7 +447,7 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
             for _, row in team_matches.iterrows():
                 is_home = row["home_team_id"] == team_identifier
                 opp_id = row["away_team_id"] if is_home else row["home_team_id"]
-                opp_abbr = NBA_ESPN_ID_TO_ABBR.get(opp_id, str(opp_id)) if sport == "NBA" else str(opp_id)
+                opp_abbr = NBA_ESPN_ID_TO_ABBR.get(opp_id, str(opp_id)) if sport == "NBA" else NFL_DF_TO_DB_ABBR.get(str(opp_id), str(opp_id))
                 t_score = int(row["home_score"]) if is_home else int(row["away_score"])
                 opp_score = int(row["away_score"]) if is_home else int(row["home_score"])
                 outcome = "W" if t_score > opp_score else ("L" if t_score < opp_score else "T")
@@ -462,7 +484,7 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
                 nfl_svc = NFLAvailabilityService()
                 start_iso = game.game_date.isoformat() if hasattr(game.game_date, "isoformat") else str(game.game_date)
                 start_dt = nfl_svc.parse_utc_timestamp(start_iso)
-                cutoff_iso = (start_dt - pd.Timedelta(hours=2.0)).isoformat() if start_dt else None
+                cutoff_iso = (start_dt - pd.Timedelta(hours=2)).isoformat() if start_dt else None
                 records = [
                     nfl_svc.process_player_injury(
                         p,

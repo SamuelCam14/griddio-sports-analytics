@@ -50,6 +50,8 @@ export interface OddsData {
   away_ml: number | null
   home_spread: number | null
   total_line: number | null
+  over_ml?: number | null
+  under_ml?: number | null
   home_implied_prob: number | null
   away_implied_prob: number | null
 }
@@ -171,7 +173,7 @@ export interface Pick {
   away_team?: TeamDetail
   home_team_id: number
   away_team_id: number
-  tier: 'PREMIUM' | 'VALUE' | 'SKIP' | 'NEUTRAL'
+  tier: 'PREMIUM' | 'VALUE' | 'SKIP' | 'NEUTRAL' | 'EXPERIMENTAL'
   tier_emoji: string
   model_agreement: number
   pick_side: 'home' | 'away' | null
@@ -368,7 +370,38 @@ export const oddsApi = {
 
 // ─── Predictions ─────────────────────────────────────────────────────────────
 
-export type PredictionTier = 'PREMIUM' | 'VALUE' | 'all'
+export type PredictionTier = 'PREMIUM' | 'VALUE' | 'EXPERIMENTAL' | 'all'
+
+export interface ExperimentalPredictionGame {
+  game_id: string
+  game_date: string
+  home_team_id: string
+  away_team_id: string
+  home_team_name: string
+  away_team_name: string
+  home_team_abbreviation: string
+  away_team_abbreviation: string
+  home_win_probability: number
+  away_win_probability: number
+  feature_cutoff_exclusive?: string
+  feature_max_observed_game_date?: string
+  schedule_source_ref?: string
+}
+
+export interface ExperimentalPredictionsResponse {
+  status: string
+  sport: string
+  predictions_enabled: boolean
+  production_eligible: boolean
+  lookahead_days: number
+  as_of: string
+  model_version: string
+  dataset_sha256: string
+  artifact_sha256: string
+  schedule_source_refs: string[]
+  game_count: number
+  games: ExperimentalPredictionGame[]
+}
 
 export const predictionsApi = {
   getToday: (sport = 'NBA', tier: PredictionTier | string = 'all', period = 'auto') =>
@@ -383,6 +416,10 @@ export const predictionsApi = {
       predictions_enabled?: boolean
       reason?: string
     }>('/predictions/today', { params: { sport, tier, period } }),
+  getExperimental: (sport = 'nfl', lookahead_days = 14) =>
+    api.get<ExperimentalPredictionsResponse>(`/predictions/experimental/${sport.toLowerCase()}`, {
+      params: { lookahead_days },
+    }),
   getTop: (sport = 'NBA', limit = 5) =>
     api.get<{ sport: string; top_picks: Pick[] }>('/predictions/top', { params: { sport, limit } }),
   getForGame: (gameId: number) => api.get(`/predictions/game/${gameId}`),

@@ -33,8 +33,12 @@ Conforme a la directriz explícita de Fase 04:
 
 1. **Veredicto:** Se retiene **Logistic Regression** (`nfl_team_only_temporal_v1`) como el único modelo seleccionado.
 2. **Rechazo del Ensemble y de HistGradientBoosting:** HistGradientBoosting presentó sobreajuste en los folds y degradó el Brier score en holdout (0.2518, peor que el baseline de 0.2469). El ensamble consecuentemente degradó la calibración y el Brier score a 0.2330 (frente al 0.2267 de Regresión Logística pura).
-3. **Calibración:** Logistic Regression exhibe un Error de Calibración Esperado (ECE) de solo 1.73% en holdout, indicando que las probabilidades emitidas reflejan fielmente las frecuencias empíricas de victoria.
-4. **Gobernanza:** `production_enabled: false` permanece inmutable en todos los metadatos de modelos.
+3. **Evaluación de Calibración (ECE sin Calibración Posterior):**
+   - Se mide el Error de Calibración Esperado (ECE = 1.73% en holdout) como métrica diagnóstica descriptiva.
+   - El código en ejecución **no aplica calibrador posterior** (no hay escalamiento de Platt ni regresión isotónica post-hoc acoplada a la inferencia).
+4. **Estado del Holdout y Gobernanza Experimental:**
+   - Se documenta explícitamente que la partición holdout (824 partidos, 2023-2026) **participó en la comparación y selección final** entre modelos (Logistic vs HGB vs Blend), por lo que **ya no constituye una confirmación out-of-sample independiente no contaminada**.
+   - Toda salida generada se conserva exclusivamente como **experimental**, y el gate de producción se mantiene estrictamente **cerrado** (`production_enabled: false`, `production_eligible: false`).
 
 ---
 

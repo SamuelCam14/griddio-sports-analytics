@@ -31,11 +31,16 @@ export function LiveMatchDetailCard({
 
   const homeTeam = match?.odds.home_team ?? (isNba ? 'Boston Celtics' : 'Kansas City Chiefs')
   const awayTeam = match?.odds.away_team ?? (isNba ? 'Los Angeles Lakers' : 'San Francisco 49ers')
-  const homeScore = match?.game.home_score ?? (isNba ? 108 : 27)
-  const awayScore = match?.game.away_score ?? (isNba ? 104 : 24)
   const isLive = match?.game.status === 'live'
   const isFinal = match?.game.status === 'final'
-  const clockText = isLive ? 'Q4 03:45' : isFinal ? 'FINAL' : formatMatchTime(match?.odds.commence_time ?? new Date().toISOString())
+  const isScheduled = !isLive && !isFinal
+  const homeScore = isScheduled ? '—' : (match?.game.home_score ?? (isNba ? 108 : 27))
+  const awayScore = isScheduled ? '—' : (match?.game.away_score ?? (isNba ? 104 : 24))
+  const clockText = isLive
+    ? 'Q4 03:45'
+    : isFinal
+    ? 'FINAL'
+    : `Kickoff: ${formatMatchTime(match?.odds.commence_time ?? match?.game.game_date ?? new Date().toISOString())}`
 
   const homeProb = match?.prediction?.home_win_prob ?? match?.odds.home_implied_prob ?? 0.6
   const awayProb = match?.prediction?.away_win_prob ?? match?.odds.away_implied_prob ?? 0.4
@@ -77,9 +82,19 @@ export function LiveMatchDetailCard({
             {/* Scores & Clock */}
             <div className="flex flex-col items-center">
               <div className="flex items-center gap-2 font-mono text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                <span>{awayScore}</span>
-                <span className="text-slate-600 font-normal">-</span>
-                <span>{homeScore}</span>
+                {isScheduled ? (
+                  <>
+                    <span className="text-slate-400">—</span>
+                    <span className="text-slate-600 font-normal">vs</span>
+                    <span className="text-slate-400">—</span>
+                  </>
+                ) : (
+                  <>
+                    <span>{awayScore}</span>
+                    <span className="text-slate-600 font-normal">-</span>
+                    <span>{homeScore}</span>
+                  </>
+                )}
               </div>
               <span className="mt-1 rounded-md border border-white/[0.08] bg-white/[0.06] px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-200">
                 {clockText}
@@ -192,18 +207,37 @@ export function LiveMatchDetailCard({
                 exit={{ opacity: 0 }}
                 className="space-y-2"
               >
-                <div className="flex justify-between text-slate-400">
-                  <span>Rating Ofensivo</span>
-                  <span className="text-white font-mono">116.8 vs 114.2</span>
-                </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>Rating Defensivo</span>
-                  <span className="text-white font-mono">110.4 vs 112.9</span>
-                </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>Ritmo (Pace)</span>
-                  <span className="text-white font-mono">99.8 posesiones</span>
-                </div>
+                {isNba ? (
+                  <>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Rating Ofensivo</span>
+                      <span className="text-white font-mono">116.8 vs 114.2</span>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Rating Defensivo</span>
+                      <span className="text-white font-mono">110.4 vs 112.9</span>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Ritmo (Pace)</span>
+                      <span className="text-white font-mono">99.8 posesiones</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Eficiencia Neta (EPA/play)</span>
+                      <span className="text-white font-mono">+0.08 vs -0.02</span>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Puntos por Partido (PPG)</span>
+                      <span className="text-white font-mono">27.8 vs 21.4</span>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Margen Promedio</span>
+                      <span className="text-white font-mono">+6.4 vs -2.1</span>
+                    </div>
+                  </>
+                )}
               </motion.div>
             )}
 
@@ -217,7 +251,10 @@ export function LiveMatchDetailCard({
               >
                 <p className="text-[10px] font-semibold uppercase text-slate-400">Ventaja Cuantitativa</p>
                 <p className="text-slate-300 text-[11px] leading-snug">
-                  {match?.prediction?.best_bet?.reason ?? 'El ensamble detecta desajuste en el rebote defensivo y valor positivo en la línea de dinero del local.'}
+                  {match?.prediction?.best_bet?.reason ??
+                    (isNba
+                      ? 'El ensamble detecta desajuste en el rebote defensivo y valor positivo en la línea de dinero del local.'
+                      : 'El modelo temporal v1 proyecta ventaja en EPA por jugada aérea y valor positivo (+40.1% EV) en la línea de dinero de Bills.')}
                 </p>
               </motion.div>
             )}

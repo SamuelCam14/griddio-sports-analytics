@@ -33,8 +33,11 @@ Se implementó y validó en un ciclo atómico el flujo práctico para la gestió
    - Prohibido transferir métricas de equipos anteriores y sustituir muestras con temporadas antiguas.
    - `pos_rank` entra solo como contexto descriptivo con fecha/procedencia, sin multiplicadores fijos.
    - Ausencia de historial reciente deja el ajuste como desconocido y el modelo base (`team_only`) continúa.
-5. **Purgado de Probabilidades Fijas:**
-   - Purgadas todas las constantes y probabilidades fijas sin respaldo empírico.
+5. **Estado de Probabilidades de Ausencia (Tablas Fijas Heurísticas):**
+   - `nfl_availability_service.py` todavía define y utiliza tablas fijas de referencia (`BASE_P_ABSENCE`, `MARKET_MODULATED_P_ABSENCE`) para probabilidades de ausencia.
+   - Estos valores NO se describen como purgados ni como calibración empírica validada; son priors heurísticos de mapeo.
+   - La capa de lesiones/disponibilidad se mantiene estrictamente como una capa opcional/experimental.
+   - La evaluación y producción experimental `team_only` opera 100% de manera independiente de estas tablas, sin inventar datos ni rellenar faltantes sintéticamente.
 
 ---
 

@@ -57,12 +57,13 @@ async def get_upcoming_games(
 ):
     """Obtiene partidos de los próximos N días."""
     now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=6)
     end = now + timedelta(days=days)
 
     stmt = (
         select(Game)
         .where(Game.sport == sport.upper())
-        .where(Game.game_date >= now)
+        .where(Game.game_date >= start)
         .where(Game.game_date <= end)
         .where(Game.status == "scheduled")
         .order_by(Game.game_date)

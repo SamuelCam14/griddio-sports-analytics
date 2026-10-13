@@ -37,6 +37,7 @@ export function DashboardPage() {
 
   const topPick = useMemo(() => {
     return matches.find((m) => m.prediction?.tier === 'PREMIUM')?.prediction ??
+      matches.find((m) => m.prediction?.tier === 'EXPERIMENTAL')?.prediction ??
       matches[0]?.prediction
   }, [matches])
 
@@ -135,7 +136,9 @@ export function DashboardPage() {
               totalMatches={totalMatches}
               upcomingCount={matches.filter((m) => m.game.status === 'scheduled').length}
               sport={sport}
-              upsetsCount={matches.filter((m) => (m.prediction?.ev_dolares ?? 0) > 0).length || 2}
+              upsetsCount={matches.filter((m) => (m.prediction?.ev_dolares ?? 0) > 0).length}
+              marketTotalLine={selectedMatch?.odds.total_line}
+              activeMatchupLabel={selectedMatch ? `${selectedMatch.odds.away_team} @ ${selectedMatch.odds.home_team}` : null}
             />
 
             {/* AI Prediction con sparklines y probabilidades */}

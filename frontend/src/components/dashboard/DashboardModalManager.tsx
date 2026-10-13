@@ -83,13 +83,13 @@ export function DashboardModalManager({
         )}
       </Modal>
 
-      {/* ─── Multi-Model Simulator ────────────────────────────────────────── */}
+      {/* ─── Multi-Model Simulator (Deactivated) ──────────────────────────── */}
       <Modal
         isOpen={activeModal === 'simulator'}
         onClose={onClose}
-        eyebrow="MACHINE LEARNING INFERENCE"
-        title="Simulador de Ensamble (CatBoost + XGBoost + Logistic)"
-        maxWidth="6xl"
+        eyebrow="GOBERNANZA TÉCNICA · ESTADO EXPERIMENTAL"
+        title="Simulador de Ensamble (Desactivado)"
+        maxWidth="2xl"
       >
         <MatchupSimulator bankroll={bankroll} />
       </Modal>

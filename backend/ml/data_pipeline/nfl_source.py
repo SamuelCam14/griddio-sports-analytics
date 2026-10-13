@@ -289,7 +289,10 @@ def load_nfl_upcoming_games(
     if not manifest_path.is_file():
         raise FileNotFoundError(f"No existe {manifest_path}; ejecuta sync_nfl_source")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    cutoff_date = pd.Timestamp(as_of or pd.Timestamp.now(tz="UTC")).date()
+    cutoff_ts = pd.Timestamp(as_of or pd.Timestamp.now(tz="UTC"))
+    if cutoff_ts.tzinfo is None:
+        cutoff_ts = cutoff_ts.tz_localize("UTC")
+    cutoff_date = cutoff_ts.date()
     schedule_items = [item for item in manifest["files"] if item.get("dataset") == "schedules"]
     records = []
     required = {"game_id", "season", "game_type", "gameday", "gametime", "home_team", "away_team", "home_score", "away_score"}
@@ -305,11 +308,15 @@ def load_nfl_upcoming_games(
             date = pd.to_datetime(game["gameday"], errors="coerce")
             if pd.isna(date):
                 raise DataQualityError(f"NFL schedule {game['game_id']}: fecha ausente")
-            if date.date() <= cutoff_date or pd.notna(game["home_score"]) or pd.notna(game["away_score"]):
+            if pd.notna(game["home_score"]) or pd.notna(game["away_score"]):
                 continue
             if not game["home_team"] or not game["away_team"]:
                 raise DataQualityError(f"NFL schedule {game['game_id']}: equipos ausentes")
             kickoff_utc = resolve_nfl_kickoff_utc(game["gameday"], game.get("gametime"), str(game["game_id"]))
+            if date.date() < cutoff_date:
+                continue
+            if date.date() == cutoff_date and (kickoff_utc is None or kickoff_utc <= cutoff_ts):
+                continue
             records.append({
                 "game_id": str(game["game_id"]), "game_date": date.date(),
                 "game_start_utc": kickoff_utc, "season": int(game["season"]),

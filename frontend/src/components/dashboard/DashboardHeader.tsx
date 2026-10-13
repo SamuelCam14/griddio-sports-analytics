@@ -82,14 +82,6 @@ export function DashboardHeader({
             <span>Dashboard</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => onOpenView('simulator')}
-            className="flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-medium text-slate-400 hover:text-white transition-colors"
-          >
-            <Activity className="h-3.5 w-3.5 text-slate-400" />
-            <span>Simulador</span>
-          </button>
 
           <button
             type="button"

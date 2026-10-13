@@ -7,7 +7,7 @@ Estrategia: Cache de 15min para no desperdiciar requests.
 """
 from datetime import datetime, timezone
 from time import monotonic
-from typing import Optional
+from typing import Optional, Any
 
 import httpx
 import structlog
@@ -152,7 +152,7 @@ def _remove_vig(prob_home: float, prob_away: float) -> tuple[float, float]:
     return prob_home / total, prob_away / total
 
 
-async def fetch_odds_from_db(sport: str) -> list[dict]:
+async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[dict]:
     """
     Recupera los momios más recientes almacenados en la base de datos (OddsSnapshot)
     para partidos programados ('scheduled'). Sirve como fallback transparente cuando
@@ -163,49 +163,65 @@ async def fetch_odds_from_db(sport: str) -> list[dict]:
     from app.core.database import AsyncSessionLocal
     from app.models.game import Game, OddsSnapshot
 
-    try:
-        async with AsyncSessionLocal() as session:
-            stmt = (
-                select(Game)
-                .where(Game.sport == sport.upper(), Game.status == "scheduled")
-                .options(
-                    selectinload(Game.home_team),
-                    selectinload(Game.away_team),
-                    selectinload(Game.odds_snapshots),
-                )
-                .order_by(Game.game_date.asc())
+    async def _execute_query(s):
+        stmt = (
+            select(Game)
+            .where(Game.sport == sport.upper(), Game.status == "scheduled")
+            .options(
+                selectinload(Game.home_team),
+                selectinload(Game.away_team),
+                selectinload(Game.odds_snapshots),
             )
-            res = await session.execute(stmt)
-            games = res.scalars().all()
-            result = []
-            for g in games:
-                if not g.odds_snapshots or not g.home_team or not g.away_team:
-                    continue
-                latest = max(g.odds_snapshots, key=lambda s: s.observed_at)
-                result.append({
-                    "external_id": g.external_id,
-                    "home_team": g.home_team.name,
-                    "away_team": g.away_team.name,
-                    "commence_time": g.game_date.isoformat(),
-                    "best_bookmaker": latest.bookmaker,
-                    "spread_bookmaker": latest.bookmaker,
-                    "total_bookmaker": latest.bookmaker,
-                    "home_ml": latest.home_ml,
-                    "away_ml": latest.away_ml,
-                    "home_spread": latest.home_spread,
-                    "home_spread_ml": latest.home_spread_ml,
-                    "away_spread": latest.away_spread,
-                    "away_spread_ml": latest.away_spread_ml,
-                    "total_line": latest.total_line,
-                    "over_ml": latest.over_ml,
-                    "under_ml": latest.under_ml,
-                    "home_implied_prob": latest.home_implied_prob,
-                    "away_implied_prob": latest.away_implied_prob,
-                    "captured_at": latest.captured_at.isoformat() if latest.captured_at else None,
-                    "is_cached_snapshot": True,
-                })
-            logger.info("Retrieved odds from database fallback", sport=sport, total=len(result))
-            return result
+            .order_by(Game.game_date.asc())
+        )
+        res = await s.execute(stmt)
+        return res.scalars().all()
+
+    try:
+        if session is not None:
+            games = await _execute_query(session)
+        else:
+            async with AsyncSessionLocal() as s:
+                games = await _execute_query(s)
+        result = []
+        for g in games:
+            if not g.odds_snapshots or not g.home_team or not g.away_team:
+                continue
+            # Consolidar snapshots por mercado para no perder momios de h2h o spreads
+            # cuando el último snapshot registrado corresponde a totales
+            h2h_snaps = [s for s in g.odds_snapshots if s.home_ml is not None or s.market == "h2h"]
+            spread_snaps = [s for s in g.odds_snapshots if s.home_spread is not None or s.market == "spreads"]
+            total_snaps = [s for s in g.odds_snapshots if s.total_line is not None or s.market == "totals"]
+
+            latest_h2h = max(h2h_snaps, key=lambda s: s.observed_at) if h2h_snaps else None
+            latest_spread = max(spread_snaps, key=lambda s: s.observed_at) if spread_snaps else None
+            latest_total = max(total_snaps, key=lambda s: s.observed_at) if total_snaps else None
+            latest_any = max(g.odds_snapshots, key=lambda s: s.observed_at)
+
+            result.append({
+                "external_id": g.external_id,
+                "home_team": g.home_team.name,
+                "away_team": g.away_team.name,
+                "commence_time": g.game_date.isoformat(),
+                "best_bookmaker": latest_h2h.bookmaker if latest_h2h else latest_any.bookmaker,
+                "spread_bookmaker": latest_spread.bookmaker if latest_spread else None,
+                "total_bookmaker": latest_total.bookmaker if latest_total else None,
+                "home_ml": latest_h2h.home_ml if latest_h2h else None,
+                "away_ml": latest_h2h.away_ml if latest_h2h else None,
+                "home_spread": latest_spread.home_spread if latest_spread else None,
+                "home_spread_ml": latest_spread.home_spread_ml if latest_spread else None,
+                "away_spread": latest_spread.away_spread if latest_spread else None,
+                "away_spread_ml": latest_spread.away_spread_ml if latest_spread else None,
+                "total_line": latest_total.total_line if latest_total else None,
+                "over_ml": latest_total.over_ml if latest_total else None,
+                "under_ml": latest_total.under_ml if latest_total else None,
+                "home_implied_prob": latest_h2h.home_implied_prob if latest_h2h else None,
+                "away_implied_prob": latest_h2h.away_implied_prob if latest_h2h else None,
+                "captured_at": latest_any.captured_at.isoformat() if latest_any.captured_at else None,
+                "is_cached_snapshot": True,
+            })
+        logger.info("Retrieved odds from database fallback", sport=sport, total=len(result))
+        return result
     except Exception as e:
         logger.error("Failed to fetch odds from DB fallback", error=str(e), sport=sport)
         return []

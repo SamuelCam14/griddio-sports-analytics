@@ -30,7 +30,9 @@ En estricto cumplimiento con la directriz de Codex y el plan:
 > *"Sin histórico verificable suficiente, iniciar archivo prospectivo ahora y dejar ROI como `not_evaluable`; no reconstruir cuotas desde resultados ni completar datos de mercado por interpolación."*
 
 - **Estado de ROI Histórico:** Marcado explícitamente como `not_evaluable` en todas las evaluaciones.
+- **Naturaleza de Pricing y Trial:** Operan formalmente como utilidades prospectivas independientes. El trial prospectivo se encuentra formalmente **no iniciado** (0 selecciones simuladas/artificiales; registro listo para operar prospectivamente conforme se capturen momios y se liquiden juegos reales observados).
 - **Cero Llamadas a APIs de Pago:** No se consumieron créditos ni se consultó The Odds API histórico. El ledger permanece inalterado en 275 créditos restantes con hash SHA-256 verificado.
+- **Cero Datos Sintéticos:** No se fabricaron selecciones retrospectivas ni se interpolaron líneas pasadas para simular un pipeline completo. La inferencia y el pricing en vivo se conectan exclusivamente a momios observados en la base de datos local y predicciones experimentales reales del modelo (p. ej. Bills @ Rams con momios observados de DraftKings y FanDuel).
 - **Fail-Closed Temporal:** Se implementó el rechazo estricto de momios capturados después del corte de decisión (`odds_post_cutoff`), mercados suspendidos (`market_suspended`) o mapeos con baja confianza (`low_mapping_confidence`).
 
 ---

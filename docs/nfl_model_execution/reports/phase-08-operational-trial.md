@@ -14,7 +14,8 @@ Conforme a `docs/nfl_model_execution/08-operational-trial.md`, se estableció el
 1. **Parámetros Pre-registrados Congelados:**
    - **Versión de Modelo:** `nfl_team_only_temporal_v1` (Regresión Logística temporal sobre 26 features de equipo).
    - **Mercado Autorizado:** Exclusivamente moneyline (`h2h`).
-   - **Horizonte Mínimo de Evaluación:** 100 selecciones prospectivas antes de tomar decisiones sobre viabilidad.
+   - **Horizonte Operativo Pre-registrado:** 100 selecciones prospectivas como hito de monitoreo y revisión de control (identificado como horizonte operativo pre-registrado, no como regla estadística universal de poder de muestra, ya que detectar ventajas sutiles de mercado requiere muestras sustancialmente mayores).
+   - **Estado de Ejecución del Trial:** Trial prospectivo formalmente no iniciado en producción (log limpio con 0 picks artificiales; listo para operar prospectivamente conforme se capturen momios y se liquiden juegos reales observados).
    - **Umbral de Ventaja Mínima:** $\ge 3.0\%$ sobre la cuota justa sin vig.
    - **Pérdida Máxima de Parada (Drawdown Cap):** 15.0 unidades planas.
    - **Reserva Protegida de Cuota:** 75 créditos. Si el saldo restante llega a $\le 75$, el trial se detiene inmediatamente.
@@ -39,7 +40,7 @@ Se implementó el evaluador `evaluate_kill_criteria()` y su integración en vivo
 1. **Brecha de Cuota:** Saldo de The Odds API $\le 75$ créditos restantes (o archivo de ledger ausente/corrupto).
 2. **Pérdida Crítica:** Drawdown acumulado $\le -15.0$ unidades.
 3. **Falla de Fuentes:** Ingesta de calendario o resultados caída o corrupta.
-4. **Drift de Modelo:** Brier score móvil superior al baseline mayoritario ($0.2469$).
+4. **Drift de Modelo (con Muestra Mínima $\ge 30$ y Distinción Poblacional):** Brier score móvil superior al baseline mayoritario ($0.2469$), evaluado **únicamente cuando la muestra de picks liquidados alcanza al menos 30 observaciones** (`settled_picks >= 30`) para evitar paradas prematuras por ruido muestral. Se documenta que los picks con EV+ seleccionados proceden de una distribución condicional distinta a la población global incondicional de todos los juegos de la liga; el baseline de 0.2469 opera como cota operacional máxima tras muestra representativa, no como prueba de poblaciones idénticas.
 5. **Métricas No Finitas (NaN/Inf):** Ante cualquier métrica corrupta o NaN, evaluación fail-closed inmediata a parada de emergencia.
 
 Además se implementaron:

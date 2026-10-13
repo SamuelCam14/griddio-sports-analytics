@@ -69,16 +69,51 @@ def test_kill_criteria_drawdown_limit_breach(trial_service):
 
 
 def test_kill_criteria_model_drift_breach(trial_service):
-    """Trigger kill immediately if trailing Brier degrades past majority baseline (0.2469)."""
-    # Trailing Brier of 0.2550 is worse than 0.2469
+    """Trigger kill if trailing Brier degrades past majority baseline with sufficient sample (>= 30)."""
+    # Trailing Brier of 0.2550 is worse than 0.2469, evaluated with settled_picks=35
     res = trial_service.evaluate_kill_criteria(
         quota_remaining=275,
         cumulative_units_pnl=2.0,
         trailing_brier_score=0.2550,
         majority_baseline_brier=0.2469,
+        settled_picks=35,
     )
     assert res.kill_triggered is True
     assert any("model_drift" in r for r in res.reasons)
+
+
+def test_kill_criteria_model_drift_small_sample_does_not_prematurely_kill(trial_service):
+    """Do NOT trigger premature kill on minuscule sample size (< 30) due to noise/variance."""
+    # With only 5 settled picks, high Brier must not trigger kill
+    res_small = trial_service.evaluate_kill_criteria(
+        quota_remaining=275,
+        cumulative_units_pnl=2.0,
+        trailing_brier_score=0.2550,
+        majority_baseline_brier=0.2469,
+        settled_picks=5,
+    )
+    assert res_small.kill_triggered is False
+    assert res_small.verdict == "continue_shadow_trial"
+
+    # Exactly at boundary: 29 picks -> no kill, 30 picks -> kill
+    res_29 = trial_service.evaluate_kill_criteria(
+        quota_remaining=275,
+        cumulative_units_pnl=2.0,
+        trailing_brier_score=0.2550,
+        majority_baseline_brier=0.2469,
+        settled_picks=29,
+    )
+    assert res_29.kill_triggered is False
+
+    res_30 = trial_service.evaluate_kill_criteria(
+        quota_remaining=275,
+        cumulative_units_pnl=2.0,
+        trailing_brier_score=0.2550,
+        majority_baseline_brier=0.2469,
+        settled_picks=30,
+    )
+    assert res_30.kill_triggered is True
+    assert any("model_drift" in r for r in res_30.reasons)
 
 
 def test_kill_criteria_healthy_condition_continues_trial(trial_service):

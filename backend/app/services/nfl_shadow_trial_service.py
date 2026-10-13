@@ -58,7 +58,8 @@ class NFLShadowTrialService:
 
     FROZEN_MODEL_VERSION = "nfl_team_only_temporal_v1"
     FROZEN_MARKET_KEY = "h2h"
-    PREREGISTERED_SAMPLE_HORIZON = 100
+    PREREGISTERED_SAMPLE_HORIZON = 100  # Preregistered operational milestone/horizon (not a universal statistical rule)
+    MIN_SETTLED_PICKS_FOR_BRIER = 30  # Minimum sample to evaluate Brier drift without small-sample noise
     MAX_LOSS_LIMIT_UNITS = 15.0  # Stop if cumulative loss exceeds 15 flat units
     PROTECTED_QUOTA_RESERVE = 75  # Credits threshold triggering kill
 
@@ -198,14 +199,19 @@ class NFLShadowTrialService:
         trailing_brier_score: Optional[float] = None,
         majority_baseline_brier: float = 0.2469,
         source_is_healthy: bool = True,
+        settled_picks: Optional[int] = None,
+        min_settled_picks_for_brier: Optional[int] = None,
     ) -> TrialKillCheckResult:
         """
-        Evaluates kill criteria against pre-registered boundaries:
+        Evaluates kill criteria against pre-registered operational boundaries:
         1. Non-finite or NaN inputs -> Fail-closed kill immediately.
         2. Quota reaches protected reserve (<= 75) -> Kill.
         3. Cumulative loss exceeds 15 units -> Kill.
         4. Source feed down/stale -> Kill.
-        5. Model drift (Brier exceeds majority baseline) -> Kill.
+        5. Model drift (Brier exceeds majority baseline) -> Evaluated only when
+           settled picks sample size reaches minimum threshold (>= 30).
+           Note: selective EV+ picks represent a distinct population from unselected
+           league-wide games; evaluating Brier on tiny samples risks premature false-positive kills.
         """
         reasons = []
 
@@ -246,8 +252,15 @@ class NFLShadowTrialService:
         if cumulative_units_pnl <= -self.MAX_LOSS_LIMIT_UNITS:
             reasons.append(f"drawdown_{abs(cumulative_units_pnl):.1f}u_exceeds_max_limit_{self.MAX_LOSS_LIMIT_UNITS}u")
 
-        if trailing_brier_score is not None and trailing_brier_score > majority_baseline_brier:
-            reasons.append(f"model_drift_brier_{trailing_brier_score:.4f}_worse_than_majority_{majority_baseline_brier:.4f}")
+        # Brier drift kill evaluation:
+        # Require minimum settled sample size to prevent premature termination on minuscule sample noise.
+        min_sample = min_settled_picks_for_brier if min_settled_picks_for_brier is not None else self.MIN_SETTLED_PICKS_FOR_BRIER
+        if trailing_brier_score is not None:
+            if settled_picks is not None and settled_picks < min_sample:
+                # Sample size too small (< 30 settled picks); do not trigger noise-driven kill
+                pass
+            elif trailing_brier_score > majority_baseline_brier:
+                reasons.append(f"model_drift_brier_{trailing_brier_score:.4f}_worse_than_majority_{majority_baseline_brier:.4f}")
 
         if reasons:
             return TrialKillCheckResult(
@@ -294,6 +307,7 @@ class NFLShadowTrialService:
             cumulative_units_pnl=summary["cumulative_units_pnl"],
             trailing_brier_score=summary["trailing_brier_score"],
             source_is_healthy=source_is_healthy,
+            settled_picks=summary["settled_picks"],
         )
 
     def _load_log_entries(self) -> List[Dict[str, Any]]:

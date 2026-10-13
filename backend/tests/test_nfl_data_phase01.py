@@ -135,6 +135,17 @@ def test_load_nfl_upcoming_games_has_concrete_utc_kickoff():
     assert first.tzinfo is not None
 
 
+def test_load_nfl_upcoming_games_includes_same_day_future_kickoff():
+    """Partidos del mismo día con kickoff UTC futuro respecto a as_of son elegibles como upcoming."""
+    as_of = pd.Timestamp("2026-10-12 18:00:00", tz="UTC")
+    upcoming = load_nfl_upcoming_games(as_of=as_of)
+    buf_la = upcoming[upcoming["game_id"] == "2026_05_BUF_LA"]
+    assert len(buf_la) == 1
+    assert buf_la.iloc[0]["home_team_id"] == "LA"
+    assert buf_la.iloc[0]["away_team_id"] == "BUF"
+
+
+
 # ==============================================================================
 # 4. Injury Pipeline from Snapshots (No Network Leak)
 # ==============================================================================
