@@ -23,8 +23,8 @@ export function HeroSpotlight({
   onAnalyze,
 }: HeroSpotlightProps) {
   const hasMatch = Boolean(match)
-  const awayTeam = match?.odds.away_team ?? 'Equipo Visitante'
-  const homeTeam = match?.odds.home_team ?? 'Equipo Local'
+  const awayTeam = match?.odds.away_team
+  const homeTeam = match?.odds.home_team
   const commenceTime = match?.odds.commence_time ?? ''
   const isLive = match?.game.status === 'live'
 
@@ -67,7 +67,7 @@ export function HeroSpotlight({
         <div className="my-auto max-w-xl py-3">
           <div className="flex items-center gap-1.5 text-xs font-medium text-apple-blue">
             <Sparkles className="h-3.5 w-3.5" />
-            <span>PARTIDO DESTACADO DE LA JORNADA</span>
+            <span>PARTIDO DEL CALENDARIO</span>
           </div>
 
           {hasMatch ? (
@@ -78,8 +78,8 @@ export function HeroSpotlight({
 
               <p className="mt-1.5 text-xs text-slate-300 line-clamp-2">
                 {match?.prediction?.best_bet
-                  ? `Recomendación AI: ${match.prediction.best_bet.selection} (${match.prediction.best_bet.odds_american > 0 ? '+' : ''}${match.prediction.best_bet.odds_american}) · Ventaja: ${match.prediction.best_bet.edge_pct.toFixed(1)}%`
-                  : `Probabilidades cuantitativas temporales point-in-time del modelo base NFL.`}
+                  ? `Recomendación de producción publicada por el backend: ${match.prediction.best_bet.selection}.`
+                  : 'No hay recomendación de producción publicada para este partido.'}
               </p>
             </>
           ) : (
@@ -105,11 +105,11 @@ export function HeroSpotlight({
               <ArrowRight className="h-3.5 w-3.5" />
             </button>
 
-            {match?.odds.home_ml && (
+            {match?.odds.home_ml != null && match.odds.away_ml != null && (
               <div className="flex items-center gap-2 rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2 text-xs">
                 <span className="text-slate-400">Línea Moneyline:</span>
                 <span className="font-mono font-medium text-white">
-                  {match.odds.away_ml && match.odds.away_ml > 0 ? `+${match.odds.away_ml}` : match.odds.away_ml} / {match.odds.home_ml > 0 ? `+${match.odds.home_ml}` : match.odds.home_ml}
+                  {match.odds.away_ml > 0 ? `+${match.odds.away_ml}` : match.odds.away_ml} / {match.odds.home_ml > 0 ? `+${match.odds.home_ml}` : match.odds.home_ml}
                 </span>
               </div>
             )}
@@ -120,7 +120,7 @@ export function HeroSpotlight({
         <div className="flex items-center justify-between border-t border-white/[0.08] pt-3.5">
           {/* macOS Carousel Dots */}
           <div className="flex items-center gap-1.5" role="tablist" aria-label="Partidos destacados">
-            {Array.from({ length: Math.min(totalMatches || 4, 6) }).map((_, idx) => (
+            {Array.from({ length: Math.min(totalMatches, 6) }).map((_, idx) => (
               <button
                 key={idx}
                 type="button"
@@ -139,8 +139,9 @@ export function HeroSpotlight({
           <button
             type="button"
             onClick={onNext}
+            disabled={totalMatches < 2}
             title="Siguiente partido"
-            className="flex items-center gap-1 rounded-lg border border-white/[0.09] bg-white/[0.06] px-2.5 py-1 text-xs font-medium text-slate-200 transition-colors hover:bg-white/[0.12] hover:text-white"
+            className="flex items-center gap-1 rounded-lg border border-white/[0.09] bg-white/[0.06] px-2.5 py-1 text-xs font-medium text-slate-200 transition-colors hover:bg-white/[0.12] hover:text-white disabled:opacity-40"
           >
             <span>Siguiente</span>
             <ChevronRight className="h-3.5 w-3.5" />

@@ -8,6 +8,8 @@ Endpoints:
 """
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import math
 import hashlib
 import json
 from pathlib import Path
@@ -15,8 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.game import Game, Prediction
 from app.services.ev_engine import calculate_ev
@@ -100,16 +103,27 @@ async def get_today_picks(
     from app.models.game import Team, OddsSnapshot
     from app.services.sports_analytics_service import generate_nfl_matchup_analytics
 
-    if not _production_model_enabled(sport):
+    approved_version = get_approved_model_version(sport)
+    if not approved_version or not _production_model_enabled(sport):
         return {
             "sport": sport.upper(), "period": period, "total_picks": 0,
+            "as_of": datetime.now(timezone.utc).isoformat(),
             "premium": 0, "value": 0, "skip": 0, "picks": [],
             "predictions_enabled": False,
             "reason": "No hay un modelo aprobado para producción con features en paridad temporal.",
         }
 
+    if db is None:
+        return {
+            "sport": sport.upper(), "period": period, "total_picks": 0,
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "premium": 0, "value": 0, "skip": 0, "picks": [],
+            "predictions_enabled": True,
+            "reason": "Sin sesión de base de datos provista.",
+        }
+
     now_utc = datetime.now(timezone.utc)
-    us_tz = timezone(timedelta(hours=-4))  # US Eastern Time (zona horaria oficial de partidos NFL/NBA)
+    us_tz = ZoneInfo("America/New_York")
     now_us = now_utc.astimezone(us_tz)
     today_us_start = datetime.combine(now_us.date(), datetime.min.time()).replace(tzinfo=us_tz)
     today_us_end   = datetime.combine(now_us.date(), datetime.max.time()).replace(tzinfo=us_tz)
@@ -139,10 +153,13 @@ async def get_today_picks(
         .join(HomeTeam, Game.home_team_id == HomeTeam.id)
         .join(AwayTeam, Game.away_team_id == AwayTeam.id)
         .where(Game.sport == sport_upper)
+        .where(Game.status == "scheduled")
+        .where(Game.game_date > now_utc)
         # Solo aceptaremos artefactos entrenados y validados con partición
         # temporal walk-forward. Los registros seed/heurísticos heredados no
         # son predicciones válidas y no deben presentarse como picks.
-        .where(Prediction.model_version == f"{sport_upper.lower()}_temporal_v1")
+        .where(Prediction.model_version == approved_version)
+        .where(func.coalesce(Prediction.as_of, Prediction.predicted_at) <= Game.game_date)
         .where(Game.game_date >= start_date)
         .where(Game.game_date <= end_date)
         .order_by(Game.game_date.asc(), Prediction.home_ev.desc())
@@ -151,60 +168,157 @@ async def get_today_picks(
     rows = result.all()
 
     picks = []
+    excluded_missing_market_data = 0
+    freshness_limit = (
+        settings.FRESHNESS_HOURS_NFL_ODDS
+        if sport_upper == "NFL"
+        else settings.FRESHNESS_HOURS_NBA_ODDS
+    )
+
     for pred, game, home, away in rows:
-        # Consultar momios de spread y totals
-        odds_stmt = (
+        # Prepartido estricto: descartar si ya inició o no está programado
+        g_kickoff = game.game_date if game.game_date.tzinfo else game.game_date.replace(tzinfo=timezone.utc)
+        if g_kickoff <= now_utc or game.status != "scheduled":
+            excluded_missing_market_data += 1
+            continue
+
+        # Inferencia debe ser estrictamente anterior o igual al kickoff
+        p_as_of = pred.as_of or pred.predicted_at
+        if p_as_of:
+            p_as_of_utc = p_as_of if p_as_of.tzinfo else p_as_of.replace(tzinfo=timezone.utc)
+            if p_as_of_utc > now_utc or p_as_of_utc >= g_kickoff:
+                excluded_missing_market_data += 1
+                continue
+        elif pred.predicted_at is None:
+            excluded_missing_market_data += 1
+            continue
+
+        if (
+            pred.home_win_prob is None or pred.away_win_prob is None
+            or not math.isfinite(pred.home_win_prob) or not math.isfinite(pred.away_win_prob)
+            or not math.isclose(pred.home_win_prob + pred.away_win_prob, 1.0, abs_tol=1e-3)
+        ):
+            excluded_missing_market_data += 1
+            continue
+
+        # Consultar momios específicamente por mercado (independencia por mercado)
+        h2h_stmt = (
             select(OddsSnapshot)
             .where(OddsSnapshot.game_id == game.id)
-            .order_by(OddsSnapshot.captured_at.desc())
+            .where(OddsSnapshot.home_ml.isnot(None), OddsSnapshot.away_ml.isnot(None))
+            .order_by(OddsSnapshot.observed_at.desc())
             .limit(1)
         )
-        odds_res = await db.execute(odds_stmt)
-        odds_snap = odds_res.scalar_one_or_none()
+        h2h_res = await db.execute(h2h_stmt)
+        h2h_snap = h2h_res.scalar_one_or_none()
 
-        spread_line = odds_snap.home_spread if odds_snap else None
-        total_line = odds_snap.total_line if odds_snap else None
-        bookmaker = pred.best_bookmaker or (odds_snap.bookmaker if odds_snap else None)
+        # Validación estricta de frescura del mercado de Moneyline usado por el pick
+        if not h2h_snap:
+            excluded_missing_market_data += 1
+            continue
 
-        # Determinar lado con ventaja
-        if pred.home_has_edge and (not pred.away_has_edge or pred.home_ev >= pred.away_ev):
+        h2h_obs = h2h_snap.observed_at if h2h_snap.observed_at.tzinfo else h2h_snap.observed_at.replace(tzinfo=timezone.utc)
+        h2h_age = (now_utc - h2h_obs).total_seconds() / 3600.0
+
+        if h2h_age < 0 or h2h_age > freshness_limit or h2h_obs >= g_kickoff:
+            # Cuota vencida o capturada post-kickoff: abstención estricta
+            excluded_missing_market_data += 1
+            continue
+
+        spread_stmt = (
+            select(OddsSnapshot)
+            .where(OddsSnapshot.game_id == game.id)
+            .where(OddsSnapshot.home_spread.isnot(None))
+            .order_by(OddsSnapshot.observed_at.desc())
+            .limit(1)
+        )
+        spread_res = await db.execute(spread_stmt)
+        spread_snap = spread_res.scalar_one_or_none()
+
+        total_stmt = (
+            select(OddsSnapshot)
+            .where(OddsSnapshot.game_id == game.id)
+            .where(OddsSnapshot.total_line.isnot(None))
+            .order_by(OddsSnapshot.observed_at.desc())
+            .limit(1)
+        )
+        total_res = await db.execute(total_stmt)
+        total_snap = total_res.scalar_one_or_none()
+
+        def usable_market_snapshot(snapshot):
+            if snapshot is None or snapshot.observed_at is None:
+                return False
+            observed = (
+                snapshot.observed_at
+                if snapshot.observed_at.tzinfo
+                else snapshot.observed_at.replace(tzinfo=timezone.utc)
+            )
+            age = (now_utc - observed).total_seconds() / 3600.0
+            return 0 <= age <= freshness_limit and observed < g_kickoff
+
+        if not usable_market_snapshot(spread_snap):
+            spread_snap = None
+        if not usable_market_snapshot(total_snap):
+            total_snap = None
+
+        spread_line = spread_snap.home_spread if spread_snap else None
+        total_line = total_snap.total_line if total_snap else None
+        # EV debe usar el mismo precio H2H fresco cuya vigencia acabamos de validar.
+        bookmaker = h2h_snap.bookmaker
+        home_ml = h2h_snap.home_ml
+        away_ml = h2h_snap.away_ml
+
+        if (
+            home_ml is None or away_ml is None or home_ml == 0 or away_ml == 0 or not bookmaker
+            or pred.home_win_prob is None or pred.away_win_prob is None
+        ):
+            excluded_missing_market_data += 1
+            continue
+
+        home_bet = calculate_ev(
+            prob_model=pred.home_win_prob,
+            odds_american=home_ml,
+            bankroll=0.0,
+        )
+        away_bet = calculate_ev(
+            prob_model=pred.away_win_prob,
+            odds_american=away_ml,
+            bankroll=0.0,
+        )
+
+        # Determinar lado y tier usando el precio actual, no el almacenado al inferir.
+        if home_bet.has_edge and (not away_bet.has_edge or home_bet.edge_pct >= away_bet.edge_pct):
             side = "home"
-            ev   = pred.home_ev
-            ml   = pred.best_home_ml
+            ev   = home_bet.ev_dollars
+            ml   = home_ml
             prob = pred.home_win_prob
-            kelly= pred.home_kelly
-        elif pred.away_has_edge:
+            kelly= home_bet.kelly_fraction
+        elif away_bet.has_edge:
             side = "away"
-            ev   = pred.away_ev
-            ml   = pred.best_away_ml
+            ev   = away_bet.ev_dollars
+            ml   = away_ml
             prob = pred.away_win_prob
-            kelly= pred.away_kelly
+            kelly= away_bet.kelly_fraction
         else:
             side = "home" if pred.home_win_prob >= pred.away_win_prob else "away"
-            ev   = max(pred.home_ev or 0.0, pred.away_ev or 0.0)
-            ml   = pred.best_home_ml if side == "home" else pred.best_away_ml
+            ev   = max(home_bet.ev_dollars, away_bet.ev_dollars)
+            ml   = home_ml if side == "home" else away_ml
             prob = max(pred.home_win_prob, pred.away_win_prob)
             kelly= 0.0
 
         # Detectar si el partido es hoy según el calendario oficial del evento
         is_today = (game.game_date.astimezone(us_tz).date() == now_us.date())
 
-        # Ingesta en tiempo real de Player Props oficiales si el partido es hoy
+        # Player props en picks: GET no realiza llamadas HTTP de red
         real_props = []
-        if is_today and game.external_id:
-            try:
-                from app.services.live_ingestion_service import fetch_real_player_props
-                real_props = await fetch_real_player_props(game.external_id, sport=sport_upper)
-            except Exception as e:
-                pass
 
         # Generar análisis cuantitativo enriquecido con Fuente Única de Verdad (SSOT)
         analytics = generate_nfl_matchup_analytics(
             home_team=home.name,
             away_team=away.name,
             game_date=game.game_date,
-            home_ml=pred.best_home_ml or -110,
-            away_ml=pred.best_away_ml or -110,
+            home_ml=home_ml,
+            away_ml=away_ml,
             spread_line=spread_line,
             total_line=total_line,
             bookmaker=bookmaker,
@@ -214,21 +328,22 @@ async def get_today_picks(
         )
 
         # Evaluar la oportunidad máxima entre todos los mercados disponibles (Moneyline, Spread, Totales, Props)
-        ml_is_premium = "PREMIUM" in (pred.confluence_tier or "").upper()
-        ml_is_value = "VALUE" in (pred.confluence_tier or "").upper()
+        ml_is_premium = home_bet.tier == "PREMIUM" or away_bet.tier == "PREMIUM"
+        ml_is_value = home_bet.tier == "VALUE" or away_bet.tier == "VALUE"
         props_has_premium = any("PREMIUM" in p.get("tier", "").upper() for p in real_props)
         props_has_value = any("VALUE" in p.get("tier", "").upper() for p in real_props)
-        spread_is_premium = "PREMIUM" in (analytics["spread"].get("tier") or "").upper()
-        spread_is_value = "VALUE" in (analytics["spread"].get("tier") or "").upper()
-
-        has_premium = ml_is_premium or props_has_premium or spread_is_premium
-        has_value = ml_is_value or props_has_value or spread_is_value
+        has_premium = ml_is_premium or props_has_premium
+        has_value = ml_is_value or props_has_value
 
         normalized_tier = "PREMIUM" if has_premium else ("VALUE" if has_value else "SKIP")
         tier_label = normalized_tier
 
         if tier != "all" and normalized_tier != tier.upper():
             continue
+
+        p_pred_at = pred.predicted_at if (pred.predicted_at and pred.predicted_at.tzinfo) else (pred.predicted_at.replace(tzinfo=timezone.utc) if pred.predicted_at else None)
+        p_as_of_val = pred.as_of or pred.predicted_at
+        p_as_of_dt = p_as_of_val if (p_as_of_val and p_as_of_val.tzinfo) else (p_as_of_val.replace(tzinfo=timezone.utc) if p_as_of_val else None)
 
         picks.append({
             "game_id":          game.id,
@@ -262,11 +377,14 @@ async def get_today_picks(
             "momio":            ml,
             "ev_dolares":       round(ev, 2) if ev else 0.0,
             "kelly_fraccion":   round(kelly, 4) if kelly else 0.0,
-            "kelly_monto":      round(1000.0 * kelly, 2) if kelly else 0.0,
+            "kelly_monto":      None,
             "home_win_prob":    round(pred.home_win_prob, 4),
             "away_win_prob":    round(pred.away_win_prob, 4),
-            "tiene_ventaja":    pred.home_has_edge or pred.away_has_edge,
+            "tiene_ventaja":    home_bet.has_edge or away_bet.has_edge,
             "bookmaker":        bookmaker,
+            "observed_at":      h2h_obs.isoformat() if h2h_obs else None,
+            "predicted_at":     p_pred_at.isoformat() if p_pred_at else None,
+            "as_of":            p_as_of_dt.isoformat() if p_as_of_dt else None,
             # Análisis integral de mercados (incluye best_bet = recomendación #1 EV+Kelly)
             "best_bet":         analytics.get("best_bet"),
             "moneyline":        analytics.get("moneyline"),
@@ -279,7 +397,10 @@ async def get_today_picks(
     return {
         "sport": sport_upper,
         "period": effective_period,
+        "as_of": now_utc.isoformat(),
+        "predictions_enabled": True,
         "total_picks": len(picks),
+        "excluded_missing_market_data": excluded_missing_market_data,
         "premium": sum(1 for p in picks if p["tier"] == "PREMIUM"),
         "value":   sum(1 for p in picks if p["tier"] == "VALUE"),
         "skip":    sum(1 for p in picks if p["tier"] == "SKIP"),
@@ -291,6 +412,7 @@ async def get_today_picks(
 async def get_experimental_predictions(
     sport: str,
     lookahead_days: int = Query(default=14, ge=1, le=90),
+    db: AsyncSession = Depends(get_db),
 ):
     """Serve only hash-verified offline probabilities; this endpoint never emits picks/EV."""
     sport_lower = sport.lower()
@@ -301,7 +423,7 @@ async def get_experimental_predictions(
     if not manifests:
         raise HTTPException(status_code=404, detail="No existe una corrida experimental de inferencia")
     now_utc = datetime.now(timezone.utc)
-    us_tz = timezone(timedelta(hours=-4))  # US Eastern Time (coherente con cartelera oficial)
+    us_tz = ZoneInfo("America/New_York")
     today = now_utc.astimezone(us_tz).date()
     start_date = today - timedelta(days=1)
     end_date = today + timedelta(days=lookahead_days)
@@ -351,6 +473,31 @@ async def get_experimental_predictions(
                         "schedule_source_ref",
                     ) if key in row
                 })
+            # Experimental rows use the provider's NFLverse ID, while the
+            # dashboard's canonical Games can retain another external ID.
+            # Link only through the persisted provider crosswalk; never infer
+            # identity from a fuzzy matchup/date comparison in the UI.
+            from app.models.game import ProviderGameCrosswalk, Game
+
+            source_ids = [str(row["game_id"]) for row in results]
+            canonical_by_source_id = {}
+            if source_ids:
+                crosswalk_result = await db.execute(
+                    select(ProviderGameCrosswalk.provider_event_id, Game.id, Game.external_id)
+                    .join(Game, Game.id == ProviderGameCrosswalk.game_id)
+                    .where(ProviderGameCrosswalk.provider == "nflverse")
+                    .where(ProviderGameCrosswalk.provider_event_id.in_(source_ids))
+                    .where(Game.sport == sport_lower.upper())
+                )
+                canonical_by_source_id = {
+                    source_id: {"canonical_game_id": game_id, "canonical_external_id": external_id}
+                    for source_id, game_id, external_id in crosswalk_result.all()
+                }
+            linked_results = [
+                {**row, **canonical_by_source_id[str(row["game_id"])]}
+                for row in results
+                if str(row["game_id"]) in canonical_by_source_id
+            ]
             return {
                 "status": "experimental_only", "sport": sport_lower.upper(),
                 "predictions_enabled": False, "production_eligible": False,
@@ -359,7 +506,9 @@ async def get_experimental_predictions(
                 "dataset_sha256": run.get("dataset_sha256"),
                 "artifact_sha256": run.get("artifact_sha256"),
                 "schedule_source_refs": run.get("schedule_source_refs", []),
-                "game_count": len(results), "games": results,
+                "source_game_count": len(results), "game_count": len(linked_results),
+                "unlinked_game_count": len(results) - len(linked_results),
+                "games": linked_results,
             }
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
@@ -394,7 +543,7 @@ async def get_game_prediction(
     db: AsyncSession = Depends(get_db),
 ):
     """Predicción detallada de un partido con EV, Kelly y análisis de confluencia."""
-    if not any(_production_model_enabled(sport) for sport in ("nba", "nfl")):
+    if db is None:
         raise HTTPException(status_code=503, detail="Predicciones deshabilitadas: no hay modelo aprobado para producción.")
     stmt = (
         select(Prediction)
@@ -449,13 +598,13 @@ async def get_game_prediction(
 
 
 class SimulationRequest(BaseModel):
-    home_team_name: str = Field(default="Boston Celtics", description="Nombre del equipo local")
-    visitor_team_name: str = Field(default="Philadelphia 76ers", description="Nombre del visitante")
+    home_team_name: Optional[str] = Field(default=None, description="Nombre del equipo local")
+    visitor_team_name: Optional[str] = Field(default=None, description="Nombre del visitante")
     home_stats: Optional[Dict[str, Any]] = Field(default=None, description="Estadísticas avanzadas del local")
     visitor_stats: Optional[Dict[str, Any]] = Field(default=None, description="Estadísticas avanzadas del visitante")
     context: Optional[Dict[str, Any]] = Field(default=None, description="Contexto (descanso, B2B, altitud)")
-    home_odds: Optional[int] = Field(default=-130, description="Momio americano para el local")
-    away_odds: Optional[int] = Field(default=110, description="Momio americano para el visitante")
+    home_odds: Optional[int] = Field(default=None, description="Momio americano para el local")
+    away_odds: Optional[int] = Field(default=None, description="Momio americano para el visitante")
     bankroll: float = Field(default=1000.0, gt=0, description="Bankroll del apostador en $")
 
 

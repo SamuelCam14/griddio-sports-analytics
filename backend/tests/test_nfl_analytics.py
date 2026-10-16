@@ -24,21 +24,30 @@ class TestNFLAnalyticsService:
         assert analytics["home_team"] == "Cleveland Browns"
         assert analytics["away_team"] == "Pittsburgh Steelers"
 
-        # Validar probabilidades
-        assert analytics["prob_away"] > analytics["prob_home"]
-        assert pytest.approx(analytics["prob_home"] + analytics["prob_away"], 0.01) == 1.0
+        # Sin salida de modelo validado no se presenta la probabilidad implícita
+        # del mercado como probabilidad del modelo.
+        assert analytics["prob_home"] is None
+        assert analytics["prob_away"] is None
+        assert analytics["market_prob_away_no_vig"] > analytics["market_prob_home_no_vig"]
+        assert pytest.approx(
+            analytics["market_prob_home_no_vig"] + analytics["market_prob_away_no_vig"], 0.01
+        ) == 1.0
 
         # Validar Moneyline Pick
-        assert analytics["moneyline"]["pick_team"] == "Pittsburgh Steelers"
+        assert analytics["moneyline"]["pick_team"] is None
+        assert analytics["moneyline"]["status"] == "unavailable"
 
-        # Validar Spread
+        # Validar Spread sin modelo validado (deben omitirse picks y probabilidades de cubrir)
         assert "spread" in analytics
-        assert analytics["spread"]["pick"] is not None
-        assert analytics["spread"]["cover_probability"] >= 0.50
+        assert analytics["spread"]["pick"] is None
+        assert analytics["spread"]["cover_probability"] is None
+        assert analytics["spread"]["tier"] == "UNAVAILABLE"
 
-        # Validar Totals
+        # Validar Totals sin modelo validado (deben omitirse picks y probabilidades)
         assert "totals" in analytics
-        assert analytics["totals"]["pick"] in ["OVER", "UNDER"]
+        assert analytics["totals"]["pick"] is None
+        assert analytics["totals"]["probability"] is None
+        assert analytics["totals"]["tier"] == "UNAVAILABLE"
 
         # Sin props provistas, debe retornar lista vacía (NUNCA inventar jugadores)
         assert analytics["player_props"] == []
@@ -46,7 +55,7 @@ class TestNFLAnalyticsService:
         # Validar Factores Explicados para Humanos
         factors = analytics["key_factors"]
         assert len(factors) >= 3
-        assert any("favorito" in f for f in factors)
+        assert any("modelo no disponible" in f for f in factors)
 
     def test_nfl_matchup_with_live_player_props(self):
         """Valida que cuando se proveen player props reales de casas de apuestas, se integren correctamente."""

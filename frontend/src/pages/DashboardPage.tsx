@@ -8,6 +8,7 @@ import { HeroSpotlight } from '@/components/dashboard/HeroSpotlight'
 import { AiMatchupSimulatorCard } from '@/components/dashboard/AiMatchupSimulatorCard'
 import { LiveMatchDetailCard } from '@/components/dashboard/LiveMatchDetailCard'
 import { StandingsTableCard } from '@/components/dashboard/StandingsTableCard'
+import { RecommendedParlaysCard } from '@/components/dashboard/RecommendedParlaysCard'
 import {
   DashboardModalManager,
   type ModalType,
@@ -21,7 +22,7 @@ export function DashboardPage() {
   const [carouselIndex, setCarouselIndex] = useState(0)
   const [activeModal, setActiveModal] = useState<ModalType>(null)
 
-  const { sport, gamesQuery, oddsQuery, predictionsQuery, matchList } = useSportsDashboard()
+  const { sport, predictionsQuery, experimentalQuery, recommendedParlaysQuery, externalForecastQuery, matchList } = useSportsDashboard(selectedGameId ?? undefined)
 
   const matches = matchList.matches
   const totalMatches = matches.length
@@ -79,6 +80,13 @@ export function DashboardPage() {
   const predictionsError = predictionsQuery.error
     ? getApiErrorMessage(predictionsQuery.error)
     : undefined
+  const experimentalStatusMessage = experimentalQuery.error
+    ? `No se pudo leer la corrida: ${getApiErrorMessage(experimentalQuery.error)}`
+    : (experimentalQuery.data?.unlinked_game_count ?? 0) > 0
+      ? `${experimentalQuery.data?.unlinked_game_count} evento(s) de la corrida no tienen crosswalk canónico; no se asociaron a partidos.`
+      : experimentalQuery.data?.game_count === 0
+        ? 'La corrida verificada no contiene predicciones vigentes para partidos con identidad canónica.'
+        : undefined
 
   return (
     <MotionConfig reducedMotion="user">
@@ -136,7 +144,10 @@ export function DashboardPage() {
               totalMatches={totalMatches}
               upcomingCount={matches.filter((m) => m.game.status === 'scheduled').length}
               sport={sport}
-              upsetsCount={matches.filter((m) => (m.prediction?.ev_dolares ?? 0) > 0).length}
+              upsetsCount={predictionsQuery.data?.predictions_enabled
+                ? matches.filter((m) => (m.prediction?.ev_dolares ?? 0) > 0).length
+                : null}
+              predictionsEnabled={predictionsQuery.data?.predictions_enabled === true}
               marketTotalLine={selectedMatch?.odds.total_line}
               activeMatchupLabel={selectedMatch ? `${selectedMatch.odds.away_team} @ ${selectedMatch.odds.home_team}` : null}
             />
@@ -146,9 +157,23 @@ export function DashboardPage() {
               <AiPredictionList
                 matches={matches}
                 sport={sport}
+                externalForecast={externalForecastQuery.data}
+                externalForecastError={externalForecastQuery.error ? getApiErrorMessage(externalForecastQuery.error) : undefined}
+                externalForecastLoading={externalForecastQuery.isLoading}
+                experimentalStatusMessage={experimentalStatusMessage}
                 onSelectMatch={handleSelectMatch}
               />
             </div>
+            {sport === 'NFL' && (
+              <RecommendedParlaysCard
+                status={recommendedParlaysQuery.data?.status}
+                reason={recommendedParlaysQuery.data?.reason}
+                total={recommendedParlaysQuery.data?.total}
+                parlays={recommendedParlaysQuery.data?.parlays}
+                loading={recommendedParlaysQuery.isLoading}
+                hasError={Boolean(recommendedParlaysQuery.error)}
+              />
+            )}
           </motion.aside>
 
           {/* ══════════════════════════════════════════════════════════════════════
@@ -176,7 +201,7 @@ export function DashboardPage() {
             <AiMatchupSimulatorCard
               match={selectedMatch}
               sport={sport}
-              onOpenFullSimulator={() => setActiveModal('simulator')}
+              externalForecast={externalForecastQuery.data?.game_id === selectedMatch?.game.id ? externalForecastQuery.data : undefined}
             />
           </motion.section>
 

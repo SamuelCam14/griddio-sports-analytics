@@ -40,10 +40,41 @@ export interface Game {
   team_stats: { home: TeamStats; away: TeamStats }
 }
 
+export interface StandingsTeam {
+  position: number
+  team_id: number
+  name: string
+  abbreviation: string
+  conference: string | null
+  division: string | null
+  w: number
+  l: number
+  t: number
+  played: number
+  pct: number | null
+  points_for: number
+  points_against: number
+}
+
+export interface StandingsResponse {
+  sport: string
+  status: 'available' | 'partial' | 'unavailable'
+  season: string | null
+  as_of: string | null
+  teams_with_results: number
+  teams_in_catalog: number
+  ranking_note?: string
+  reason?: string
+  standings: StandingsTeam[]
+}
+
 export interface MarketProvenanceInfo {
   bookmaker: string | null
   observed_at: string | null
   captured_at: string | null
+  is_stale?: boolean
+  staleness_hours?: number | null
+  staleness_reason?: string | null
 }
 
 export interface OddsData {
@@ -70,6 +101,9 @@ export interface OddsData {
   home_implied_prob: number | null
   away_implied_prob: number | null
   captured_at?: string | null
+  is_stale?: boolean
+  staleness_hours?: number | null
+  staleness_reason?: string | null
   markets_provenance?: {
     moneyline?: MarketProvenanceInfo
     spread?: MarketProvenanceInfo
@@ -133,17 +167,17 @@ export interface PlayerProp {
 export interface MatchupSpread {
   market_line: number
   odds_american: number
-  projected_margin: number
-  projected_home_score: number
-  projected_away_score: number
+  projected_margin?: number
+  projected_home_score?: number
+  projected_away_score?: number
   pick: string
-  cover_probability: number
-  edge_pct: number
+  cover_probability?: number
+  edge_pct?: number
   tier: string
   // Campos EV y Kelly
-  ev_dollars: number
-  kelly_stake: number
-  has_kelly_edge: boolean
+  ev_dollars?: number
+  kelly_stake?: number
+  has_kelly_edge?: boolean
 }
 
 export interface MatchupTotals {
@@ -208,6 +242,9 @@ export interface Pick {
   away_win_prob: number
   tiene_ventaja: boolean
   bookmaker: string | null
+  observed_at?: string
+  predicted_at?: string
+  as_of?: string
   best_bet?: BestBet | null
   spread?: MatchupSpread
   totals?: MatchupTotals
@@ -323,12 +360,24 @@ export interface OfficialInjury {
   status: 'OUT' | 'QUESTIONABLE' | 'DOUBTFUL' | string
   injury: string
   practice_status?: string
+  observed_at?: string | null
+  source?: string
 }
 
 export interface TeamProductionImpact {
-  ppr_lost_pct: number
-  off_snaps_lost_pct: number
-  def_snaps_lost_pct: number
+  ppr_lost_pct: number | null
+  off_snaps_lost_pct: number | null
+  def_snaps_lost_pct: number | null
+  coverage_state?: string
+}
+
+export interface InjurySourceInfo {
+  status: 'available' | 'unavailable' | 'not_applicable_past_game'
+  source: string | null
+  captured_at_utc: string | null
+  is_from_cache: boolean
+  cache_age_seconds?: number | null
+  payload_sha256?: string | null
 }
 
 export interface MatchupTeamInjuries {
@@ -341,10 +390,10 @@ export interface MatchupTeamInjuries {
 export interface ComparisonStatTeam {
   name: string
   abbr: string
-  ppg: number
-  opp_ppg: number
-  avg_margin: number
-  days_rest: number
+  ppg: number | null
+  opp_ppg: number | null
+  avg_margin: number | null
+  days_rest: number | null
 }
 
 export interface MatchupComparisonStats {
@@ -364,10 +413,29 @@ export interface MatchupContext {
     away: TeamRecentForm
   }
   injuries: MatchupTeamInjuries
+  injury_source: InjurySourceInfo
   comparison_stats: MatchupComparisonStats
 }
 
 // ─── Games ───────────────────────────────────────────────────────────────────
+
+export interface ExternalGameForecast {
+  status: 'available' | 'unavailable'
+  sport?: string
+  game_id?: number
+  event_id?: string
+  home_team?: string
+  away_team?: string
+  home_win_probability?: number
+  away_win_probability?: number
+  probability_sum?: number
+  source?: string
+  source_field?: string
+  retrieved_at_utc?: string
+  production_model?: false
+  reason?: string
+  matching_events?: number
+}
 
 export const gamesApi = {
   getToday: () => api.get<{ date: string; total: number; games: Game[] }>('/games/today'),
@@ -379,6 +447,8 @@ export const gamesApi = {
     games: Game[]
   }>('/games/upcoming', { params: { days, sport } }),
   getContext: (gameId: number) => api.get<MatchupContext>(`/games/${gameId}/context`),
+  getExternalPrediction: (gameId: number) => api.get<ExternalGameForecast>(`/games/${gameId}/external-prediction`),
+  getStandings: (sport = 'NFL') => api.get<StandingsResponse>('/games/standings', { params: { sport } }),
 }
 
 // ─── Odds ────────────────────────────────────────────────────────────────────
@@ -395,6 +465,8 @@ export type PredictionTier = 'PREMIUM' | 'VALUE' | 'EXPERIMENTAL' | 'all'
 
 export interface ExperimentalPredictionGame {
   game_id: string
+  canonical_game_id?: number
+  canonical_external_id?: string
   game_date: string
   home_team_id: string
   away_team_id: string
@@ -409,6 +481,13 @@ export interface ExperimentalPredictionGame {
   schedule_source_ref?: string
 }
 
+export interface ExperimentalMatchPrediction extends ExperimentalPredictionGame {
+  run_as_of: string
+  model_version: string
+  dataset_sha256: string
+  artifact_sha256: string
+}
+
 export interface ExperimentalPredictionsResponse {
   status: string
   sport: string
@@ -421,6 +500,8 @@ export interface ExperimentalPredictionsResponse {
   artifact_sha256: string
   schedule_source_refs: string[]
   game_count: number
+  source_game_count?: number
+  unlinked_game_count?: number
   games: ExperimentalPredictionGame[]
 }
 
@@ -478,6 +559,24 @@ export const evApi = {
     api.post<MonteCarloResult>('/ev/montecarlo', { prob, odds_decimal: oddsDecimal, ...options }),
 }
 
+export interface ParlayLeg {
+  team_name: string
+  market?: string
+  prob_model?: number | null
+  odds_american?: number | null
+  odds_decimal?: number | null
+  edge_pct?: number | null
+  has_individual_edge?: boolean
+  tier?: string
+  bookmaker?: string
+  observed_at?: string
+  missing_reason?: string | null
+  source?: string
+  event_id?: string
+  matchup?: string
+  point?: number | string
+}
+
 export interface RecommendedParlay {
   type?: string
   viable: boolean
@@ -493,20 +592,7 @@ export interface RecommendedParlay {
   has_sufficient_model_data?: boolean
   has_correlated_legs?: boolean
   is_manual_calculation?: boolean
-  legs_evaluadas: Array<{
-    team_name: string
-    market?: string
-    prob_model?: number | null
-    odds_american?: number | null
-    odds_decimal?: number | null
-    edge_pct?: number | null
-    has_individual_edge?: boolean
-    tier?: string
-    bookmaker?: string | null
-    observed_at?: string | null
-    missing_reason?: string | null
-    source?: string
-  }>
+  legs_evaluadas: ParlayLeg[]
 }
 
 export interface CustomLegPayload {
@@ -520,10 +606,10 @@ export interface CustomLegPayload {
 }
 
 export const parlayApi = {
-  getRecommended: (bankroll = 1000, limit = 4) =>
-    api.get<{ status: string; total: number; target_odds: string; parlays: RecommendedParlay[] }>(
+  getRecommended: (bankroll?: number, limit = 4) =>
+    api.get<{ status: string; total: number; target_odds: string; reason?: string; parlays: RecommendedParlay[] }>(
       '/parlay/recommended',
-      { params: { bankroll, limit } }
+      { params: { ...(bankroll != null ? { bankroll } : {}), limit } }
     ),
   evaluate: (
     legs: CustomLegPayload[],

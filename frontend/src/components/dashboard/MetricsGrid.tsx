@@ -1,11 +1,12 @@
-import { Activity, Calendar, ShieldCheck, Target, TrendingUp } from 'lucide-react'
+import { Calendar, ShieldCheck, Target, TrendingUp } from 'lucide-react'
 
 interface MetricsGridProps {
   totalMatches: number
   upcomingCount: number
   sport: 'NBA' | 'NFL'
   avgPace?: number
-  upsetsCount?: number
+  upsetsCount?: number | null
+  predictionsEnabled: boolean
   marketTotalLine?: number | null
   activeMatchupLabel?: string | null
 }
@@ -14,7 +15,8 @@ export function MetricsGrid({
   totalMatches,
   upcomingCount,
   sport,
-  upsetsCount = 0,
+  upsetsCount = null,
+  predictionsEnabled,
   marketTotalLine,
   activeMatchupLabel,
 }: MetricsGridProps) {
@@ -29,8 +31,8 @@ export function MetricsGrid({
           <Calendar className="h-3.5 w-3.5 text-slate-400" />
         </div>
         <div className="mt-2">
-          <p className="macos-metric-value">{totalMatches} <span className="text-xs font-normal text-slate-400">Juegos</span></p>
-          <p className="macos-metric-sub">{upcomingCount} Próximos</p>
+          <p className="macos-metric-value">{totalMatches} <span className="text-xs font-normal text-slate-400">con cuotas asociadas</span></p>
+          <p className="macos-metric-sub">{upcomingCount} próximos en el calendario consultado</p>
         </div>
       </div>
 
@@ -58,9 +60,9 @@ export function MetricsGrid({
           <TrendingUp className="h-3.5 w-3.5 text-apple-orange" />
         </div>
         <div className="mt-2">
-          <p className="macos-metric-value">{upsetsCount} <span className="text-xs font-normal text-slate-400">Underdogs</span></p>
+          <p className="macos-metric-value">{upsetsCount ?? '—'} <span className="text-xs font-normal text-slate-400">selecciones</span></p>
           <p className="macos-metric-sub">
-            {upsetsCount > 0 ? 'Con ventaja matemática' : 'Sin ventajas EV+ activas'}
+            {!predictionsEnabled ? 'Sin modelo aprobado; no calculado' : upsetsCount ? 'Con ventaja publicada por el backend' : 'Sin selecciones EV+ publicadas'}
           </p>
         </div>
       </div>
@@ -68,16 +70,15 @@ export function MetricsGrid({
       {/* Metric 4: Model Governance */}
       <div className="macos-metric-tile">
         <div className="flex items-center justify-between">
-          <span className="macos-metric-label">Modelo Activo</span>
+          <span className="macos-metric-label">Estado del modelo</span>
           <ShieldCheck className="h-3.5 w-3.5 text-apple-purple" />
         </div>
         <div className="mt-2">
           <p className="macos-metric-value">
-            {sport === 'NFL' ? 'Temporal v1' : 'Baseline'}{' '}
-            <span className="text-xs font-normal text-slate-400">SSOT</span>
+            {predictionsEnabled ? 'Aprobado' : sport === 'NFL' ? 'Temporal v1 (Exp)' : 'Temporal v1 (Exp)'}
           </p>
           <p className="macos-metric-sub">
-            {sport === 'NFL' ? 'Gate prod: Cerrado' : 'Fuera de alcance'}
+            {predictionsEnabled ? 'Gate de producción: abierto' : 'Gate de producción: cerrado'}
           </p>
         </div>
       </div>

@@ -65,6 +65,7 @@ No se empieza una fase hasta que Codex marque la aceptación de la fase anterior
 | [06-backend-contract.md](06-backend-contract.md) | Jobs, persistencia, API, freshness y fail-closed |
 | [07-frontend.md](07-frontend.md) | Purga global de valores ficticios y UI solo consumidora |
 | [08-operational-trial.md](08-operational-trial.md) | Shadow/paper trial, límites, kill criteria y decisión final |
+| [09-production-readiness-plan.md](09-production-readiness-plan.md) | Plan multiagente de corrección, auditoría de fugas, pruebas y gate de producción NFL |
 | [DATA_DICTIONARY.md](DATA_DICTIONARY.md) | Registro de campos, fuentes, timestamp y uso permitido |
 
 ## Bloqueos ya conocidos que Gemini debe verificar primero

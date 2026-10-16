@@ -9,7 +9,7 @@
  * 3. Totales Over/Under no calculan EV hasta disponer de probabilidad correspondiente en el modelo.
  * 4. Emparejamiento por ambos equipos y fecha del calendario sin excepciones fijas (LA/BUF). Rechazo de ambigüedad.
  * 5. Rechazo estricto de combinar selecciones del mismo evento como patas independientes.
- * 6. Procedencia explícita por mercado: Moneyline DraftKings, Spread BetMGM, Total FanDuel con timestamps independientes.
+ * 6. La casa y timestamp se muestran únicamente cuando llegan en la procedencia del mercado.
  * 7. Calculadora manual claramente separada y etiquetada; sus resultados no son picks del modelo.
  */
 import { useState, useMemo } from 'react'
@@ -28,10 +28,8 @@ import {
 } from 'lucide-react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import {
-  predictionsApi,
   oddsApi,
   parlayApi,
-  type ExperimentalPredictionGame,
 } from '@/services/api'
 
 interface Props {
@@ -54,72 +52,13 @@ export interface ParlayLegItem {
   odds_decimal: number
   bookmaker?: string | null
   observed_at?: string | null
-  source: 'experimental_nfl' | 'market_odds' | 'custom'
-}
-
-const NFL_CANONICAL_ALIASES: Record<string, string[]> = {
-  ARI: ['arizona cardinals', 'cardinals', 'arizona', 'ari'],
-  ATL: ['atlanta falcons', 'falcons', 'atlanta', 'atl'],
-  BAL: ['baltimore ravens', 'ravens', 'baltimore', 'bal'],
-  BUF: ['buffalo bills', 'bills', 'buffalo', 'buf'],
-  CAR: ['carolina panthers', 'panthers', 'carolina', 'car'],
-  CHI: ['chicago bears', 'bears', 'chicago', 'chi'],
-  CIN: ['cincinnati bengals', 'bengals', 'cincinnati', 'cin'],
-  CLE: ['cleveland browns', 'browns', 'cleveland', 'cle'],
-  DAL: ['dallas cowboys', 'cowboys', 'dallas', 'dal'],
-  DEN: ['denver broncos', 'broncos', 'denver', 'den'],
-  DET: ['detroit lions', 'lions', 'detroit', 'det'],
-  GB:  ['green bay packers', 'packers', 'green bay', 'gb', 'gnb'],
-  HOU: ['houston texans', 'texans', 'houston', 'hou'],
-  IND: ['indianapolis colts', 'colts', 'indianapolis', 'ind'],
-  JAX: ['jacksonville jaguars', 'jaguars', 'jacksonville', 'jax'],
-  KC:  ['kansas city chiefs', 'chiefs', 'kansas city', 'kc', 'kan'],
-  LV:  ['las vegas raiders', 'raiders', 'las vegas', 'lv', 'oak', 'oakland', 'oakland raiders'],
-  LAC: ['los angeles chargers', 'chargers', 'lac', 'sd', 'san diego chargers'],
-  LAR: ['los angeles rams', 'rams', 'lar', 'la', 'stl', 'st. louis rams'],
-  MIA: ['miami dolphins', 'dolphins', 'miami', 'mia'],
-  MIN: ['minnesota vikings', 'vikings', 'minnesota', 'min'],
-  NE:  ['new england patriots', 'patriots', 'new england', 'ne', 'nwe'],
-  NO:  ['new orleans saints', 'saints', 'new orleans', 'no', 'nor'],
-  NYG: ['new york giants', 'giants', 'nyg'],
-  NYJ: ['new york jets', 'jets', 'nyj'],
-  PHI: ['philadelphia eagles', 'eagles', 'philadelphia', 'phi'],
-  PIT: ['pittsburgh steelers', 'steelers', 'pittsburgh', 'pit'],
-  SF:  ['san francisco 49ers', '49ers', 'san francisco', 'sf', 'sfo', 'niners'],
-  SEA: ['seahawks', 'seattle', 'sea'],
-  TB:  ['tampa bay buccaneers', 'buccaneers', 'tampa bay', 'tb', 'tam', 'bucs'],
-  TEN: ['tennessee titans', 'titans', 'tennessee', 'ten'],
-  WAS: ['washington commanders', 'commanders', 'washington', 'was', 'wsh', 'redskins', 'football team'],
-}
-
-const EXACT_TEAM_LOOKUP: Record<string, string> = {}
-for (const [canonical, aliases] of Object.entries(NFL_CANONICAL_ALIASES)) {
-  EXACT_TEAM_LOOKUP[canonical.toLowerCase()] = canonical
-  for (const alias of aliases) {
-    EXACT_TEAM_LOOKUP[alias.toLowerCase()] = canonical
-  }
-}
-
-const SORTED_TEAM_ALIASES = Object.keys(EXACT_TEAM_LOOKUP).sort((a, b) => b.length - a.length)
-
-function normalizeNFLTeam(name?: string): string | null {
-  if (!name) return null
-  const raw = name.trim().toLowerCase()
-  if (EXACT_TEAM_LOOKUP[raw]) return EXACT_TEAM_LOOKUP[raw]
-  for (const alias of SORTED_TEAM_ALIASES) {
-    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const regex = new RegExp(`\\b${escaped}\\b`)
-    if (regex.test(raw)) {
-      return EXACT_TEAM_LOOKUP[alias]
-    }
-  }
-  return null
+  source: 'market_odds' | 'custom'
 }
 
 function americanToDecimal(odds: number): number {
   if (odds > 0) return Number(((odds / 100) + 1).toFixed(4))
   if (odds < 0) return Number(((100 / Math.abs(odds)) + 1).toFixed(4))
-  return 2.0
+  return Number.NaN
 }
 
 function formatOdds(american: number): string {
@@ -140,17 +79,10 @@ export function ParlayBuilderView({ bankroll }: Props) {
   const [activeSport, setActiveSport] = useState<'NFL' | 'NBA'>('NFL')
   const [selectedLegs, setSelectedLegs] = useState<ParlayLegItem[]>([])
   const [customTeam, setCustomTeam] = useState('')
-  const [customProb, setCustomProb] = useState(65)
-  const [customOdds, setCustomOdds] = useState(-110)
+  const [customProb, setCustomProb] = useState('')
+  const [customOdds, setCustomOdds] = useState('')
 
   // ─── Consultas Reales de Backend SSOT ─────────────────────────────────────
-  const experimentalNFLQuery = useQuery({
-    queryKey: ['experimentalPredictions', 'nfl', 14],
-    queryFn: () => predictionsApi.getExperimental('nfl', 14).then((r) => r.data),
-    staleTime: 60_000,
-    enabled: activeSport === 'NFL',
-  })
-
   const oddsNFLQuery = useQuery({
     queryKey: ['nflOddsReal'],
     queryFn: () => oddsApi.getNFL().then((r) => r.data),
@@ -183,44 +115,21 @@ export function ParlayBuilderView({ bankroll }: Props) {
 
     const candidates: ParlayLegItem[] = []
     const oddsGames = oddsNFLQuery.data?.games ?? []
-    const expGames = experimentalNFLQuery.data?.games ?? []
 
     // 1. Partidos con Momios Reales de Mercado
     oddsGames.forEach((og) => {
-      // Emparejar por ambos equipos y fecha del calendario; rechazar coincidencias ambiguas
-      const normHomeOg = normalizeNFLTeam(og.home_team)
-      const normAwayOg = normalizeNFLTeam(og.away_team)
-
-      const matches = expGames.filter((eg) => {
-        const normHomeEg = normalizeNFLTeam(eg.home_team_name) || eg.home_team_abbreviation
-        const normAwayEg = normalizeNFLTeam(eg.away_team_name) || eg.away_team_abbreviation
-        if (normHomeEg !== normHomeOg || normAwayEg !== normAwayOg) return false
-        if (og.commence_time && eg.game_date) {
-          const ogDate = new Date(og.commence_time).getTime()
-          const egDate = new Date(eg.game_date).getTime()
-          const diffDays = Math.abs(ogDate - egDate) / (1000 * 60 * 60 * 24)
-          return diffDays <= 1.5
-        }
-        return true
-      })
-
-      // Rechazo estricto de coincidencias ambiguas
-      const matchedExp = matches.length === 1 ? matches[0] : null
-
       // Procedencia explícita por mercado
-      const mlBookmaker = og.markets_provenance?.moneyline?.bookmaker || og.best_bookmaker || 'draftkings'
+      const mlBookmaker = og.markets_provenance?.moneyline?.bookmaker ?? og.best_bookmaker ?? null
       const mlObservedAt = og.markets_provenance?.moneyline?.observed_at || og.h2h_observed_at
-      const sprBookmaker = og.markets_provenance?.spread?.bookmaker || og.spread_bookmaker || 'betmgm'
-      const sprObservedAt = og.markets_provenance?.spread?.observed_at || og.spread_observed_at
-      const totBookmaker = og.markets_provenance?.total?.bookmaker || og.total_bookmaker || 'fanduel'
+      const totBookmaker = og.markets_provenance?.total?.bookmaker ?? og.total_bookmaker ?? null
       const totObservedAt = og.markets_provenance?.total?.observed_at || og.total_observed_at
 
-      // Solo asignar probabilidad si el modelo experimental la calculó (Cero 0.50 o implícita)
-      const awayProb = matchedExp ? Number(matchedExp.away_win_probability.toFixed(4)) : null
-      const homeProb = matchedExp ? Number(matchedExp.home_win_probability.toFixed(4)) : null
+      const eventDate = og.commence_time && Number.isFinite(Date.parse(og.commence_time))
+        ? og.commence_time.split('T')[0]
+        : ''
 
       // Victoria Visitante Moneyline
-      if (og.away_ml != null) {
+      if (og.away_ml != null && mlBookmaker && mlObservedAt && eventDate) {
         candidates.push({
           id: `odds_ml_away_${og.external_id}`,
           game_id: og.external_id,
@@ -230,19 +139,19 @@ export function ParlayBuilderView({ bankroll }: Props) {
           team_name: og.away_team,
           selection_label: `${og.away_team} ML (${formatOdds(og.away_ml)})`,
           matchup: `${og.away_team} @ ${og.home_team}`,
-          game_date: og.commence_time ? og.commence_time.split('T')[0] : '2026-10-12',
+          game_date: eventDate,
           commence_time: og.commence_time,
-          prob_model: awayProb,
+          prob_model: null,
           odds_american: og.away_ml,
           odds_decimal: americanToDecimal(og.away_ml),
           bookmaker: mlBookmaker,
           observed_at: mlObservedAt,
-          source: matchedExp ? 'experimental_nfl' : 'market_odds',
+          source: 'market_odds',
         })
       }
 
       // Victoria Local Moneyline
-      if (og.home_ml != null) {
+      if (og.home_ml != null && mlBookmaker && mlObservedAt && eventDate) {
         candidates.push({
           id: `odds_ml_home_${og.external_id}`,
           game_id: og.external_id,
@@ -252,19 +161,19 @@ export function ParlayBuilderView({ bankroll }: Props) {
           team_name: og.home_team,
           selection_label: `${og.home_team} ML (${formatOdds(og.home_ml)})`,
           matchup: `${og.away_team} @ ${og.home_team}`,
-          game_date: og.commence_time ? og.commence_time.split('T')[0] : '2026-10-12',
+          game_date: eventDate,
           commence_time: og.commence_time,
-          prob_model: homeProb,
+          prob_model: null,
           odds_american: og.home_ml,
           odds_decimal: americanToDecimal(og.home_ml),
           bookmaker: mlBookmaker,
           observed_at: mlObservedAt,
-          source: matchedExp ? 'experimental_nfl' : 'market_odds',
+          source: 'market_odds',
         })
       }
 
       // Totales Over / Under: prob_model = null estrictamente hasta disponer de modelo Over/Under
-      if (og.total_line != null && og.over_ml != null) {
+      if (og.total_line != null && og.over_ml != null && totBookmaker && totObservedAt && eventDate) {
         candidates.push({
           id: `odds_total_over_${og.external_id}`,
           game_id: og.external_id,
@@ -274,9 +183,9 @@ export function ParlayBuilderView({ bankroll }: Props) {
           team_name: `${og.away_team} @ ${og.home_team} OVER ${og.total_line}`,
           selection_label: `OVER ${og.total_line} Pts (${formatOdds(og.over_ml)})`,
           matchup: `${og.away_team} vs ${og.home_team}`,
-          game_date: og.commence_time ? og.commence_time.split('T')[0] : '2026-10-12',
+          game_date: eventDate,
           commence_time: og.commence_time,
-          prob_model: null, // Cero 0.50. Sin EV de modelo para totales.
+          prob_model: null,
           odds_american: og.over_ml,
           odds_decimal: americanToDecimal(og.over_ml),
           bookmaker: totBookmaker,
@@ -284,7 +193,7 @@ export function ParlayBuilderView({ bankroll }: Props) {
           source: 'market_odds',
         })
       }
-      if (og.total_line != null && og.under_ml != null) {
+      if (og.total_line != null && og.under_ml != null && totBookmaker && totObservedAt && eventDate) {
         candidates.push({
           id: `odds_total_under_${og.external_id}`,
           game_id: og.external_id,
@@ -294,7 +203,7 @@ export function ParlayBuilderView({ bankroll }: Props) {
           team_name: `${og.away_team} @ ${og.home_team} UNDER ${og.total_line}`,
           selection_label: `UNDER ${og.total_line} Pts (${formatOdds(og.under_ml)})`,
           matchup: `${og.away_team} vs ${og.home_team}`,
-          game_date: og.commence_time ? og.commence_time.split('T')[0] : '2026-10-12',
+          game_date: eventDate,
           commence_time: og.commence_time,
           prob_model: null,
           odds_american: og.under_ml,
@@ -307,7 +216,7 @@ export function ParlayBuilderView({ bankroll }: Props) {
     })
 
     return candidates.sort((a, b) => (b.prob_model ?? 0) - (a.prob_model ?? 0))
-  }, [activeSport, oddsNFLQuery.data, experimentalNFLQuery.data])
+  }, [activeSport, oddsNFLQuery.data])
 
   // ─── Manejadores de Selección (Disparan Evaluación SSOT Backend) ───────────
   const handleToggleLeg = (leg: ParlayLegItem) => {
@@ -328,16 +237,20 @@ export function ParlayBuilderView({ bankroll }: Props) {
   }
 
   const handleAddCustomLeg = () => {
-    if (!customTeam.trim()) return
-    const dec = americanToDecimal(customOdds)
+    const probability = Number(customProb)
+    const americanOdds = Number(customOdds)
+    if (!customTeam.trim() || !customProb.trim() || !customOdds.trim()
+      || !Number.isFinite(probability) || probability <= 0 || probability >= 100
+      || !Number.isInteger(americanOdds) || americanOdds === 0) return
+    const dec = americanToDecimal(americanOdds)
     const leg: ParlayLegItem = {
       id: `custom_${Date.now()}`,
       team_name: customTeam.trim(),
       selection_label: `${customTeam.trim()} (Entrada manual)`,
       matchup: 'Entrada manual',
-      game_date: new Date().toISOString().split('T')[0],
-      prob_model: customProb / 100.0,
-      odds_american: customOdds,
+      game_date: '',
+      prob_model: probability / 100.0,
+      odds_american: americanOdds,
       odds_decimal: dec,
       bookmaker: 'Manual',
       source: 'custom',
@@ -345,6 +258,8 @@ export function ParlayBuilderView({ bankroll }: Props) {
     const newLegs = [...selectedLegs, leg]
     setSelectedLegs(newLegs)
     setCustomTeam('')
+    setCustomProb('')
+    setCustomOdds('')
     if (newLegs.length >= 2) {
       evaluateMutation.mutate(newLegs)
     }
@@ -425,14 +340,11 @@ export function ParlayBuilderView({ bankroll }: Props) {
           <div className="flex items-center gap-2">
             <Info className="h-3.5 w-3.5 text-apple-blue shrink-0" />
             <span>
-              <strong>Procedencia de Líneas por Mercado:</strong> Moneyline:{' '}
-              <span className="text-white font-medium">DraftKings</span> | Spread:{' '}
-              <span className="text-white font-medium">BetMGM</span> | Total:{' '}
-              <span className="text-white font-medium">FanDuel</span>.
+              <strong>Procedencia de líneas:</strong> cada selección requiere mercado, casa, fecha y hora observada recibidos de la fuente.
             </span>
           </div>
           <span className="font-mono text-[10px] text-slate-500">
-            Snapshots locales observados • Cero llamadas The Odds API
+            La ausencia de procedencia excluye la selección.
           </span>
         </div>
       </div>
@@ -456,9 +368,9 @@ export function ParlayBuilderView({ bankroll }: Props) {
           </div>
 
           {/* Estado de carga */}
-          {experimentalNFLQuery.isLoading && (
+          {oddsNFLQuery.isLoading && (
             <div className="rounded-xl border border-white/[0.08] bg-[#0c0e14] p-8 text-center text-xs text-slate-400 animate-pulse">
-              Cargando inferencia de partidos NFL y momios reales de mercado...
+              Cargando cuotas NFL disponibles...
             </div>
           )}
 
@@ -557,12 +469,12 @@ export function ParlayBuilderView({ bankroll }: Props) {
             })}
           </div>
 
-          {availableCandidates.length === 0 && !experimentalNFLQuery.isLoading && (
+          {availableCandidates.length === 0 && !oddsNFLQuery.isLoading && (
             <div className="rounded-xl border border-white/[0.08] bg-[#0c0e14] p-8 text-center text-xs text-slate-400">
               <AlertTriangle className="h-6 w-6 text-amber-400 mx-auto mb-2" />
               <p className="font-medium text-slate-300">Sin partidos NFL disponibles</p>
               <p className="mt-1 text-[11px] text-slate-500">
-                La inferencia experimental de la NFL se actualiza según el calendario oficial.
+                No hay cuotas con fecha, mercado y procedencia verificables.
               </p>
             </div>
           )}
@@ -609,7 +521,7 @@ export function ParlayBuilderView({ bankroll }: Props) {
                   min={10}
                   max={95}
                   value={customProb}
-                  onChange={(e) => setCustomProb(Number(e.target.value))}
+                  onChange={(e) => setCustomProb(e.target.value)}
                   className="mt-1 w-full rounded-lg border border-white/[0.1] bg-black/40 px-3 py-1.5 text-xs text-white font-mono outline-none focus:border-amber-400"
                 />
               </div>
@@ -619,7 +531,7 @@ export function ParlayBuilderView({ bankroll }: Props) {
                 <input
                   type="number"
                   value={customOdds}
-                  onChange={(e) => setCustomOdds(Number(e.target.value))}
+                  onChange={(e) => setCustomOdds(e.target.value)}
                   className="mt-1 w-full rounded-lg border border-white/[0.1] bg-black/40 px-3 py-1.5 text-xs text-white font-mono outline-none focus:border-amber-400"
                 />
               </div>
@@ -627,7 +539,7 @@ export function ParlayBuilderView({ bankroll }: Props) {
               <button
                 type="button"
                 onClick={handleAddCustomLeg}
-                disabled={!customTeam.trim() || selectedLegs.length >= 4}
+                disabled={!customTeam.trim() || !customProb.trim() || !customOdds.trim() || selectedLegs.length >= 4}
                 className="flex items-center justify-center gap-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-40"
               >
                 <Plus className="h-3.5 w-3.5" />

@@ -1,10 +1,8 @@
 import { useState } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { Maximize2, Sparkles } from 'lucide-react'
-import { TeamLogo } from '@/components/ui/TeamLogo'
+import { Maximize2 } from 'lucide-react'
 import { PillTabs, type TabOption } from '@/components/ui/PillTabs'
 import type { ScheduledMatch } from '@/types/dashboard'
-import { formatMatchDate, formatMatchTime } from '@/utils/dashboard'
+import { formatMatchDate, formatMatchTime, formatPercentage, formatNumber } from '@/utils/dashboard'
 
 interface LiveMatchDetailCardProps {
   match?: ScheduledMatch
@@ -12,267 +10,157 @@ interface LiveMatchDetailCardProps {
   onOpenDeepDive: () => void
 }
 
-type TabType = 'timeline' | 'lineup' | 'stats' | 'insights'
-
+type TabType = 'market' | 'lineup' | 'stats' | 'insights'
 const TABS: TabOption<TabType>[] = [
-  { id: 'timeline', label: 'Momios' },
-  { id: 'lineup', label: 'Bajas/Props' },
+  { id: 'market', label: 'Mercado' },
+  { id: 'lineup', label: 'Bajas' },
   { id: 'stats', label: 'Stats' },
-  { id: 'insights', label: 'Insights AI' },
+  { id: 'insights', label: 'Modelo' },
 ]
 
-export function LiveMatchDetailCard({
-  match,
-  sport,
-  onOpenDeepDive,
-}: LiveMatchDetailCardProps) {
-  const [activeTab, setActiveTab] = useState<TabType>('timeline')
-  const isNba = sport === 'NBA'
-
-  const homeTeam = match?.odds.home_team ?? (isNba ? 'Boston Celtics' : 'Kansas City Chiefs')
-  const awayTeam = match?.odds.away_team ?? (isNba ? 'Los Angeles Lakers' : 'San Francisco 49ers')
-  const isLive = match?.game.status === 'live'
-  const isFinal = match?.game.status === 'final'
-  const isScheduled = !isLive && !isFinal
-  const homeScore = isScheduled ? '—' : (match?.game.home_score ?? (isNba ? 108 : 27))
-  const awayScore = isScheduled ? '—' : (match?.game.away_score ?? (isNba ? 104 : 24))
-  const clockText = isLive
-    ? 'Q4 03:45'
-    : isFinal
-    ? 'FINAL'
-    : `Kickoff: ${formatMatchTime(match?.odds.commence_time ?? match?.game.game_date ?? new Date().toISOString())}`
-
-  const homeProb = match?.prediction?.home_win_prob ?? match?.odds.home_implied_prob ?? 0.6
-  const awayProb = match?.prediction?.away_win_prob ?? match?.odds.away_implied_prob ?? 0.4
-  const homePct = Math.round(homeProb * 100)
-  const awayPct = Math.round(awayProb * 100)
+export function LiveMatchDetailCard({ match, sport, onOpenDeepDive }: LiveMatchDetailCardProps) {
+  const [activeTab, setActiveTab] = useState<TabType>('market')
+  const game = match?.game
+  const odds = match?.odds
+  const prediction = match?.prediction
+  const experimental = match?.experimentalPrediction
+  const home = odds?.home_team ?? 'Local sin identificar'
+  const away = odds?.away_team ?? 'Visitante sin identificar'
+  const kickoff = odds?.commence_time ?? game?.game_date
+  const isScheduled = !game || game.status === 'scheduled'
+  const statusLabel = !game ? 'Estado no disponible' : game.status === 'live' ? 'EN VIVO' : game.status === 'final' ? 'FINAL' : 'PROGRAMADO'
 
   return (
-    <div className="macos-card p-4 sm:p-5 flex flex-col justify-between">
-      <div>
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold tracking-tight text-white">Live Matches</h3>
-            <p className="mt-0.5 text-[11px] text-slate-400">
-              {match ? `${sport} · ${formatMatchDate(match.odds.commence_time)}` : `${sport} · Cartelera Principal`}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onOpenDeepDive}
-            title="Expandir centro de análisis"
-            className="macos-btn-icon"
-          >
-            <Maximize2 className="h-3.5 w-3.5" />
-          </button>
+    <div className="macos-card p-4 sm:p-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold tracking-tight text-white">Estado del partido</h3>
+          <p className="mt-0.5 text-[11px] text-slate-400">{sport} · {kickoff ? formatMatchDate(kickoff) : 'fecha sin verificar'}</p>
         </div>
+        <button type="button" onClick={onOpenDeepDive} disabled={!game} title="Abrir contexto del partido" className="macos-btn-icon disabled:opacity-40">
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
 
-        {/* Scoreboard banner */}
-        <div className="mt-3.5 rounded-xl border border-white/[0.08] bg-[#12151e]/60 p-4">
-          {/* Teams and Score */}
-          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-            {/* Away Team */}
-            <div className="flex flex-col items-center text-center">
-              <TeamLogo name={awayTeam} size="lg" />
-              <span className="mt-2 text-xs font-semibold text-white truncate max-w-[100px]">{awayTeam}</span>
-              <span className="text-[10px] text-slate-400">Visitante</span>
-            </div>
-
-            {/* Scores & Clock */}
-            <div className="flex flex-col items-center">
-              <div className="flex items-center gap-2 font-mono text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                {isScheduled ? (
-                  <>
-                    <span className="text-slate-400">—</span>
-                    <span className="text-slate-600 font-normal">vs</span>
-                    <span className="text-slate-400">—</span>
-                  </>
-                ) : (
-                  <>
-                    <span>{awayScore}</span>
-                    <span className="text-slate-600 font-normal">-</span>
-                    <span>{homeScore}</span>
-                  </>
-                )}
-              </div>
-              <span className="mt-1 rounded-md border border-white/[0.08] bg-white/[0.06] px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-200">
-                {clockText}
-              </span>
-            </div>
-
-            {/* Home Team */}
-            <div className="flex flex-col items-center text-center">
-              <TeamLogo name={homeTeam} size="lg" />
-              <span className="mt-2 text-xs font-semibold text-white truncate max-w-[100px]">{homeTeam}</span>
-              <span className="text-[10px] text-slate-400">Local</span>
-            </div>
+      <div className="mt-3.5 rounded-xl border border-white/[0.08] bg-[#12151e]/60 p-4">
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-center">
+          <div><p className="text-xs font-semibold text-white">{away}</p><p className="text-[10px] text-slate-400">Visitante</p></div>
+          <div className="font-mono text-xl font-bold text-white">
+            {isScheduled ? '— vs —' : `${game?.away_score ?? '—'} - ${game?.home_score ?? '—'}`}
+            <p className="mt-1 text-[10px] font-medium text-slate-400">{statusLabel}{kickoff && isScheduled ? ` · ${formatMatchTime(kickoff)}` : ''}</p>
           </div>
-
-          {/* Win Probability Bar */}
-          <div className="mt-3.5 space-y-1.5 border-t border-white/[0.08] pt-3">
-            <div className="flex items-center justify-between text-[11px] font-mono text-slate-300">
-              <span>{awayPct}% Win</span>
-              <span className="text-[10px] uppercase font-medium text-slate-400">Prob. Modelo</span>
-              <span>{homePct}% Win</span>
-            </div>
-            <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${awayPct}%` }}
-                transition={{ duration: 0.5 }}
-                className="h-full bg-apple-blue"
-              />
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${homePct}%` }}
-                transition={{ duration: 0.5 }}
-                className="h-full bg-apple-green"
-              />
-            </div>
-          </div>
+          <div><p className="text-xs font-semibold text-white">{home}</p><p className="text-[10px] text-slate-400">Local</p></div>
         </div>
-
-        {/* Apple Segmented Control Tabs */}
-        <div className="mt-3.5 flex justify-center">
-          <PillTabs
-            tabs={TABS}
-            activeTab={activeTab}
-            onChange={setActiveTab}
-            size="sm"
-          />
-        </div>
-
-        {/* Tab Content Panels */}
-        <div className="mt-3 min-h-[135px] rounded-xl border border-white/[0.06] bg-[#12151e]/40 p-3 text-xs">
-          <AnimatePresence mode="wait">
-            {activeTab === 'timeline' && (
-              <motion.div
-                key="timeline"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="space-y-2"
-              >
-                <div className="flex justify-between text-slate-400 border-b border-white/[0.04] pb-1">
-                  <span>Mercado Moneyline</span>
-                  <span className="text-white font-mono">
-                    {match?.odds.away_ml ? (match.odds.away_ml > 0 ? `+${match.odds.away_ml}` : match.odds.away_ml) : '+115'} / {match?.odds.home_ml ? (match.odds.home_ml > 0 ? `+${match.odds.home_ml}` : match.odds.home_ml) : '-135'}
-                  </span>
-                </div>
-                <div className="flex justify-between text-slate-400 border-b border-white/[0.04] pb-1">
-                  <span>Línea Hándicap</span>
-                  <span className="text-white font-mono">{match?.odds.home_spread ?? '-4.5'}</span>
-                </div>
-                <div className="flex justify-between text-slate-400 border-b border-white/[0.04] pb-1">
-                  <span>Línea Total (O/U)</span>
-                  <span className="text-white font-mono">{match?.odds.total_line ?? (isNba ? '226.5' : '47.5')}</span>
-                </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>Mejor Casa</span>
-                  <span className="text-slate-200 font-medium">{match?.odds.best_bookmaker ?? 'Pinnacle'}</span>
-                </div>
-              </motion.div>
-            )}
-
-            {activeTab === 'lineup' && (
-              <motion.div
-                key="lineup"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="space-y-1.5"
-              >
-                <p className="text-[10px] font-semibold uppercase text-slate-400">Props Destacados</p>
-                {match?.prediction?.player_props && match.prediction.player_props.length > 0 ? (
-                  match.prediction.player_props.slice(0, 3).map((prop, i) => (
-                    <div key={i} className="flex justify-between text-slate-300">
-                      <span className="truncate">{prop.player_name} ({prop.prop_type})</span>
-                      <span className="font-mono text-apple-blue font-medium">{prop.market_line}</span>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-slate-400 text-[11px] leading-relaxed">
-                    Consulta el reporte de bajas de ambos equipos y análisis de rotaciones en el centro integral.
-                  </p>
-                )}
-              </motion.div>
-            )}
-
-            {activeTab === 'stats' && (
-              <motion.div
-                key="stats"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="space-y-2"
-              >
-                {isNba ? (
-                  <>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Rating Ofensivo</span>
-                      <span className="text-white font-mono">116.8 vs 114.2</span>
-                    </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Rating Defensivo</span>
-                      <span className="text-white font-mono">110.4 vs 112.9</span>
-                    </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Ritmo (Pace)</span>
-                      <span className="text-white font-mono">99.8 posesiones</span>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Eficiencia Neta (EPA/play)</span>
-                      <span className="text-white font-mono">+0.08 vs -0.02</span>
-                    </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Puntos por Partido (PPG)</span>
-                      <span className="text-white font-mono">27.8 vs 21.4</span>
-                    </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Margen Promedio</span>
-                      <span className="text-white font-mono">+6.4 vs -2.1</span>
-                    </div>
-                  </>
-                )}
-              </motion.div>
-            )}
-
-            {activeTab === 'insights' && (
-              <motion.div
-                key="insights"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="space-y-1.5"
-              >
-                <p className="text-[10px] font-semibold uppercase text-slate-400">Ventaja Cuantitativa</p>
-                <p className="text-slate-300 text-[11px] leading-snug">
-                  {match?.prediction?.best_bet?.reason ??
-                    (isNba
-                      ? 'El ensamble detecta desajuste en el rebote defensivo y valor positivo en la línea de dinero del local.'
-                      : 'El modelo temporal v1 proyecta ventaja en EPA por jugada aérea y valor positivo (+40.1% EV) en la línea de dinero de Bills.')}
-                </p>
-              </motion.div>
-            )}
-          </AnimatePresence>
+        <div className="mt-3 border-t border-white/[0.08] pt-3 text-center text-xs text-slate-400">
+          {prediction
+            ? `Probabilidad local ${formatPercentage(prediction.home_win_prob)} · visitante ${formatPercentage(prediction.away_win_prob)}`
+            : experimental
+              ? `Probabilidad experimental: local ${formatPercentage(experimental.home_win_probability)} · visitante ${formatPercentage(experimental.away_win_probability)}`
+              : 'Pronóstico no disponible'}
         </div>
       </div>
 
-      {/* Clean macOS Action Button */}
-      <div className="mt-3.5">
-        <button
-          type="button"
-          onClick={onOpenDeepDive}
-          className="macos-btn-primary w-full py-2.5 text-center text-xs font-semibold tracking-wide"
-        >
-          <Sparkles className="h-3.5 w-3.5" />
-          <span>Ver Análisis Integral</span>
-        </button>
+      <div className="mt-3.5 flex justify-center"><PillTabs tabs={TABS} activeTab={activeTab} onChange={setActiveTab} size="sm" /></div>
+      <div className="mt-3 min-h-[115px] rounded-xl border border-white/[0.06] bg-[#12151e]/40 p-3 text-xs">
+        {activeTab === 'market' && (
+          <div className="space-y-2">
+            <MarketFact
+              label="Moneyline · visita / local"
+              value={odds?.home_ml != null && odds?.away_ml != null ? `${formatOdds(odds.away_ml)} / ${formatOdds(odds.home_ml)}` : null}
+              bookmaker={odds?.markets_provenance?.moneyline?.bookmaker ?? odds?.best_bookmaker}
+              observedAt={odds?.markets_provenance?.moneyline?.observed_at ?? odds?.h2h_observed_at}
+              stale={odds?.markets_provenance?.moneyline?.is_stale ?? odds?.is_stale}
+              staleReason={odds?.markets_provenance?.moneyline?.staleness_reason ?? odds?.staleness_reason}
+            />
+            <MarketFact
+              label="Hándicap · local / visita"
+              value={odds?.home_spread != null ? `${odds.home_spread > 0 ? '+' : ''}${odds.home_spread} (${formatOddsNullable(odds.home_spread_ml)}) / ${odds.away_spread != null ? `${odds.away_spread > 0 ? '+' : ''}${odds.away_spread}` : '—'} (${formatOddsNullable(odds.away_spread_ml)})` : null}
+              bookmaker={odds?.markets_provenance?.spread?.bookmaker ?? odds?.spread_bookmaker}
+              observedAt={odds?.markets_provenance?.spread?.observed_at ?? odds?.spread_observed_at}
+              stale={odds?.markets_provenance?.spread?.is_stale}
+              staleReason={odds?.markets_provenance?.spread?.staleness_reason}
+            />
+            <MarketFact
+              label="Total · over / under"
+              value={odds?.total_line != null ? `${odds.total_line} · ${formatOddsNullable(odds.over_ml)} / ${formatOddsNullable(odds.under_ml)}` : null}
+              bookmaker={odds?.markets_provenance?.total?.bookmaker ?? odds?.total_bookmaker}
+              observedAt={odds?.markets_provenance?.total?.observed_at ?? odds?.total_observed_at}
+              stale={odds?.markets_provenance?.total?.is_stale}
+              staleReason={odds?.markets_provenance?.total?.staleness_reason}
+            />
+            <Fact label="Probabilidad de mercado sin vig · local / visita" value={odds?.home_implied_prob != null && odds?.away_implied_prob != null ? `${formatPercentage(odds.home_implied_prob)} / ${formatPercentage(odds.away_implied_prob)}` : null} />
+            <p className="pt-1 text-[10px] text-slate-500">Las probabilidades sin vig describen el mercado; no son probabilidades del modelo ni implican EV.</p>
+          </div>
+        )}
+        {activeTab === 'lineup' && <p className="text-slate-400">El reporte de lesiones no está disponible en la cartelera. Abre el contexto del partido para consultar cobertura y fuente.</p>}
+        {activeTab === 'stats' && game && (
+          <div className="space-y-2">
+            <Fact label="Win rate" value={game.team_stats.home.wpct != null && game.team_stats.away.wpct != null ? `${formatPercentage(game.team_stats.away.wpct)} / ${formatPercentage(game.team_stats.home.wpct)}` : null} />
+            <Fact label="Rating neto" value={game.team_stats.home.net_rtg != null && game.team_stats.away.net_rtg != null ? `${formatNumber(game.team_stats.away.net_rtg)} / ${formatNumber(game.team_stats.home.net_rtg)}` : null} />
+            <Fact label="Ritmo" value={game.team_stats.home.pace != null && game.team_stats.away.pace != null ? `${formatNumber(game.team_stats.away.pace)} / ${formatNumber(game.team_stats.home.pace)}` : null} />
+          </div>
+        )}
+        {activeTab === 'stats' && !game && <p className="text-slate-400">No hay un registro canónico de partido para leer estadísticas.</p>}
+        {activeTab === 'insights' && (
+          <div className="space-y-2 text-slate-300">
+            {prediction ? (
+              <>
+                <p>Probabilidad de producción · Local {formatPercentage(prediction.home_win_prob)} / visita {formatPercentage(prediction.away_win_prob)}</p>
+                <p>EV y selección: {prediction.best_bet ? `${prediction.best_bet.selection} · EV ${prediction.best_bet.ev_dollars > 0 ? '+' : ''}$${prediction.best_bet.ev_dollars} por cada $100` : 'Sin oportunidad calculable con ventaja publicada.'}</p>
+                {prediction.key_factors?.map((factor, index) => <p key={`${factor}-${index}`} className="text-slate-400">{factor}</p>)}
+              </>
+            ) : experimental ? (
+              <>
+                <p className="font-semibold text-amber-300">Probabilidades experimentales · no son pick</p>
+                <p>Local {formatPercentage(experimental.home_win_probability)} / visita {formatPercentage(experimental.away_win_probability)}</p>
+                <p>Mayor probabilidad experimental: {experimental.home_win_probability >= experimental.away_win_probability ? home : away} ({formatPercentage(Math.max(experimental.home_win_probability, experimental.away_win_probability))}).</p>
+                <p className="text-slate-400">Modelo {experimental.model_version} · inferencia {experimental.run_as_of}</p>
+                <p className="break-all text-[10px] text-slate-500">Dataset SHA-256: {experimental.dataset_sha256}</p>
+                <p className="break-all text-[10px] text-slate-500">Artefacto SHA-256: {experimental.artifact_sha256}</p>
+                <p className="text-slate-400">Sin modelo aprobado para este mercado, EV, handicap y pick recomendado no se calculan.</p>
+              </>
+            ) : <p>No existe inferencia vinculada a este partido y vigente para la fecha del evento.</p>}
+          </div>
+        )}
       </div>
     </div>
   )
+}
+
+function Fact({ label, value }: { label: string; value: string | number | null | undefined }) {
+  return <div className="flex justify-between gap-3 border-b border-white/[0.04] pb-1 text-slate-400"><span>{label}</span><span className="text-right font-mono text-slate-200">{value ?? 'Sin dato verificado'}</span></div>
+}
+
+function MarketFact({
+  label,
+  value,
+  bookmaker,
+  observedAt,
+  stale,
+  staleReason,
+}: {
+  label: string
+  value: string | null
+  bookmaker?: string | null
+  observedAt?: string | null
+  stale?: boolean
+  staleReason?: string | null
+}) {
+  return (
+    <div className="border-b border-white/[0.04] pb-1">
+      <div className="flex justify-between gap-3 text-slate-400"><span>{label}</span><span className="text-right font-mono text-slate-200">{value ?? 'Sin línea observada'}</span></div>
+      <p className={`mt-0.5 text-right text-[10px] ${stale ? 'text-amber-300' : 'text-slate-500'}`}>
+        {bookmaker ?? 'Sin casa'} · {observedAt ?? 'sin hora de observación'}{stale ? ` · obsoleto${staleReason ? `: ${staleReason}` : ''}` : ''}
+      </p>
+      {stale && <p className="text-right text-[10px] text-amber-300">No usar para calcular EV ni recomendar.</p>}
+    </div>
+  )
+}
+
+function formatOdds(value: number): string {
+  return `${value > 0 ? '+' : ''}${value}`
+}
+
+function formatOddsNullable(value?: number | null): string {
+  return value == null ? 'sin momio' : formatOdds(value)
 }

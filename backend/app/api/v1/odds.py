@@ -19,23 +19,43 @@ router = APIRouter()
 async def get_nba_odds(db: AsyncSession = Depends(get_db)):
     try:
         data = await fetch_odds_from_db(sport="NBA", session=db)
-    except Exception as e:
-        data = []
-    return {"sport": "NBA", "total_games": len(data), "games": data}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error consultando momios NBA en base de datos: {type(exc).__name__}",
+        )
+    status = "available" if data else "offseason"
+    return {
+        "sport": "NBA",
+        "status": status,
+        "total_games": len(data),
+        "games": data,
+        "reason": "Temporada NBA no activa; cuotas no disponibles en receso." if not data else None,
+    }
 
 
 @router.get("/nfl", summary="Momios actuales NFL")
 async def get_nfl_odds(db: AsyncSession = Depends(get_db)):
     try:
         data = await fetch_odds_from_db(sport="NFL", session=db)
-    except Exception as e:
-        data = []
-    return {"sport": "NFL", "total_games": len(data), "games": data}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error consultando momios NFL en base de datos: {type(exc).__name__}",
+        )
+    status = "available" if data else "no_upcoming_events"
+    return {
+        "sport": "NFL",
+        "status": status,
+        "total_games": len(data),
+        "games": data,
+        "reason": "Sin eventos NFL programados con momios en la ventana activa." if not data else None,
+    }
 
 
 @router.get("/remaining", summary="Requests restantes del plan gratuito")
 async def get_remaining_requests():
-    """Consulta cuántos requests quedan en The Odds API (no consume quota)."""
+    """Consulta cuántos requests quedan según el ledger local data/odds_quota_ledger.json sin llamadas de red externas."""
     return await fetch_remaining_requests()
 
 

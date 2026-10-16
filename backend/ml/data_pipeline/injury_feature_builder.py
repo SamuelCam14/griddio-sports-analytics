@@ -106,7 +106,7 @@ def build_nfl_historical_injury_features(
     rosters.rename(columns={"gsis_id": "player_id"}, inplace=True)
     injuries.rename(columns={"gsis_id": "player_id"}, inplace=True)
     # Unresolved roster identities cannot contribute to a player-level denominator.
-    rosters = rosters.dropna(subset=["player_id"]).copy()
+    rosters = rosters.dropna(subset=["player_id"]).drop_duplicates(subset=["season", "week", "team", "player_id"]).copy()
 
     # Consolidar Stats y Snaps
     snaps_sub = snaps[["season", "week", "player_id", "team", "offense_pct", "defense_pct"]].dropna(subset=["player_id"])
@@ -144,6 +144,12 @@ def build_nfl_historical_injury_features(
         by="player_id",
         direction="backward",
     )
+    # Verificación explícita de cero fuga temporal:
+    # time_idx_y (semana de stats) debe ser estrictamente menor que time_idx_x (semana de roster)
+    if "time_idx_y" in roster_strength.columns and "time_idx_x" in roster_strength.columns:
+        matched = roster_strength["time_idx_y"].notna()
+        if (roster_strength.loc[matched, "time_idx_y"] >= roster_strength.loc[matched, "time_idx_x"]).any():
+            raise DataQualityError("Fuga temporal detectada: estadísticas de semana en juego o futuras unidas al roster")
     roster_positions = rosters[["season", "week", "team", "player_id", "position"]].drop_duplicates(
         subset=["season", "week", "team", "player_id"]
     )

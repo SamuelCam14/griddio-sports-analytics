@@ -120,11 +120,12 @@ def build_temporal_dataset(
             row.update(_team_feature_values(home_prior, game_date, "home", stat_names))
             row.update(_team_feature_values(away_prior, game_date, "away", stat_names))
             
-            # Placeholders only; historical coverage must be joined and validated downstream.
-            row.update({
-                "home_ppr_lost_pct": None, "home_off_snaps_lost_pct": None, "home_def_snaps_lost_pct": None,
-                "away_ppr_lost_pct": None, "away_off_snaps_lost_pct": None, "away_def_snaps_lost_pct": None,
-            })
+            # Placeholders only; historical coverage must be joined and validated downstream for NFL.
+            if sport.lower() == "nfl":
+                row.update({
+                    "home_ppr_lost_pct": None, "home_off_snaps_lost_pct": None, "home_def_snaps_lost_pct": None,
+                    "away_ppr_lost_pct": None, "away_off_snaps_lost_pct": None, "away_def_snaps_lost_pct": None,
+                })
             row["diff_win_rate"] = row["home_win_rate"] - row["away_win_rate"]
             row["diff_avg_margin"] = row["home_avg_margin"] - row["away_avg_margin"]
             row["diff_avg_points_for"] = row["home_avg_points_for"] - row["away_avg_points_for"]
@@ -158,7 +159,7 @@ def build_temporal_dataset(
         raise DataQualityError(f"{sport}: no rows with the required pre-game history")
     if not (pd.to_datetime(result["feature_max_observed_game_date"]) < pd.to_datetime(result["game_date"])).all():
         raise DataQualityError(f"{sport}: se detectó un registro de feature no anterior al partido")
-    features = feature_columns(stat_names)
+    features = feature_columns(stat_names, include_availability=(sport.lower() == "nfl"))
     values = result[features].apply(pd.to_numeric, errors="coerce")
     checked_values = values.drop(columns=[
         "home_ppr_lost_pct", "home_off_snaps_lost_pct", "home_def_snaps_lost_pct",
@@ -214,6 +215,7 @@ def build_matchup_features(
     if window < 1 or minimum_history < 1:
         raise ValueError("window and minimum_history must be positive")
     stats = list(game_stat_names)
+    is_nfl = any("epa" in s for s in stats)
     past_required = {
         "game_id", "game_date", "home_team_id", "away_team_id", "home_score",
         "away_score", "home_win", "source_ref",
@@ -307,14 +309,15 @@ def build_matchup_features(
                 row[column] = target[column]
         row.update(_team_feature_values(home_prior, target_date, "home", stats))
         row.update(_team_feature_values(away_prior, target_date, "away", stats))
-        row.update({"home_ppr_lost_pct": None, "home_off_snaps_lost_pct": None, "home_def_snaps_lost_pct": None, "away_ppr_lost_pct": None, "away_off_snaps_lost_pct": None, "away_def_snaps_lost_pct": None})
+        if is_nfl:
+            row.update({"home_ppr_lost_pct": None, "home_off_snaps_lost_pct": None, "home_def_snaps_lost_pct": None, "away_ppr_lost_pct": None, "away_off_snaps_lost_pct": None, "away_def_snaps_lost_pct": None})
         row["diff_win_rate"] = row["home_win_rate"] - row["away_win_rate"]
         row["diff_avg_margin"] = row["home_avg_margin"] - row["away_avg_margin"]
         row["diff_avg_points_for"] = row["home_avg_points_for"] - row["away_avg_points_for"]
         row["diff_days_rest"] = row["home_days_rest"] - row["away_days_rest"]
         rows.append(row)
 
-    features = feature_columns(stats)
+    features = feature_columns(stats, include_availability=is_nfl)
     if not rows:
         raise DataQualityError(f"Ningún partido tiene historial prepartido suficiente: {skipped_games[:5]}")
     result = pd.DataFrame(rows)

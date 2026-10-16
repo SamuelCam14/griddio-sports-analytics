@@ -33,6 +33,7 @@ async def test_sync_real_games_integrated_flow():
     # Setup test odds data
     now = datetime.now(timezone.utc)
     game_start = now + timedelta(hours=2)
+    mock_game.game_date = game_start
     fresh_time = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     stale_time = (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")  # NBA threshold is 18h
     
@@ -65,7 +66,7 @@ async def test_sync_real_games_integrated_flow():
             result = await sync_real_games("NBA", db)
             
             # Assertions
-            assert result["status"] == "success"
+            assert result["status"] == "partial"  # Stale spread is discarded while fresh markets persist.
             assert result["games_synced"] == 1
             assert result["snapshots_saved"] == 2 # ML and Totals are fresh
             assert result["stale_discarded"] == 1 # Spread is stale

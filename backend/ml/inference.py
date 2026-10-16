@@ -77,7 +77,7 @@ def load_temporal_model(
     if manifest.get("source_manifest_sha256") != metadata.get("source_manifest"):
         raise DataQualityError("El modelo no referencia el manifiesto de snapshots vigente")
     features = feature_columns(
-        SPORT_STATS[sport], include_availability=model_variant != "team_only",
+        SPORT_STATS[sport], include_availability=(sport == "nfl" and model_variant != "team_only"),
     )
     if metadata.get("features") != features:
         raise DataQualityError("El schema de features del artefacto no coincide con inferencia")
@@ -89,6 +89,97 @@ def load_temporal_model(
         raise DataQualityError(f"El artefacto no es un clasificador binario home_win: {classes}")
     metadata["_artifact_sha256"] = _digest(artifact_path)
     return model, metadata, manifest
+
+
+def load_all_ensemble_models(
+    sport: str,
+    *,
+    models_root: Path | None = None,
+    model_variant: str = "injury_aware",
+) -> dict[str, Any]:
+    """Load all distinct models in the ensemble if present."""
+    sport = sport.lower()
+    models_root = models_root or backend_root() / "ml" / "models" / sport
+    if model_variant == "team_only":
+        models_root = models_root / "team_only"
+    loaded = {}
+    for m_name in ("logistic", "hist_gradient_boosting", "random_forest"):
+        p = models_root / f"{m_name}.joblib"
+        if p.is_file():
+            try:
+                loaded[m_name] = joblib.load(p)
+            except Exception as e:
+                logger.warning(f"No se pudo cargar modelo {m_name}: {e}")
+    return loaded
+
+
+def _apply_ensemble(
+    models: Mapping[str, Any],
+    X: pd.DataFrame,
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Aplica inferencia concurrente sobre el diccionario de modelos y genera probabilidades combinadas,
+    acuerdo de modelos (1-3) y nivel de confluencia ('HIGH', 'MODERATE', 'NONE').
+    """
+    model_probs = {}
+    for m_name, m_obj in models.items():
+        if hasattr(m_obj, "predict_proba"):
+            try:
+                p = m_obj.predict_proba(X)[:, 1]
+                if np.isfinite(p).all() and ((p >= 0) & (p <= 1)).all():
+                    model_probs[m_name] = p
+            except Exception as exc:
+                logger.warning(f"Fallo predict_proba para {m_name}: {exc}")
+
+    if not model_probs:
+        raise DataQualityError("Ningún modelo produjo probabilidades válidas")
+
+    all_prob_arrays = list(model_probs.values())
+    probabilities = np.mean(all_prob_arrays, axis=0)
+    if not np.isfinite(probabilities).all() or ((probabilities < 0) | (probabilities > 1)).any():
+        raise DataQualityError("El ensamble produjo probabilidades inválidas")
+
+    n_samples = len(probabilities)
+    agreements = []
+    confluence_tiers = []
+    individual_models = []
+
+    for i in range(n_samples):
+        row_probs = {
+            m: {
+                "home": round(float(model_probs[m][i]), 4),
+                "away": round(float(1.0 - model_probs[m][i]), 4),
+            }
+            for m in model_probs
+        }
+        individual_models.append(row_probs)
+        fav_is_home = probabilities[i] >= 0.5
+        if fav_is_home:
+            agree = sum(1 for m in model_probs if model_probs[m][i] >= 0.5)
+        else:
+            agree = sum(1 for m in model_probs if model_probs[m][i] < 0.5)
+        agreements.append(agree)
+        n_mods = len(model_probs)
+        if n_mods >= 3:
+            if agree == 3 and probabilities[i] >= 0.65:
+                confluence_tiers.append("HIGH")
+            elif (agree == 3 and probabilities[i] >= 0.55) or (agree == 2 and probabilities[i] >= 0.55):
+                confluence_tiers.append("MODERATE")
+            else:
+                confluence_tiers.append("NONE")
+        elif n_mods == 2:
+            confluence_tiers.append("HIGH" if (agree == 2 and probabilities[i] >= 0.60) else "NONE")
+        else:
+            confluence_tiers.append("HIGH" if (agree == 1 and probabilities[i] >= 0.60) else "NONE")
+
+    result_df = df.copy()
+    result_df["home_win_probability"] = probabilities
+    result_df["away_win_probability"] = 1.0 - probabilities
+    result_df["model_agreement"] = agreements
+    result_df["confluence_tier"] = confluence_tiers
+    result_df["individual_models"] = individual_models
+    return result_df
 
 
 def predict_matchups(
@@ -285,18 +376,28 @@ def predict_matchups(
             availability_coverage["source_refs"][game_id] = {
                 team: list(refs_by_team[team]) for team in (home_abbr, away_abbr)
             }
-    model_features = feature_columns(stats, include_availability=model_variant != "team_only")
+    model_features = feature_columns(stats, include_availability=(sport == "nfl" and model_variant != "team_only"))
     if features[model_features].columns.tolist() != model_features:
         raise DataQualityError("El orden de features de inferencia no coincide con el contrato del modelo")
     X = features[model_features].astype(float)
     matrix = X.to_numpy()
     if not np.isfinite(matrix).all():
         raise DataQualityError("Features de inferencia no finitas; no se imputan")
-    probabilities = model.predict_proba(X)[:, 1]
-    if not np.isfinite(probabilities).all() or ((probabilities < 0) | (probabilities > 1)).any():
-        raise DataQualityError("El modelo produjo probabilidades inválidas")
-    features["home_win_probability"] = probabilities
-    features["away_win_probability"] = 1.0 - probabilities
+    # Multi-model concurrent inference
+    if sport == "nfl":
+        all_models = load_all_ensemble_models(sport, model_variant=model_variant)
+        all_models[model_name] = model
+        ensemble_df = _apply_ensemble(all_models, X, features)
+        models_evaluated = list(all_models.keys())
+    else:
+        ensemble_df = _apply_ensemble({model_name: model}, X, features)
+        models_evaluated = [model_name]
+
+    features["home_win_probability"] = ensemble_df["home_win_probability"]
+    features["away_win_probability"] = ensemble_df["away_win_probability"]
+    features["model_agreement"] = ensemble_df["model_agreement"]
+    features["confluence_tier"] = ensemble_df["confluence_tier"]
+    features["individual_models"] = ensemble_df["individual_models"]
     features["model_version"] = metadata["model_version"]
     features["model_variant"] = model_variant
     features["used_injury_adjustment"] = (model_variant == "injury_aware")
@@ -319,5 +420,6 @@ def predict_matchups(
         "schedule_source_refs": sorted(features["schedule_source_ref"].dropna().unique().tolist()),
         "skipped_games": provenance["skipped_games"],
         "availability_coverage": availability_coverage,
+        "models_evaluated": models_evaluated,
     }
     return features, run_metadata

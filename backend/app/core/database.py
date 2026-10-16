@@ -6,14 +6,25 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
+import os
+import sys
+from sqlalchemy.pool import NullPool
+
 # ─── Engine ─────────────────────────────────────────────────────────────────
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=not settings.is_production,   # Muestra SQL en desarrollo
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,                # Verifica conexiones antes de usarlas
-)
+if "pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST"):
+    engine = create_async_engine(
+        settings.DATABASE_URL,
+        echo=False,
+        poolclass=NullPool,
+    )
+else:
+    engine = create_async_engine(
+        settings.DATABASE_URL,
+        echo=not settings.is_production,   # Muestra SQL en desarrollo
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,                # Verifica conexiones antes de usarlas
+    )
 
 # ─── Session factory ────────────────────────────────────────────────────────
 AsyncSessionLocal = async_sessionmaker(
@@ -34,7 +45,7 @@ class Base(DeclarativeBase):
 async def init_db() -> None:
     """Crea todas las tablas si no existen (usa Alembic para producción)."""
     async with engine.begin() as conn:
-        from app.models import Team, Game, OddsSnapshot, Prediction, BankrollEntry, SportsCard  # noqa: F401
+        from app.models import Team, Game, OddsSnapshot, Prediction, BankrollEntry, SportsCard, ProviderGameCrosswalk  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
 
 

@@ -308,14 +308,14 @@ def load_nfl_upcoming_games(
             date = pd.to_datetime(game["gameday"], errors="coerce")
             if pd.isna(date):
                 raise DataQualityError(f"NFL schedule {game['game_id']}: fecha ausente")
-            if pd.notna(game["home_score"]) or pd.notna(game["away_score"]):
+            kickoff_utc = resolve_nfl_kickoff_utc(game["gameday"], game.get("gametime"), str(game["game_id"]))
+            if kickoff_utc is None or kickoff_utc <= cutoff_ts:
+                continue
+            if as_of is None and (pd.notna(game["home_score"]) or pd.notna(game["away_score"])):
                 continue
             if not game["home_team"] or not game["away_team"]:
                 raise DataQualityError(f"NFL schedule {game['game_id']}: equipos ausentes")
-            kickoff_utc = resolve_nfl_kickoff_utc(game["gameday"], game.get("gametime"), str(game["game_id"]))
             if date.date() < cutoff_date:
-                continue
-            if date.date() == cutoff_date and (kickoff_utc is None or kickoff_utc <= cutoff_ts):
                 continue
             records.append({
                 "game_id": str(game["game_id"]), "game_date": date.date(),
@@ -341,6 +341,57 @@ def load_nfl_upcoming_games(
     return result
 
 
+def load_nfl_schedule_results(
+    as_of: pd.Timestamp | None = None, raw_root: Path | None = None,
+) -> pd.DataFrame:
+    """Load only completed regular-season scores from hash-verified schedules."""
+    raw_root = raw_root or project_root() / "data" / "raw" / "nflverse"
+    manifest_path = raw_root / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"No existe {manifest_path}; ejecuta sync_nfl_source")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cutoff = pd.Timestamp(as_of or pd.Timestamp.now(tz="UTC"))
+    cutoff = cutoff.tz_localize("UTC") if cutoff.tzinfo is None else cutoff.tz_convert("UTC")
+    records = []
+    source_refs = []
+    for item in manifest.get("files", []):
+        if item.get("dataset") != "schedules" or item.get("error") or "path" not in item:
+            continue
+        path = resolve_manifest_path(item["path"])
+        verify_file(path, item["sha256"])
+        schedule = pl.read_parquet(path).to_pandas()
+        required = {"game_id", "season", "game_type", "gameday", "gametime", "home_team", "away_team", "home_score", "away_score"}
+        missing = required.difference(schedule.columns)
+        if missing:
+            raise DataQualityError(f"NFL schedule {item.get('season')}: faltan {sorted(missing)}")
+        completed = schedule[schedule["game_type"].eq("REG") & schedule["home_score"].notna() & schedule["away_score"].notna()]
+        for game in completed.to_dict("records"):
+            game_id = str(game.get("game_id") or "").strip()
+            kickoff = resolve_nfl_kickoff_utc(game["gameday"], game.get("gametime"), game_id)
+            if not game_id or kickoff is None or kickoff > cutoff:
+                continue
+            home_score, away_score = int(game["home_score"]), int(game["away_score"])
+            records.append({
+                "game_id": game_id,
+                "season": int(game["season"]),
+                "game_date": pd.Timestamp(game["gameday"]).date(),
+                "game_start_utc": kickoff,
+                "home_team_id": _team_id(game["home_team"]),
+                "away_team_id": _team_id(game["away_team"]),
+                "home_score": home_score,
+                "away_score": away_score,
+                "home_win": None if home_score == away_score else bool(home_score > away_score),
+                "source_ref": f"nflverse:schedule:{item.get('season')}:{item['sha256']}",
+            })
+            source_refs.append(f"nflverse:schedule:{item.get('season')}:{item['sha256']}")
+    result = pd.DataFrame(records)
+    if not result.empty and result["game_id"].duplicated().any():
+        raise DataQualityError("NFL schedule results contiene game_id duplicados")
+    result.attrs["schedule_source_refs"] = sorted(set(source_refs))
+    result.attrs["schedule_retrieved_at"] = manifest.get("retrieved_at")
+    return result
+
+
 def load_nfl_games(raw_root: Path | None = None) -> pd.DataFrame:
     """Join final nflverse schedules to team PBP summaries, preserving only observed inputs."""
     raw_root = raw_root or project_root() / "data" / "raw" / "nflverse"
@@ -352,6 +403,8 @@ def load_nfl_games(raw_root: Path | None = None) -> pd.DataFrame:
     pbp_by_season: dict[int, pd.DataFrame] = {}
     source_hash: dict[int, str] = {}
     for item in manifest["files"]:
+        if item.get("dataset") not in {"schedules", "pbp"} or item.get("error") or "path" not in item:
+            continue
         resolved_path = resolve_manifest_path(item["path"])
         verify_file(resolved_path, item["sha256"])
         if item["dataset"] == "schedules":

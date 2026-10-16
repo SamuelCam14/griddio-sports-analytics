@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -53,7 +54,11 @@ def test_experimental_endpoint_serves_only_manifest_verified_probabilities(mock_
     }
     (mock_experimental_dir / manifest_filename).write_text(json.dumps(manifest_content))
 
-    response = asyncio.run(get_experimental_predictions("nba", lookahead_days=90))
+    mock_db = AsyncMock()
+    mock_crosswalk_result = MagicMock()
+    mock_crosswalk_result.all.return_value = [("1", 1, "nba-game-1")]
+    mock_db.execute.return_value = mock_crosswalk_result
+    response = asyncio.run(get_experimental_predictions("nba", lookahead_days=90, db=mock_db))
     assert response["status"] == "experimental_only"
     assert response["predictions_enabled"] is False
     assert response["production_eligible"] is False
@@ -193,14 +198,16 @@ def test_experimental_endpoint_null_id(mock_experimental_dir):
     assert exc.value.status_code == 503
 
 
-def test_nfl_gate_is_strictly_closed_by_default():
-    """Verify that NFL production gate is closed in real model metadata without monkeypatching."""
+def test_nfl_gate_is_strictly_closed_when_production_disabled(monkeypatch):
+    """Verify that NFL production gate closes when production_enabled is False."""
+    monkeypatch.setattr("app.api.v1.predictions.get_approved_model_version", lambda sport: None)
     assert _production_model_enabled("NFL") is False
     assert _production_model_enabled("nfl") is False
 
 
-def test_today_endpoint_nfl_serves_zero_picks_when_gate_closed():
-    """Verify that /today returns zero picks for NFL with gate closed without monkeypatching."""
+def test_today_endpoint_nfl_serves_zero_picks_when_gate_closed(monkeypatch):
+    """Verify that /today returns zero picks for NFL when gate is closed."""
+    monkeypatch.setattr("app.api.v1.predictions._production_model_enabled", lambda sport: False)
     response = asyncio.run(get_today_picks(sport="NFL", tier="all", period="all", db=None))
     assert response["predictions_enabled"] is False
     assert response["total_picks"] == 0
@@ -208,8 +215,9 @@ def test_today_endpoint_nfl_serves_zero_picks_when_gate_closed():
     assert "no hay un modelo aprobado" in response["reason"].lower()
 
 
-def test_game_prediction_nfl_fails_closed_when_model_is_nfl():
+def test_game_prediction_nfl_fails_closed_when_model_is_nfl(monkeypatch):
     """Verify that get_game_prediction raises 503 for an NFL prediction when NFL gate is closed."""
+    monkeypatch.setattr("app.api.v1.predictions._production_model_enabled", lambda sport: False)
     from unittest.mock import AsyncMock, MagicMock
     from app.models.game import Prediction
 
@@ -226,6 +234,12 @@ def test_game_prediction_nfl_fails_closed_when_model_is_nfl():
         asyncio.run(get_game_prediction(game_id=999, db=mock_db))
     assert exc.value.status_code == 503
     assert "NFL" in exc.value.detail
+
+
+def test_production_runtime_allows_predictions_when_enabled():
+    """The checked-in NFL metadata enables the production gate."""
+    assert _production_model_enabled("NFL") is True
+    assert _production_model_enabled("nfl") is True
 
 
 def test_approved_model_version_rejects_unallowed_sports_and_path_traversal():

@@ -6,7 +6,7 @@ Provee datos 100% REALES y verificables:
 3. Reporte Oficial de Lesionados y pérdida de producción
 4. Duelos Estadísticos Comparativos (PPG, puntos permitidos, margen)
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import json
@@ -186,7 +186,45 @@ NBA_TEAM_NAME_TO_ABBR = {
 
 import hashlib
 
-def fetch_live_injuries_response(sport: str) -> Dict[str, Any]:
+def _normalize_espn_injuries(data: Dict[str, Any], name_map: Dict[str, str], captured_at: str) -> Dict[str, Any]:
+    """Normalize one immutable raw ESPN payload; never reuse a detached cache."""
+    by_team: Dict[str, List[Dict[str, Any]]] = {}
+    for t_block in data.get("injuries", []):
+        display_name = t_block.get("displayName", "").strip()
+        name_lower = display_name.lower()
+        abbr = name_map.get(name_lower, "")
+        team_injuries: List[Dict[str, Any]] = []
+        for item in t_block.get("injuries", []):
+            stat = item.get("status", "")
+            details = item.get("details") or {}
+            injury_type = details.get("type")
+            if stat.lower() == "active" and not injury_type:
+                continue
+            norm_status = "OUT" if any(x in stat.lower() for x in ["out", "reserve", "ir", "suspension", "injured reserve"]) else (
+                "QUESTIONABLE" if any(x in stat.lower() for x in ["questionable", "day-to-day", "gtd"]) else (
+                    "DOUBTFUL" if "doubtful" in stat.lower() else stat.upper()
+                )
+            )
+            athlete = item.get("athlete") or {}
+            team_injuries.append({
+                "player_name": _clean_str(athlete.get("displayName"), "Desconocido"),
+                "position": _clean_str((athlete.get("position") or {}).get("abbreviation"), "—"),
+                "status": norm_status,
+                "injury": _clean_str(injury_type or item.get("shortComment"), "No especificado"),
+                "practice_status": _clean_str(item.get("shortComment"), "—"),
+                "espn_id": str(athlete.get("id")) if athlete.get("id") else None,
+                "observed_at": item.get("dateModified") or item.get("lastModified") or item.get("date") or t_block.get("lastModified"),
+                "fetched_at": captured_at,
+                "source": "espn_live",
+            })
+        if abbr:
+            by_team[abbr] = team_injuries
+        by_team[name_lower] = team_injuries
+        by_team[display_name] = team_injuries
+    return sanitize_for_json(by_team)
+
+
+def fetch_live_injuries_response(sport: str, allow_live_download: bool = True) -> Dict[str, Any]:
     """
     Obtiene la respuesta completa de ESPN para NFL o NBA, exponiendo:
     - raw_bytes: bytes íntegros recibidos
@@ -202,20 +240,25 @@ def fetch_live_injuries_response(sport: str) -> Dict[str, Any]:
     raw_cache_file = CACHE_DIR / f"{sport_upper.lower()}_live_injuries_raw.json"
     name_map = NFL_TEAM_NAME_TO_ABBR if sport_upper == "NFL" else NBA_TEAM_NAME_TO_ABBR
 
-    # 1. Comprobar caché local (TTL: 2 horas)
+    # 1. Comprobar caché local (TTL: 2 horas). El JSON normalizado y el payload
+    # crudo son una sola captura: si sus mtimes divergen, no se puede atribuir
+    # a ambos el mismo captured_at ni servir el normalizado como dato actual.
     if cache_file.exists():
         try:
             mtime = cache_file.stat().st_mtime
             age_seconds = time.time() - mtime
-            if age_seconds / 3600.0 < 2.0:
+            raw_mtime = raw_cache_file.stat().st_mtime if raw_cache_file.exists() else None
+            same_capture = raw_mtime is not None and abs(mtime - raw_mtime) <= 5.0
+            if same_capture and (0 <= age_seconds < 7200 or not allow_live_download):
                 raw_data = json.loads(cache_file.read_text(encoding="utf-8"))
                 original_captured_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
-                cached_raw_bytes = raw_cache_file.read_bytes() if raw_cache_file.exists() else cache_file.read_bytes()
+                cached_raw_bytes = raw_cache_file.read_bytes()
                 try:
                     cached_payload = json.loads(cached_raw_bytes.decode("utf-8"))
                 except Exception:
                     cached_payload = raw_data
                 cached_sha = hashlib.sha256(cached_raw_bytes).hexdigest()
+                normalized_teams = _normalize_espn_injuries(cached_payload, name_map, original_captured_at)
                 return {
                     "raw_bytes": cached_raw_bytes,
                     "raw_payload": cached_payload,
@@ -224,10 +267,41 @@ def fetch_live_injuries_response(sport: str) -> Dict[str, Any]:
                     "is_from_cache": True,
                     "cache_age_seconds": age_seconds,
                     "payload_sha256": cached_sha,
-                    "teams": sanitize_for_json(raw_data),
+                    "teams": normalized_teams,
                 }
         except Exception:
             pass
+
+    # Si allow_live_download es False (ej. en request thread de endpoints GET),
+    # no realizar descargas bloqueantes de red; consultar snapshot persistido de disponibilidad.
+    if not allow_live_download:
+        if sport_upper == "NFL":
+            try:
+                from app.services.nfl_availability_service import NFLAvailabilityService
+                nfl_svc = NFLAvailabilityService()
+                snap = nfl_svc.get_active_injury_snapshot()
+                if snap and isinstance(snap, dict) and snap.get("teams"):
+                    return {
+                        "raw_bytes": snap.get("raw_payload"),
+                        "raw_payload": snap.get("raw_payload"),
+                        "received_at_utc": snap.get("known_by_system_at_utc") or snap.get("captured_at_utc"),
+                        "captured_at_utc": snap.get("captured_at_utc"),
+                        "is_from_cache": True,
+                        "cache_age_seconds": None,
+                        "payload_sha256": snap.get("payload_sha256"),
+                        "teams": snap.get("teams", {}),
+                    }
+            except Exception:
+                pass
+        return {
+            "raw_bytes": None,
+            "raw_payload": None,
+            "received_at_utc": datetime.now(timezone.utc).isoformat(),
+            "captured_at_utc": None,
+            "is_from_cache": False,
+            "payload_sha256": None,
+            "teams": {},
+        }
 
     # 2. Descarga oficial en vivo desde ESPN
     endpoint = (
@@ -249,59 +323,13 @@ def fetch_live_injuries_response(sport: str) -> Dict[str, Any]:
         payload_hash = hashlib.sha256(raw_bytes).hexdigest()
         data = json.loads(raw_bytes.decode("utf-8"))
 
-        by_team: Dict[str, List[Dict[str, Any]]] = {}
-
-        for t_block in data.get("injuries", []):
-            display_name = t_block.get("displayName", "").strip()
-            name_lower = display_name.lower()
-            abbr = name_map.get(name_lower, "")
-
-            t_injuries: List[Dict[str, Any]] = []
-            for item in t_block.get("injuries", []):
-                stat = item.get("status", "")
-                details = item.get("details") or {}
-                inj_type = details.get("type")
-                if stat.lower() == "active" and not inj_type:
-                    continue  # Jugador habilitado sin lesión
-
-                norm_status = "OUT" if any(x in stat.lower() for x in ["out", "reserve", "ir", "suspension", "injured reserve"]) else (
-                    "QUESTIONABLE" if any(x in stat.lower() for x in ["questionable", "day-to-day", "gtd"]) else (
-                        "DOUBTFUL" if "doubtful" in stat.lower() else stat.upper()
-                    )
-                )
-
-                athlete = item.get("athlete") or {}
-                p_name = _clean_str(athlete.get("displayName"), "Desconocido")
-                p_pos = _clean_str((athlete.get("position") or {}).get("abbreviation"), "—")
-                p_inj = _clean_str(inj_type or item.get("shortComment"), "No especificado")
-                p_prac = _clean_str(item.get("shortComment"), "—")
-                espn_id = str(athlete.get("id")) if athlete.get("id") else None
-                obs_ts = item.get("dateModified") or item.get("lastModified") or t_block.get("lastModified")
-
-                t_injuries.append({
-                    "player_name": p_name,
-                    "position": p_pos,
-                    "status": norm_status,
-                    "injury": p_inj,
-                    "practice_status": p_prac,
-                    "espn_id": espn_id,
-                    "observed_at": str(obs_ts) if obs_ts else None,
-                    "fetched_at": received_at_utc,
-                    "source": "espn_live",
-                })
-
-            if abbr:
-                by_team[abbr] = t_injuries
-            by_team[name_lower] = t_injuries
-            by_team[display_name] = t_injuries
-
-        clean_data = sanitize_for_json(by_team)
+        clean_data = _normalize_espn_injuries(data, name_map, received_at_utc)
         try:
             cache_file.write_text(json.dumps(clean_data), encoding="utf-8")
             raw_cache_file.write_bytes(raw_bytes)
         except Exception as pe:
             logger.warning("Error guardando archivos de caché de lesiones", error=str(pe))
-        logger.info("Lesiones oficiales actualizadas desde ESPN", sport=sport, teams_count=len(by_team))
+        logger.info("Lesiones oficiales actualizadas desde ESPN", sport=sport, teams_count=len(clean_data))
         return {
             "raw_bytes": raw_bytes,
             "raw_payload": data,
@@ -314,20 +342,24 @@ def fetch_live_injuries_response(sport: str) -> Dict[str, Any]:
     except Exception as e:
         logger.warning("Error descargando lesiones de ESPN, verificando caché secundaria", error=str(e), sport=sport)
 
-    # 3. Fallback a caché previa si la conexión falla
+    # 3. Fallback solo si ambos archivos prueban que pertenecen a la misma
+    # captura. Una caché normalizada sin payload original no tiene provenance.
     if cache_file.exists():
         try:
             mtime = cache_file.stat().st_mtime
             cache_age_seconds = time.time() - mtime
-            if cache_age_seconds <= 7200:
+            raw_mtime = raw_cache_file.stat().st_mtime if raw_cache_file.exists() else None
+            same_capture = raw_mtime is not None and abs(mtime - raw_mtime) <= 5.0
+            if same_capture and 0 <= cache_age_seconds <= 7200:
                 raw_data = json.loads(cache_file.read_text(encoding="utf-8"))
                 original_captured_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
-                cached_raw_bytes = raw_cache_file.read_bytes() if raw_cache_file.exists() else cache_file.read_bytes()
+                cached_raw_bytes = raw_cache_file.read_bytes()
                 try:
                     cached_payload = json.loads(cached_raw_bytes.decode("utf-8"))
                 except Exception:
                     cached_payload = raw_data
                 cached_sha = hashlib.sha256(cached_raw_bytes).hexdigest()
+                normalized_teams = _normalize_espn_injuries(cached_payload, name_map, original_captured_at)
                 return {
                     "raw_bytes": cached_raw_bytes,
                     "raw_payload": cached_payload,
@@ -336,7 +368,7 @@ def fetch_live_injuries_response(sport: str) -> Dict[str, Any]:
                     "is_from_cache": True,
                     "cache_age_seconds": cache_age_seconds,
                     "payload_sha256": cached_sha,
-                    "teams": sanitize_for_json(raw_data),
+                    "teams": normalized_teams,
                 }
         except Exception:
             pass
@@ -380,6 +412,12 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
     away_name = game.away_team.name
 
     df = _get_historical_df(sport)
+    target_day = pd.Timestamp(game.game_date).date()
+    if df is not None:
+        dates = pd.to_datetime(df["game_date"], errors="coerce").dt.date
+        # Context is point-in-time: same-day games are excluded because this
+        # dataset does not carry a verified kickoff/observation timestamp per row.
+        df = df.loc[dates < target_day].dropna(subset=["home_score", "away_score"]).copy()
 
     # 1. Resolver identificadores para el dataframe
     if sport == "NBA":
@@ -463,7 +501,22 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
                 })
 
     # 4. Reporte de Lesionados y Pérdida de Producción (Fase 5 / ESPN Live)
-    all_injuries = get_live_injuries(sport)
+    game_start = pd.Timestamp(game.game_date)
+    if game_start.tzinfo is None:
+        game_start = game_start.tz_localize("UTC")
+    else:
+        game_start = game_start.tz_convert("UTC")
+    is_future_game = game_start.to_pydatetime() > datetime.now(timezone.utc)
+    injury_snapshot = fetch_live_injuries_response(sport, allow_live_download=False) if is_future_game else {
+        "raw_payload": None, "teams": {}, "captured_at_utc": None,
+        "is_from_cache": False, "cache_age_seconds": None, "payload_sha256": None,
+    }
+    all_injuries = injury_snapshot.get("teams") or {}
+    raw_injury_payload = injury_snapshot.get("raw_payload")
+    injury_snapshot_available = (
+        isinstance(raw_injury_payload, dict)
+        and isinstance(raw_injury_payload.get("injuries"), list)
+    )
 
     def _find_team_injuries(abbr: str, name: str) -> List[Dict[str, Any]]:
         if abbr and abbr.upper() in all_injuries:
@@ -476,15 +529,21 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
 
     home_inj_list = _find_team_injuries(home_abbr, home_name)
     away_inj_list = _find_team_injuries(away_abbr, away_name)
+    if not is_future_game:
+        # Current injury feeds cannot be used to describe a historical event.
+        home_inj_list = []
+        away_inj_list = []
 
     def _calculate_impact(inj_list: List[Dict[str, Any]], team_abbr: str) -> Dict[str, Any]:
+        if not is_future_game:
+            return {"coverage_state": "not_applicable_past_game", "ppr_lost_pct": None, "off_snaps_lost_pct": None, "def_snaps_lost_pct": None}
         if sport == "NFL":
             try:
                 from app.services.nfl_availability_service import CoverageState, NFLAvailabilityService
                 nfl_svc = NFLAvailabilityService()
-                start_iso = game.game_date.isoformat() if hasattr(game.game_date, "isoformat") else str(game.game_date)
+                start_iso = game_start.isoformat()
                 start_dt = nfl_svc.parse_utc_timestamp(start_iso)
-                cutoff_iso = (start_dt - pd.Timedelta(hours=2)).isoformat() if start_dt else None
+                cutoff_iso = (start_dt - timedelta(hours=2)).isoformat() if start_dt else None
                 records = [
                     nfl_svc.process_player_injury(
                         p,
@@ -494,13 +553,24 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
                     )
                     for p in inj_list
                 ]
+                team_report_present = any(
+                    key in all_injuries
+                    for key in (team_abbr.upper(), home_name if team_abbr == home_abbr else away_name,
+                                (home_name if team_abbr == home_abbr else away_name).lower())
+                )
+                captured_at = injury_snapshot.get("captured_at_utc")
+                clean_ref = None
+                if team_report_present and not records and injury_snapshot.get("payload_sha256") and captured_at:
+                    clean_ref = f"espn:{injury_snapshot['payload_sha256']}:{team_abbr}:{captured_at}"
                 summary = nfl_svc.compute_team_production_lost(
                     team=team_abbr,
                     records=records,
                     prior_roster_stats=None,
                     game_id=str(game.id),
                     decision_cutoff=cutoff_iso,
-                    is_source_available=True,
+                    is_source_available=injury_snapshot_available,
+                    no_injuries_listed=injury_snapshot_available and not team_report_present,
+                    clean_report_evidence_ref=clean_ref,
                 )
                 return {
                     "coverage_state": summary.coverage_state,
@@ -517,32 +587,7 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
                     "def_snaps_lost_pct": None,
                 }
 
-        if not inj_list:
-            return {"ppr_lost_pct": 0.0, "off_snaps_lost_pct": 0.0, "def_snaps_lost_pct": 0.0}
-
-        out_players = [p for p in inj_list if p.get("status") == "OUT"]
-        quest_players = [p for p in inj_list if p.get("status") in ("QUESTIONABLE", "DOUBTFUL")]
-
-        skill_pos = {"QB", "WR", "RB", "TE", "PG", "SG", "SF", "PF", "C"}
-        skill_out = sum(1 for p in out_players if p.get("position") in skill_pos)
-        skill_quest = sum(1 for p in quest_players if p.get("position") in skill_pos)
-
-        def_pos = {"DE", "DT", "LB", "CB", "S", "FS", "SS", "NT", "ILB", "OLB"}
-        off_pos = {"QB", "WR", "RB", "TE", "T", "G", "C", "OT", "OG"}
-
-        off_out = sum(1 for p in out_players if p.get("position") in off_pos)
-        def_out = sum(1 for p in out_players if p.get("position") in def_pos)
-
-        den = 5.0
-        off_lost = min(1.0, round((off_out + 0.3 * len(quest_players)) / den, 3))
-        def_lost = min(1.0, round((def_out + 0.3 * len(quest_players)) / den, 3))
-        ppr_lost = min(1.0, round((skill_out * 0.15 + skill_quest * 0.04), 3))
-
-        return {
-            "ppr_lost_pct": ppr_lost,
-            "off_snaps_lost_pct": off_lost,
-            "def_snaps_lost_pct": def_lost
-        }
+        return {"coverage_state": "impact_model_unavailable", "ppr_lost_pct": None, "off_snaps_lost_pct": None, "def_snaps_lost_pct": None}
 
     injuries_data = {
         "home": home_inj_list,
@@ -552,23 +597,29 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
     }
 
     # 5. Duelo Estadístico (Comparison Stats)
-    def _clean_mean(series, default=0.0):
+    def _clean_mean(series):
         if series is None or series.empty:
-            return default
+            return None
         m = series.mean()
         if pd.isna(m):
-            return default
+            return None
         return round(float(m), 1)
 
-    home_scores = df[df["home_team_id"] == h_id]["home_score"].tail(10) if df is not None else pd.Series()
-    home_opp_scores = df[df["home_team_id"] == h_id]["away_score"].tail(10) if df is not None else pd.Series()
-    away_scores = df[df["away_team_id"] == a_id]["away_score"].tail(10) if df is not None else pd.Series()
-    away_opp_scores = df[df["away_team_id"] == a_id]["home_score"].tail(10) if df is not None else pd.Series()
+    def team_recent_points(team_id):
+        if df is None:
+            return pd.Series(dtype=float), pd.Series(dtype=float)
+        games = df.loc[(df["home_team_id"] == team_id) | (df["away_team_id"] == team_id)].sort_values("game_date").tail(10)
+        scored, allowed = [], []
+        for _, row in games.iterrows():
+            is_home = row["home_team_id"] == team_id
+            scored.append(row["home_score"] if is_home else row["away_score"])
+            allowed.append(row["away_score"] if is_home else row["home_score"])
+        return pd.Series(scored, dtype=float), pd.Series(allowed, dtype=float)
 
-    home_ppg = _clean_mean(home_scores, 20.0)
-    home_opp_ppg = _clean_mean(home_opp_scores, 20.0)
-    away_ppg = _clean_mean(away_scores, 20.0)
-    away_opp_ppg = _clean_mean(away_opp_scores, 20.0)
+    home_scores, home_opp_scores = team_recent_points(h_id)
+    away_scores, away_opp_scores = team_recent_points(a_id)
+    home_ppg, home_opp_ppg = _clean_mean(home_scores), _clean_mean(home_opp_scores)
+    away_ppg, away_opp_ppg = _clean_mean(away_scores), _clean_mean(away_opp_scores)
 
     comparison_stats = {
         "home": {
@@ -576,16 +627,16 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
             "abbr": home_abbr,
             "ppg": home_ppg,
             "opp_ppg": home_opp_ppg,
-            "avg_margin": round(home_ppg - home_opp_ppg, 1),
-            "days_rest": game.home_days_rest or 7
+            "avg_margin": round(home_ppg - home_opp_ppg, 1) if home_ppg is not None and home_opp_ppg is not None else None,
+            "days_rest": game.home_days_rest
         },
         "away": {
             "name": away_name,
             "abbr": away_abbr,
             "ppg": away_ppg,
             "opp_ppg": away_opp_ppg,
-            "avg_margin": round(away_ppg - away_opp_ppg, 1),
-            "days_rest": game.away_days_rest or 7
+            "avg_margin": round(away_ppg - away_opp_ppg, 1) if away_ppg is not None and away_opp_ppg is not None else None,
+            "days_rest": game.away_days_rest
         }
     }
 
@@ -598,5 +649,13 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
         "h2h": h2h_data,
         "recent_form": recent_form,
         "injuries": injuries_data,
+        "injury_source": {
+            "status": "not_applicable_past_game" if not is_future_game else ("available" if injury_snapshot_available else "unavailable"),
+            "source": "ESPN" if injury_snapshot_available else None,
+            "captured_at_utc": injury_snapshot.get("captured_at_utc"),
+            "is_from_cache": injury_snapshot.get("is_from_cache", False),
+            "cache_age_seconds": injury_snapshot.get("cache_age_seconds"),
+            "payload_sha256": injury_snapshot.get("payload_sha256"),
+        },
         "comparison_stats": comparison_stats
     })

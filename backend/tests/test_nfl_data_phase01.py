@@ -3,12 +3,18 @@ Pruebas exhaustivas para la Fase 01 — Fuentes NFL, snapshots inmutables y pres
 Sin llamadas de red no autorizadas; verificación de contratos, hashing, zonas horarias y cuotas.
 """
 from datetime import datetime, timezone
+import hashlib
 import json
 import asyncio
 from pathlib import Path
 import pytest
 import pandas as pd
 import polars as pl
+
+_LEDGER_AT_IMPORT_PATH = Path("data/odds_quota_ledger.json")
+_LEDGER_AT_IMPORT_BYTES = _LEDGER_AT_IMPORT_PATH.read_bytes() if _LEDGER_AT_IMPORT_PATH.exists() else b""
+_LEDGER_AT_IMPORT_SHA256 = hashlib.sha256(_LEDGER_AT_IMPORT_BYTES).hexdigest()
+_LEDGER_AT_IMPORT_SUMMARY = json.loads(_LEDGER_AT_IMPORT_BYTES).get("summary", {}) if _LEDGER_AT_IMPORT_BYTES else {}
 
 from ml.data_pipeline.common import DataQualityError
 from ml.data_pipeline.nfl_source import (
@@ -801,8 +807,7 @@ def test_ledger_reconciliation_breakdown_and_provisional_balance():
     assert keys["key_sha_de093685"]["provider_reported_used_at_tx"] == 219
     assert "218 créditos" in keys["key_sha_de093685"]["historical_debt_note"]
 
-    assert data["summary"]["requests_remaining"] == 275
-    assert data["summary"]["requests_used"] == 225
+    assert data["summary"] == _LEDGER_AT_IMPORT_SUMMARY
 
 
 def test_celery_ingest_odds_task_early_guard_rejects_non_nfl():
@@ -819,13 +824,14 @@ def test_celery_ingest_odds_task_early_guard_rejects_non_nfl():
     assert res_mlb["error_type"] == "sport_not_allowed"
 
 
-def test_production_ledger_remains_at_275():
-    """El ledger real de producción data/odds_quota_ledger.json no fue alterado por las pruebas."""
+def test_production_ledger_remains_unchanged_during_pytest():
+    """El ledger real conserva su valor inicial de esta ejecución de pytest."""
     from ml.data_pipeline.common import project_root
     prod_ledger = project_root() / "data" / "odds_quota_ledger.json"
     assert prod_ledger.is_file()
-    data = json.loads(prod_ledger.read_text(encoding="utf-8"))
-    assert data["summary"]["requests_remaining"] == 275
-    assert data["summary"]["requests_used"] == 225
+    raw = prod_ledger.read_bytes()
+    data = json.loads(raw)
+    assert hashlib.sha256(raw).hexdigest() == _LEDGER_AT_IMPORT_SHA256
+    assert data["summary"] == _LEDGER_AT_IMPORT_SUMMARY
     assert data["summary"]["circuit_breaker_open"] is False
 

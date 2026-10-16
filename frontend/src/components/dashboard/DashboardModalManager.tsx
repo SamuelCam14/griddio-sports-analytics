@@ -64,6 +64,7 @@ export function DashboardModalManager({
             <div className="grid gap-4 md:grid-cols-2">
               <PredictionPanel
                 prediction={selectedMatch.prediction}
+                experimentalPrediction={selectedMatch.experimentalPrediction}
                 isLoading={predictionsLoading}
                 errorMessage={predictionsError}
               />

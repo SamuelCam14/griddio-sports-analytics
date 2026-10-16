@@ -47,7 +47,7 @@ export const useAppStore = create<AppState>()(
         set(state => ({ savedPicks: state.savedPicks.filter(p => p.game_id !== gameId) })),
       clearPicks: () => set({ savedPicks: [] }),
 
-      activeSport: 'NBA',
+      activeSport: 'NFL',
       setActiveSport: (sport) => set({ activeSport: sport }),
 
       darkMode: true,
@@ -58,6 +58,12 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: 'sports-analytics-store',
+      version: 1,
+      migrate: (persistedState) => ({
+        ...(persistedState as Partial<AppState>),
+        // NFL es el deporte activo del producto; NBA permanece fuera de temporada.
+        activeSport: 'NFL',
+      } as AppState),
       // Persistir solo estos campos en localStorage
       partialize: (state) => ({
         bankroll: state.bankroll,

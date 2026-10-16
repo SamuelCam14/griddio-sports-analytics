@@ -162,6 +162,8 @@ def generate_nfl_quality_report() -> dict:
     total_exact_duplicate_rows = 0
 
     for file_info in files:
+        if "error" in file_info or "path" not in file_info:
+            continue
         rel_path = file_info["path"]
         abs_path = root / rel_path
         dataset = file_info["dataset"]

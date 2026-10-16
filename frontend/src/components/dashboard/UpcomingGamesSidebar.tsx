@@ -16,7 +16,7 @@ export function UpcomingGamesSidebar({
   selectedGameId,
   isLoading,
   errorMessage,
-  unmatchedOddsCount,
+  unmatchedOddsCount: _unmatchedOddsCount,
   onSelect,
 }: UpcomingGamesSidebarProps) {
   return (

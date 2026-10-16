@@ -2,6 +2,8 @@
 Configuración central usando Pydantic Settings.
 Lee desde variables de entorno / archivo .env
 """
+import math
+from collections import Counter
 from functools import lru_cache
 from typing import List
 
@@ -55,7 +57,40 @@ class Settings(BaseSettings):
 
     @property
     def is_production(self) -> bool:
-        return self.APP_ENV == "production"
+        return self.APP_ENV.lower() == "production"
+
+    @property
+    def debug(self) -> bool:
+        return self.APP_ENV.lower() == "development" and not self.is_production
+
+    def validate_security(self):
+        if self.is_production:
+            if not self.SECRET_KEY or not isinstance(self.SECRET_KEY, str):
+                raise ValueError("En producción, SECRET_KEY es obligatoria y debe ser una cadena de texto.")
+
+            clean_key = self.SECRET_KEY.strip()
+            if len(clean_key) < 32:
+                raise ValueError("En producción, SECRET_KEY debe tener una longitud mínima de 32 caracteres.")
+
+            placeholders = ["changeme", "placeholder", "default", "secret_key", "password", "insecure", "admin123"]
+            lower_key = clean_key.lower()
+            if any(ph in lower_key for ph in placeholders):
+                raise ValueError("En producción, SECRET_KEY no puede contener placeholders conocidos ni palabras clave inseguras.")
+
+            has_upper = any(c.isupper() for c in clean_key)
+            has_lower = any(c.islower() for c in clean_key)
+            has_digit = any(c.isdigit() for c in clean_key)
+            has_symbol = any(not c.isalnum() for c in clean_key)
+            category_count = sum([has_upper, has_lower, has_digit, has_symbol])
+
+            counts = Counter(clean_key)
+            entropy = -sum((cnt / len(clean_key)) * math.log2(cnt / len(clean_key)) for cnt in counts.values())
+
+            if entropy < 3.0 or category_count < 3:
+                raise ValueError(
+                    "En producción, SECRET_KEY debe poseer entropía suficiente (>= 3.0 bits) "
+                    "y diversidad de caracteres (al menos 3 categorías: mayúsculas, minúsculas, dígitos o símbolos)."
+                )
 
 
 @lru_cache()

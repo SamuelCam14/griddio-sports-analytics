@@ -10,10 +10,12 @@ from app.api.v1.parlay import get_recommended_parlays
 from app.api.v1.predictions import _production_model_enabled, get_approved_model_version
 
 
-def test_nfl_gate_is_closed_precondition():
-    """Verify pre-condition: NFL production gate is closed and no approved version returned."""
-    assert _production_model_enabled("NFL") is False
-    assert get_approved_model_version("NFL") is None
+def test_nfl_gate_remains_closed_until_model_approval():
+    """Verify that approved NFL models have production enabled while unknown sports fail closed."""
+    assert _production_model_enabled("NFL") is True
+    assert get_approved_model_version("NFL") == "nfl_temporal_v1"
+    assert _production_model_enabled("unknown_sport") is False
+    assert get_approved_model_version("unknown_sport") is None
 
 
 @pytest.mark.asyncio
@@ -55,11 +57,12 @@ async def test_generate_recommended_parlays_empty_when_fewer_than_two_candidates
 
 
 @pytest.mark.asyncio
-async def test_generate_recommended_parlays_rejects_nfl_candidates_when_gate_is_closed():
+async def test_generate_recommended_parlays_rejects_nfl_candidates_when_gate_is_closed(monkeypatch):
     """
     Verify that even if 2 scheduled NFL games with high win probability exist in DB,
     they are filtered out because _production_model_enabled('NFL') is False.
     """
+    monkeypatch.setattr("app.services.parlay_service.get_approved_model_version", lambda sport: None)
     pred1 = MagicMock(spec=Prediction)
     pred1.home_win_prob = 0.75
     pred1.away_win_prob = 0.25
@@ -222,13 +225,14 @@ async def test_generate_recommended_parlays_never_includes_nba_games():
 
 
 @pytest.mark.asyncio
-async def test_parlay_recommended_route_defaults_to_nfl_and_excludes_nba():
+async def test_parlay_recommended_route_defaults_to_nfl_and_excludes_nba(monkeypatch):
     """
     Verify route behavior without 'sport' parameter:
     - Defaults to NFL
     - With gate closed, returns status='unavailable', sport='NFL', parlays=[]
     - If sport='NBA' is passed, rejects with status='unavailable'
     """
+    monkeypatch.setattr("app.api.v1.parlay._production_model_enabled", lambda sport: False)
     mock_db = AsyncMock()
 
     # 1. Without sport parameter: must default to NFL and return unavailable with gate closed
@@ -249,8 +253,9 @@ async def test_parlay_recommended_route_defaults_to_nfl_and_excludes_nba():
 
 
 @pytest.mark.asyncio
-async def test_parlay_recommended_route_nfl_gate_closed():
+async def test_parlay_recommended_route_nfl_gate_closed(monkeypatch):
     """Verify route returns status='unavailable' when NFL gate is closed."""
+    monkeypatch.setattr("app.api.v1.parlay._production_model_enabled", lambda sport: False)
     mock_db = AsyncMock()
     response = await get_recommended_parlays(sport="NFL", db=mock_db)
     assert response["status"] == "unavailable"

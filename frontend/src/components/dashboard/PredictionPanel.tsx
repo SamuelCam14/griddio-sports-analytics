@@ -1,15 +1,16 @@
 import { motion } from 'framer-motion'
-import type { Pick } from '@/services/api'
+import type { ExperimentalMatchPrediction, Pick } from '@/services/api'
 import { formatPercentage } from '@/utils/dashboard'
 
 interface PredictionPanelProps {
   prediction?: Pick
+  experimentalPrediction?: ExperimentalMatchPrediction
   isLoading: boolean
   errorMessage?: string
   unavailableReason?: string
 }
 
-export function PredictionPanel({ prediction, isLoading, errorMessage, unavailableReason }: PredictionPanelProps) {
+export function PredictionPanel({ prediction, experimentalPrediction, isLoading, errorMessage, unavailableReason }: PredictionPanelProps) {
   return (
     <section className="surface-card h-full">
       <div className="section-heading">
@@ -24,11 +25,26 @@ export function PredictionPanel({ prediction, isLoading, errorMessage, unavailab
       {errorMessage && <p className="state-error mt-5">No se pudo consultar el pronóstico: {errorMessage}</p>}
       {!isLoading && !errorMessage && !prediction && (
         <div className="empty-model mt-5">
-          <span className="empty-model-icon" aria-hidden="true">—</span>
-          <p className="font-medium text-slate-200">Pronóstico no disponible</p>
-          <p className="mt-2 text-sm leading-relaxed text-slate-400">
-            {unavailableReason ?? 'El backend no publicó una predicción para este partido.'}
-          </p>
+          {experimentalPrediction ? (
+            <div className="space-y-3 text-left">
+              <span className="status-badge border-amber-400/20 text-amber-300">EXPERIMENTAL · NO ES PICK</span>
+              <p className="font-medium text-slate-200">Probabilidad estimada por el modelo experimental</p>
+              <div className="grid grid-cols-2 gap-3">
+                <Probability label="Local" value={experimentalPrediction.home_win_probability} />
+                <Probability label="Visitante" value={experimentalPrediction.away_win_probability} />
+              </div>
+              <p className="text-xs text-slate-400">{experimentalPrediction.model_version} · corte {experimentalPrediction.run_as_of}</p>
+              <p className="text-xs leading-relaxed text-slate-400">No tiene aprobación de producción. No se calcula EV ni recomendación a partir de este resultado.</p>
+            </div>
+          ) : (
+            <>
+              <span className="empty-model-icon" aria-hidden="true">—</span>
+              <p className="font-medium text-slate-200">Pronóstico no disponible</p>
+              <p className="mt-2 text-sm leading-relaxed text-slate-400">
+                {unavailableReason ?? 'El backend no publicó una predicción vinculada a este partido.'}
+              </p>
+            </>
+          )}
         </div>
       )}
 

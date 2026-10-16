@@ -1,13 +1,15 @@
 """Ingesta cuotas publicadas por The Odds API sin fabricar valores ausentes."""
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
+import re
+import unicodedata
 import httpx
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
 from app.core.config import settings
-from app.models.game import Team, Game, OddsSnapshot, Prediction
+from app.models.game import Team, Game, OddsSnapshot, Prediction, ProviderGameCrosswalk
 from app.services.odds_service import fetch_odds
 from app.services.odds_quota_service import (
     CircuitBreakerOpenError,
@@ -177,22 +179,24 @@ async def fetch_real_player_props(event_id: str, sport: str = "NFL") -> List[Dic
             return parsed_props[:100]
 
     except (httpx.TimeoutException, httpx.ConnectError) as e:
-        logger.warning("Error de timeout o conexión en player props", error=str(e), event_id=event_id)
+        clean_err = re.sub(r'(apiKey=)[^&\s]+', r'\1[REDACTED]', str(e))
+        logger.warning("Error de timeout o conexión en player props", error=clean_err, event_id=event_id)
         if reservation:
             quota_service.record_transaction(
                 reservation=reservation,
                 is_timeout=True,
-                error_message=f"Timeout/Network error in props: {str(e)}",
+                error_message=f"Timeout/Network error in props: {clean_err}",
             )
             reservation = None
         return []
     except Exception as e:
-        logger.error("Error fetching live player props", event_id=event_id, error=str(e))
+        clean_err = re.sub(r'(apiKey=)[^&\s]+', r'\1[REDACTED]', str(e))
+        logger.error("Error fetching live player props", event_id=event_id, error=clean_err)
         if reservation:
             quota_service.record_transaction(
                 reservation=reservation,
                 is_timeout=True,
-                error_message=f"Unexpected exception post-dispatch in props: {str(e)}",
+                error_message=f"Unexpected exception post-dispatch in props: {clean_err}",
             )
             reservation = None
         return []
@@ -240,23 +244,29 @@ async def sync_real_games(sport: str, db: AsyncSession) -> Dict[str, Any]:
             "scores_updated_from_espn": espn_result.get("updated", 0),
             "note": "No prediction emitted; market odds unavailable.",
         }
-    name_to_team = {t.name.lower(): t for t in teams}
+    def normalize_team_name(value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
+        return re.sub(r"\s+", " ", normalized)
 
     def find_team(query_name: str) -> Optional[Team]:
-        q = query_name.lower().strip()
-        if q in name_to_team:
-            return name_to_team[q]
-        for t in teams:
-            if t.name.lower() in q or q in t.name.lower():
-                return t
-            if t.city and t.city.lower() in q:
-                return t
-        return None
+        q = normalize_team_name(query_name)
+        matches = [t for t in teams if normalize_team_name(t.name) == q]
+        return matches[0] if len(matches) == 1 else None
+
+    def as_utc(value: datetime) -> datetime:
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+    def same_provider_instant(left: datetime, right: datetime) -> bool:
+        # The Odds API publishes commence_time with second precision.
+        return as_utc(left).replace(microsecond=0) == as_utc(right).replace(microsecond=0)
 
     synced_games = 0
     stale_discarded = 0
     snapshots_saved = 0
     unknown_teams = 0
+    unmatched_events = 0
+    ambiguous_events = 0
+    identity_conflicts = 0
 
     for item in odds_list:
         home_team = find_team(item["home_team"])
@@ -270,11 +280,93 @@ async def sync_real_games(sport: str, db: AsyncSession) -> Dict[str, Any]:
         ext_id = item["external_id"]
         commence_dt = datetime.fromisoformat(item["commence_time"].replace("Z", "+00:00"))
 
-        # 1. Upsert Game
-        game_res = await db.execute(select(Game).where(Game.external_id == ext_id))
-        game = game_res.scalar_one_or_none()
+        # 1. Resolver el Game canónico (vía crosswalk, external_id exacto o coincidencia unívoca de equipos + fecha)
+        game = None
+        cw_entry = None
 
+        # a) Buscar en crosswalk por provider="the_odds_api" y provider_event_id=ext_id
+        cw_stmt = select(ProviderGameCrosswalk).where(
+            ProviderGameCrosswalk.provider == "the_odds_api",
+            ProviderGameCrosswalk.provider_event_id == ext_id,
+        )
+        cw_res = await db.execute(cw_stmt)
+        cw_entry = cw_res.scalar_one_or_none()
+        if cw_entry:
+            if hasattr(cw_entry, "game_id"):
+                game_res = await db.execute(select(Game).where(Game.id == cw_entry.game_id))
+                game = game_res.scalar_one_or_none()
+            elif isinstance(cw_entry, Game):
+                game = cw_entry
+            if game is None:
+                logger.error("Crosswalk Odds API apunta a partido inexistente", provider_event_id=ext_id)
+                identity_conflicts += 1
+                continue
+
+        # b) Buscar por external_id exacto si no se halló en crosswalk
         if not game:
+            game_res = await db.execute(select(Game).where(Game.external_id == ext_id))
+            game = game_res.scalar_one_or_none()
+
+        # c) Solo se permite el crosswalk inicial ante identidad de equipos en
+        # orden y kickoff UTC exactos. Una ventana horaria no prueba identidad.
+        if not game:
+            candidates_stmt = (
+                select(Game)
+                .where(Game.home_team_id == home_team.id)
+                .where(Game.away_team_id == away_team.id)
+                .where(Game.sport == sport_upper)
+            )
+            candidates_res = await db.execute(candidates_stmt)
+            candidates = candidates_res.scalars().all()
+            matching_games = [
+                g for g in candidates
+                if g.game_date and same_provider_instant(g.game_date, commence_dt)
+            ]
+            if len(matching_games) == 1:
+                game = matching_games[0]
+            elif len(matching_games) > 1:
+                logger.error(
+                    "Evento Odds API ambiguo por equipos y kickoff; se abstiene",
+                    provider_event_id=ext_id,
+                    matches=len(matching_games),
+                )
+                ambiguous_events += 1
+                continue
+
+        if game is not None:
+            if game.home_team_id != home_team.id or game.away_team_id != away_team.id:
+                logger.error("Crosswalk Odds API contradice equipos del evento", provider_event_id=ext_id)
+                identity_conflicts += 1
+                continue
+            if not game.game_date or not same_provider_instant(game.game_date, commence_dt):
+                logger.error("Crosswalk Odds API contradice kickoff canónico", provider_event_id=ext_id)
+                identity_conflicts += 1
+                continue
+
+        if not game and ext_id and sport_upper == "NFL":
+            unmatched_events += 1
+
+        # Si el partido ya existe (canónico), actualizamos fecha y registramos en crosswalk
+        if game:
+            # No sobrescribir calendario canónico con el kickoff del proveedor.
+            # El evento ya fue validado con identidad y hora exactas.
+
+            # Asegurar persistencia del crosswalk
+            if not cw_entry:
+                cw_stmt = select(ProviderGameCrosswalk).where(
+                    ProviderGameCrosswalk.provider == "the_odds_api",
+                    ProviderGameCrosswalk.provider_event_id == ext_id,
+                )
+                cw_res = await db.execute(cw_stmt)
+                if not cw_res.scalar_one_or_none():
+                    db.add(ProviderGameCrosswalk(
+                        game_id=game.id,
+                        provider="the_odds_api",
+                        provider_event_id=ext_id,
+                    ))
+                    await db.flush()
+        else:
+            # d) Crear nuevo partido canónico si no existía previamente
             season_year = commence_dt.year
             season = (
                 f"{season_year}-{str(season_year + 1)[-2:]}"
@@ -292,13 +384,20 @@ async def sync_real_games(sport: str, db: AsyncSession) -> Dict[str, Any]:
                 home_team_id=home_team.id,
                 away_team_id=away_team.id,
                 status="scheduled",
+                source="The Odds API",
+                source_ref=f"the_odds_api:event:{ext_id}",
+                observed_at=datetime.now(timezone.utc),
+                fetched_at=datetime.now(timezone.utc),
             )
             db.add(game)
             await db.flush()
-        else:
-            game.game_date = commence_dt
-            game.home_team_id = home_team.id
-            game.away_team_id = away_team.id
+
+            # Registrar correspondencia en crosswalk
+            db.add(ProviderGameCrosswalk(
+                game_id=game.id,
+                provider="the_odds_api",
+                provider_event_id=ext_id,
+            ))
             await db.flush()
 
         synced_games += 1
@@ -407,13 +506,22 @@ async def sync_real_games(sport: str, db: AsyncSession) -> Dict[str, Any]:
         }
 
     logger.info("Real market data synced", sport=sport_upper, games=synced_games, snapshots=snapshots_saved, stale=stale_discarded)
+    if snapshots_saved == 0:
+        sync_status = "no_usable_data"
+    elif unknown_teams or unmatched_events or ambiguous_events or identity_conflicts or stale_discarded:
+        sync_status = "partial"
+    else:
+        sync_status = "success"
     return {
-        "status": "success",
+        "status": sync_status,
         "sport": sport_upper,
         "games_synced": synced_games,
         "snapshots_saved": snapshots_saved,
         "stale_discarded": stale_discarded,
         "unknown_teams": unknown_teams,
+        "unmatched_events": unmatched_events,
+        "ambiguous_events": ambiguous_events,
+        "identity_conflicts": identity_conflicts,
         "predictions_synced": 0,
         "scores_updated_from_espn": espn_result.get("updated", 0),
         "note": "Predictions disabled until temporally valid, trained models are available.",

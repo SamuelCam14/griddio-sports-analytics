@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "updated_at_utc": "2026-10-11T19:24:11.254317+00:00",
+  "updated_at_utc": "2026-10-15T22:02:15.531401+00:00",
   "config": {
     "total_budget": 500,
     "protected_reserve": 75,
@@ -10,10 +10,10 @@
     "circuit_breaker_pct": 0.2
   },
   "summary": {
-    "requests_used": 225,
-    "requests_remaining": 275,
+    "requests_used": 264,
+    "requests_remaining": 236,
     "spent_by_envelope": {
-      "main_lines": 12,
+      "main_lines": 15,
       "props": 0,
       "operational": 1
     },
@@ -27,17 +27,17 @@
       "key_sha_b5a2c962": {
         "transactions_count": 4,
         "local_cost_sum": 12,
-        "note": "Tx 1, 2, 4, 5. Cuota inicial observada con base de 500 créditos."
+        "note": "Tx 1, 2, 4, 5. Cuota inicial observada con base de 500 cr\u00e9ditos."
       },
       "key_sha_de093685": {
         "transactions_count": 1,
         "local_cost_sum": 1,
         "provider_reported_used_at_tx": 219,
         "provider_reported_remaining_at_tx": 281,
-        "historical_debt_note": "El salto de requests_used de 6 a 219 en Tx 3 (f5a11f02f257) se originó porque esta clave (key_sha_de093685) fue introducida con uso previo externo de 218 créditos en la cuenta del proveedor The Odds API antes de su primera invocación registrada en este ledger local."
+        "historical_debt_note": "El salto de requests_used de 6 a 219 en Tx 3 (f5a11f02f257) se origin\u00f3 porque esta clave (key_sha_de093685) fue introducida con uso previo externo de 218 cr\u00e9ditos en la cuenta del proveedor The Odds API antes de su primera invocaci\u00f3n registrada en este ledger local."
       }
     },
-    "explanation": "El cambio de API key en Tx 3 introdujo la deuda histórica acumulada en el proveedor para key_sha_de093685 (x-requests-used: 219). El ledger sincronizó el saldo global informado por el proveedor. Se conservan 275 créditos restantes como saldo provisional hermético sin consultar nuevamente al proveedor."
+    "explanation": "El cambio de API key en Tx 3 introdujo la deuda hist\u00f3rica acumulada en el proveedor para key_sha_de093685 (x-requests-used: 219). El ledger sincroniz\u00f3 el saldo global informado por el proveedor. Se conservan 275 cr\u00e9ditos restantes como saldo provisional herm\u00e9tico sin consultar nuevamente al proveedor."
   },
   "pending_reservations": {},
   "transactions": [
@@ -139,6 +139,26 @@
       "status": "success",
       "requests_used": 225,
       "requests_remaining": 275,
+      "error_message": null
+    },
+    {
+      "reservation_id": "174570acde87",
+      "timestamp_utc": "2026-10-15T22:02:15.531342+00:00",
+      "api_key_id": "key_sha_de093685",
+      "envelope": "main_lines",
+      "endpoint": "/sports/americanfootball_nfl/odds/",
+      "params": {
+        "regions": "us",
+        "markets": "h2h,spreads,totals",
+        "oddsFormat": "american",
+        "dateFormat": "iso"
+      },
+      "estimated_cost": 3,
+      "actual_cost": 3,
+      "status_code": 200,
+      "status": "success",
+      "requests_used": 264,
+      "requests_remaining": 236,
       "error_message": null
     }
   ]

@@ -54,7 +54,7 @@ async def test_exhaustive_idempotency_different_captured_at():
                 
                 # Second run (simulating retry with new captured_at but same odds)
                 res2 = await sync_real_games("NBA", test_db)
-                assert res2["status"] == "success"
+                assert res2["status"] == "no_usable_data"  # Retry produced no new observations.
                 assert res2["snapshots_saved"] == 0 # Should do nothing because of ON CONFLICT DO NOTHING
                 
                 # Verify DB only has 1 snapshot
@@ -97,7 +97,7 @@ async def test_exhaustive_multiple_markets_different_updates():
         with patch("app.services.live_ingestion_service.fetch_odds", return_value=[odds_data]):
             with patch("app.services.espn_service.sync_espn_scores", return_value={"updated": 0}):
                 res = await sync_real_games("NBA", test_db)
-                assert res["status"] == "success"
+                assert res["status"] == "partial"  # Fresh ML stored; stale spread explicitly rejected.
                 assert res["snapshots_saved"] == 1
                 assert res["stale_discarded"] == 1
     await engine.dispose()

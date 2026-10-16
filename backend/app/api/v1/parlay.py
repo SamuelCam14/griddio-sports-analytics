@@ -5,6 +5,7 @@ Endpoints:
   GET  /recommended   → Obtiene los mejores micro-parlays optimizados del día (2-3 legs, cuota ~2.0, EV+)
   POST /evaluate      → Evalúa una combinada personalizada en tiempo real con Criterio de Kelly
 """
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
@@ -57,10 +58,12 @@ async def get_recommended_parlays(
     clean_bankroll = bankroll if isinstance(bankroll, (int, float)) else 1000.0
     clean_limit = limit if isinstance(limit, int) else 4
 
+    now_utc = datetime.now(timezone.utc)
     if target_sport != "NFL":
         return {
             "status": "unavailable",
             "sport": target_sport,
+            "as_of": now_utc.isoformat(),
             "total": 0,
             "target_odds": "Cuota ~2.0 (+100) con probabilidad >45% y EV+",
             "parlays": [],
@@ -71,6 +74,7 @@ async def get_recommended_parlays(
         return {
             "status": "unavailable",
             "sport": "NFL",
+            "as_of": now_utc.isoformat(),
             "total": 0,
             "target_odds": "Cuota ~2.0 (+100) con probabilidad >45% y EV+",
             "parlays": [],
@@ -80,6 +84,8 @@ async def get_recommended_parlays(
     parlays = await generate_recommended_parlays(db=db, bankroll=clean_bankroll, max_combos=clean_limit, sport="NFL")
     return {
         "status": "success",
+        "sport": "NFL",
+        "as_of": now_utc.isoformat(),
         "total": len(parlays),
         "target_odds": "Cuota ~2.0 (+100) con probabilidad >45% y EV+",
         "parlays": parlays,

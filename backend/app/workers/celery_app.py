@@ -1,5 +1,7 @@
 """Celery schedule for real market ingestion and explicitly gated ML tasks."""
 import asyncio
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from celery import Celery
@@ -219,7 +221,8 @@ def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] 
                         continue
                         
                     from app.workers.espn_map import ESPN_NBA_ID_TO_ABBR, ESPN_NFL_ABBR_TO_ABBR
-                    from app.models.game import Team
+                    from app.models.game import Team, ProviderGameCrosswalk, Prediction
+                    from ml.data_pipeline.temporal_features import feature_columns, SPORT_STATS
                     
                     # Preload team mappings for this sport
                     team_stmt = select(Team).where(Team.sport == sp)
@@ -246,29 +249,68 @@ def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] 
                         if not home_db_id or not away_db_id:
                             continue
                             
-                        # Find matching game in DB
-                        game_stmt = select(Game).where(Game.home_team_id == home_db_id).where(Game.away_team_id == away_db_id)
-                        game_res = await session.execute(game_stmt)
+                        # Enlace 1:1 por identidad canónica exacta, crosswalk persistido o coincidencia unívoca de equipos y fecha exacta
+                        canonical_game_id = str(row.get("game_id", ""))
                         matched_game = None
-                        for db_game in game_res.scalars().all():
-                            db_date = db_game.game_date.date()
-                            if abs((db_date - game_dt).days) <= 1:
-                                matched_game = db_game
-                                break
-                                
+                        if canonical_game_id:
+                            game_stmt = select(Game).where(Game.external_id == canonical_game_id)
+                            game_res = await session.execute(game_stmt)
+                            matched_game = game_res.scalar_one_or_none()
+
+                            if not matched_game:
+                                cw_stmt = select(ProviderGameCrosswalk).where(
+                                    ProviderGameCrosswalk.provider == ("nflverse" if sp == "NFL" else "nba_espn"),
+                                    ProviderGameCrosswalk.provider_event_id == canonical_game_id
+                                )
+                                cw_res = await session.execute(cw_stmt)
+                                cw_entry = cw_res.scalar_one_or_none()
+                                if cw_entry and hasattr(cw_entry, "game_id"):
+                                    game_res = await session.execute(select(Game).where(Game.id == cw_entry.game_id))
+                                    matched_game = game_res.scalar_one_or_none()
+
                         if not matched_game:
+                            logger.warning(
+                                "Predicción sin identidad canónica persistida; se omite",
+                                sport=sp,
+                                canonical_id=canonical_game_id,
+                                home=home_abbr,
+                                away=away_abbr,
+                                date=str(game_dt),
+                            )
                             continue
-                            
+
+                        if (
+                            matched_game.sport != sp
+                            or matched_game.home_team_id != home_db_id
+                            or matched_game.away_team_id != away_db_id
+                            or not matched_game.game_date
+                            or matched_game.game_date.date() != game_dt
+                        ):
+                            logger.error(
+                                "Identidad canónica contradice sport/equipos/fecha de inferencia; se omite",
+                                sport=sp,
+                                canonical_id=canonical_game_id,
+                                game_pk=matched_game.id,
+                            )
+                            continue
+
                         internal_id = matched_game.id
-                        
+
                         if not internal_id:
                             continue
-                        
-                        # Get latest odds
-                        odds_stmt = select(OddsSnapshot).where(OddsSnapshot.game_id == internal_id).order_by(OddsSnapshot.captured_at.desc()).limit(1)
+
+                        # El crosswalk resuelve al mismo Game canónico; si no,
+                        # las cuotas no pertenecen demostrablemente a este juego.
+                        odds_stmt = (
+                            select(OddsSnapshot)
+                            .where(OddsSnapshot.game_id == internal_id)
+                            .where(OddsSnapshot.home_ml.isnot(None), OddsSnapshot.away_ml.isnot(None))
+                            .order_by(OddsSnapshot.observed_at.desc())
+                            .limit(1)
+                        )
                         odds_res = await session.execute(odds_stmt)
                         odds_snap = odds_res.scalar_one_or_none()
-                        
+
                         best_bm = None
                         best_home_ml = None
                         best_away_ml = None
@@ -278,30 +320,76 @@ def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] 
                         away_kelly = 0.0
                         home_edge = False
                         away_edge = False
-                        
+
                         if odds_snap and odds_snap.home_ml and odds_snap.away_ml:
                             best_bm = odds_snap.bookmaker
                             best_home_ml = odds_snap.home_ml
                             best_away_ml = odds_snap.away_ml
-                            
+
                             h_bet = calculate_ev(prob_model=row["home_win_probability"], odds_american=best_home_ml)
                             a_bet = calculate_ev(prob_model=row["away_win_probability"], odds_american=best_away_ml)
-                            
+
                             home_ev = h_bet.ev_dollars
                             away_ev = a_bet.ev_dollars
                             home_kelly = h_bet.kelly_fraction
                             away_kelly = a_bet.kelly_fraction
                             home_edge = h_bet.ev_dollars > 0 and h_bet.edge_pct > 0.03
                             away_edge = a_bet.ev_dollars > 0 and a_bet.edge_pct > 0.03
-                            
+
+                        feature_cols = feature_columns(
+                            SPORT_STATS[sp.lower()],
+                            include_availability=(sp.lower() == "nfl" and target_variant != "team_only"),
+                        )
+                        exact_features = {
+                            col: (float(row[col]) if pd.notna(row.get(col)) else None)
+                            for col in feature_cols
+                            if col in row
+                        }
+                        avail_cov = meta.get("availability_coverage", {})
+                        cutoffs_map = avail_cov.get("decision_cutoffs_utc", {})
+                        refs_map = avail_cov.get("source_refs", {})
+                        avail_digest = {
+                            "decision_cutoff_utc": cutoffs_map.get(canonical_game_id) or (cutoffs_map.get(matched_game.external_id) if hasattr(matched_game, "external_id") else None),
+                            "source_refs": refs_map.get(canonical_game_id) or (refs_map.get(matched_game.external_id) if hasattr(matched_game, "external_id") else None),
+                            "has_verified_snapshots": avail_cov.get("has_verified_snapshots", False),
+                            "mode": avail_cov.get("mode"),
+                        }
+                        odds_digest = {
+                            "odds_snapshot_id": odds_snap.id if odds_snap and hasattr(odds_snap, "id") else None,
+                            "bookmaker": best_bm,
+                            "captured_at": odds_snap.captured_at.isoformat() if odds_snap and getattr(odds_snap, "captured_at", None) else None,
+                            "observed_at": odds_snap.observed_at.isoformat() if odds_snap and getattr(odds_snap, "observed_at", None) else None,
+                            "home_ml": best_home_ml,
+                            "away_ml": best_away_ml,
+                        }
+
+                        input_digest_payload = json.dumps({
+                            "sport": sp,
+                            "game_id": internal_id,
+                            "canonical_event_id": canonical_game_id or matched_game.external_id,
+                            "home_team": home_abbr,
+                            "away_team": away_abbr,
+                            "kickoff": matched_game.game_date.isoformat() if matched_game.game_date else None,
+                            "as_of": str(meta.get("as_of")),
+                            "model_version": meta.get("model_version"),
+                            "model_variant": meta.get("model_variant", target_variant),
+                            "home_win_probability": float(row["home_win_probability"]),
+                            "away_win_probability": float(row["away_win_probability"]),
+                            "schedule_source_refs": sorted(meta.get("schedule_source_refs", [])),
+                            "feature_schema": feature_cols,
+                            "feature_vector": exact_features,
+                            "availability_snapshot": avail_digest,
+                            "market_odds_reference": odds_digest,
+                        }, sort_keys=True)
+                        inference_input_sha256 = hashlib.sha256(input_digest_payload.encode("utf-8")).hexdigest()
+
+                        valid_cols = {c.name for c in Prediction.__table__.columns}
                         pred_dict = {
                             "game_id": internal_id,
                             "model_version": meta["model_version"],
-                            "model_variant": meta.get("model_variant", target_variant),
-                            "used_injury_adjustment": meta.get("model_variant") == "injury_aware",
                             "dataset_sha256": meta["dataset_sha256"],
                             "artifact_sha256": meta["artifact_sha256"],
-                            "inference_input_sha256": str(hash("".join(meta.get("schedule_source_refs", [])))),
+                            "inference_input_sha256": inference_input_sha256,
                             "as_of": pd.Timestamp(meta["as_of"]).to_pydatetime(),
                             "home_win_prob": row["home_win_probability"],
                             "away_win_prob": row["away_win_probability"],
@@ -315,7 +403,13 @@ def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] 
                             "home_has_edge": home_edge,
                             "away_has_edge": away_edge,
                         }
-                        predictions_data.append(pred_dict)
+                        if "model_agreement" in row and pd.notna(row["model_agreement"]):
+                            pred_dict["model_agreement"] = int(row["model_agreement"])
+                        if "confluence_tier" in row and pd.notna(row["confluence_tier"]):
+                            pred_dict["confluence_tier"] = str(row["confluence_tier"])
+
+                        filtered_pred_dict = {k: v for k, v in pred_dict.items() if k in valid_cols}
+                        predictions_data.append(filtered_pred_dict)
                         
                     await append_predictions(session, predictions_data)
                     await session.commit()

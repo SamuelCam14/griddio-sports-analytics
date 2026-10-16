@@ -1,9 +1,62 @@
 {
-  "created_at": "2026-10-08T22:38:43.029807+00:00",
-  "dataset_sha256": "cfffd690f781c4d58b217c1eecde089e5c952fe170009ba322c7645fe10e55ed",
+  "created_at": "2026-10-15T17:25:54.121876+00:00",
+  "dataset": "nba_training",
+  "dataset_sha256": "9482462ade5e96dc55168c1e8c989dc15b9190791424454da73ace2b4d22759c",
   "date_from": "2021-10-22",
   "date_to": "2026-04-12",
   "evaluation": {
+    "ensemble_blend": {
+      "beats_majority_brier_in_all_folds": true,
+      "folds": [
+        {
+          "accuracy": 0.6090534979423868,
+          "auc": 0.6461444474613087,
+          "brier": 0.2349688943516513,
+          "fold": 1,
+          "log_loss": 0.6620133993065819,
+          "majority_baseline_brier": 0.2512211803269051
+        },
+        {
+          "accuracy": 0.654368932038835,
+          "auc": 0.6995743638423615,
+          "brier": 0.21612691303514622,
+          "fold": 2,
+          "log_loss": 0.6217010610743865,
+          "majority_baseline_brier": 0.24626675911205062
+        },
+        {
+          "accuracy": 0.6038961038961039,
+          "auc": 0.6775892773455807,
+          "brier": 0.23186351772731298,
+          "fold": 3,
+          "log_loss": 0.6551295338813201,
+          "majority_baseline_brier": 0.2524311278443065
+        },
+        {
+          "accuracy": 0.66015625,
+          "auc": 0.7147384127863152,
+          "brier": 0.2144934431671196,
+          "fold": 4,
+          "log_loss": 0.6184476259195204,
+          "majority_baseline_brier": 0.24805488526384933
+        }
+      ],
+      "holdout_evaluation": {
+        "accuracy": 0.6550040683482506,
+        "auc": 0.7021798452770913,
+        "brier": 0.21676114276281547,
+        "expected_calibration_error": 0.012553284999502376,
+        "log_loss": 0.6227397096035302,
+        "majority_baseline_brier": 0.2469890450844567,
+        "test_from": "2025-10-22",
+        "test_rows": 1229,
+        "test_through": "2026-04-12"
+      },
+      "mean_accuracy": 0.6318686959693314,
+      "mean_auc": 0.6845116253588914,
+      "mean_brier": 0.22436319207030753,
+      "mean_log_loss": 0.6393229050454522
+    },
     "hist_gradient_boosting": {
       "beats_majority_brier_in_all_folds": true,
       "folds": [
@@ -50,16 +103,16 @@
           "train_through": "2024-11-25"
         },
         {
-          "accuracy": 0.6341183228029867,
-          "auc": 0.6833506763787721,
-          "brier": 0.22614130532497348,
+          "accuracy": 0.62890625,
+          "auc": 0.6796652668174197,
+          "brier": 0.22806580757664263,
           "fold": 4,
-          "log_loss": 0.6511975595585454,
-          "majority_baseline_brier": 0.2473000899870939,
-          "majority_baseline_log_loss": 0.6877376326110451,
+          "log_loss": 0.6542660383098513,
+          "majority_baseline_brier": 0.24805488526384933,
+          "majority_baseline_log_loss": 0.6892530149316796,
           "test_from": "2025-02-02",
-          "test_rows": 1741,
-          "test_through": "2026-04-12",
+          "test_rows": 512,
+          "test_through": "2025-10-21",
           "train_rows": 4396,
           "train_through": "2025-02-01"
         }
@@ -68,6 +121,7 @@
         "accuracy": 0.6346623270951993,
         "auc": 0.6849624987267259,
         "brier": 0.2246925514880355,
+        "expected_calibration_error": 0.054934184725783625,
         "log_loss": 0.6458834783424262,
         "majority_baseline_brier": 0.2469890450844567,
         "majority_baseline_log_loss": 0.687113207216149,
@@ -75,10 +129,10 @@
         "test_rows": 1229,
         "test_through": "2026-04-12"
       },
-      "mean_accuracy": 0.6151959905224964,
-      "mean_auc": 0.6581063884207519,
-      "mean_brier": 0.23678648747409786,
-      "mean_log_loss": 0.6716567136770395
+      "mean_accuracy": 0.6138929723217497,
+      "mean_auc": 0.6571850360304138,
+      "mean_brier": 0.23726761303701516,
+      "mean_log_loss": 0.672423833364866
     },
     "logistic": {
       "beats_majority_brier_in_all_folds": true,
@@ -88,7 +142,7 @@
           "auc": 0.6537639152864513,
           "brier": 0.23238311933002773,
           "fold": 1,
-          "log_loss": 0.6568555105733299,
+          "log_loss": 0.65685551057333,
           "majority_baseline_brier": 0.2512211803269051,
           "majority_baseline_log_loss": 0.6956261792459061,
           "test_from": "2024-01-02",
@@ -102,7 +156,7 @@
           "auc": 0.7026824264323115,
           "brier": 0.21666799676152168,
           "fold": 2,
-          "log_loss": 0.637368068968722,
+          "log_loss": 0.6373680689687227,
           "majority_baseline_brier": 0.24626675911205062,
           "majority_baseline_log_loss": 0.6856621504284892,
           "test_from": "2024-03-13",
@@ -114,7 +168,7 @@
         {
           "accuracy": 0.6341991341991342,
           "auc": 0.6913112756584496,
-          "brier": 0.2263647119865956,
+          "brier": 0.22636471198659563,
           "fold": 3,
           "log_loss": 0.6429717240729734,
           "majority_baseline_brier": 0.2524311278443065,
@@ -126,16 +180,16 @@
           "train_through": "2024-11-25"
         },
         {
-          "accuracy": 0.652498564043653,
-          "auc": 0.7131793804530537,
-          "brier": 0.21432547390991263,
+          "accuracy": 0.669921875,
+          "auc": 0.7340440260279663,
+          "brier": 0.2099461015241804,
           "fold": 4,
-          "log_loss": 0.6173126540722857,
-          "majority_baseline_brier": 0.2473000899870939,
-          "majority_baseline_log_loss": 0.6877376326110451,
+          "log_loss": 0.6080111574279181,
+          "majority_baseline_brier": 0.24805488526384933,
+          "majority_baseline_log_loss": 0.6892530149316796,
           "test_from": "2025-02-02",
-          "test_rows": 1741,
-          "test_through": "2026-04-12",
+          "test_rows": 512,
+          "test_through": "2025-10-21",
           "train_rows": 4396,
           "train_through": "2025-02-01"
         }
@@ -143,7 +197,8 @@
       "holdout_evaluation": {
         "accuracy": 0.6476810414971521,
         "auc": 0.7042519313557822,
-        "brier": 0.21593692842139153,
+        "brier": 0.21593692842139148,
+        "expected_calibration_error": 0.03018797512520154,
         "log_loss": 0.6205300558024976,
         "majority_baseline_brier": 0.2469890450844567,
         "majority_baseline_log_loss": 0.687113207216149,
@@ -151,10 +206,10 @@
         "test_rows": 1229,
         "test_through": "2026-04-12"
       },
-      "mean_accuracy": 0.6363853598757314,
-      "mean_auc": 0.6902342494575665,
-      "mean_brier": 0.22243532549701442,
-      "mean_log_loss": 0.6386269894218277
+      "mean_accuracy": 0.6407411876148181,
+      "mean_auc": 0.6954504108512947,
+      "mean_brier": 0.22134048240058135,
+      "mean_log_loss": 0.636301615260736
     }
   },
   "features": [
@@ -165,9 +220,6 @@
     "home_days_rest",
     "home_is_back_to_back",
     "home_games_prior",
-    "home_ppr_lost_pct",
-    "home_off_snaps_lost_pct",
-    "home_def_snaps_lost_pct",
     "home_avg_fg_pct",
     "home_avg_offensive_rebounds",
     "home_avg_total_rebounds",
@@ -179,9 +231,6 @@
     "away_days_rest",
     "away_is_back_to_back",
     "away_games_prior",
-    "away_ppr_lost_pct",
-    "away_off_snaps_lost_pct",
-    "away_def_snaps_lost_pct",
     "away_avg_fg_pct",
     "away_avg_offensive_rebounds",
     "away_avg_total_rebounds",
@@ -196,10 +245,17 @@
     "Historical betting ROI is not measured without point-in-time historical sportsbook snapshots.",
     "Production inference stays disabled until feature/source parity and calibration are reviewed."
   ],
+  "model_selection": {
+    "decision": "single_model_retained",
+    "ensemble_evaluated": true,
+    "rationale": "LogisticRegression out-performed HistGradientBoosting and Ensemble blend (Holdout Brier: 0.2159 vs Ensemble 0.2168). Per Phase 04 guidelines, parsimonious model is retained.",
+    "selected_model": "logistic"
+  },
+  "model_variant": "injury_aware",
   "model_version": "nba_temporal_v1",
-  "production_enabled": true,
+  "production_enabled": false,
   "sample_count": 6137,
-  "source_manifest": "2439234348e338a75476a26103ed07d1dad64f39465600889c48eeda37150014",
+  "source_manifest": "f8ce381f881904a19ca091d19de99c351243e80a5ae87ab2cc01bcd593b4be2c",
   "sport": "NBA",
   "validation_status": "temporal_evaluation_complete_manual_review_required"
 }

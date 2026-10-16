@@ -931,6 +931,7 @@ class NFLAvailabilityService:
         as_of: Any,
         raw_root: Optional[Path] = None,
         max_games: int = 10,
+        evaluated_week: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Carga registros recientes observados del jugador directamente desde los archivos parquet
@@ -1036,6 +1037,12 @@ class NFLAvailabilityService:
                 g_dt = self.parse_utc_timestamp(game_date_str)
                 if g_dt is None or g_dt >= as_of_dt:
                     continue  # Estrictamente anterior a as_of (sin fuga)
+                if evaluated_week is not None and row.get("week") is not None:
+                    try:
+                        if int(row["week"]) >= int(evaluated_week):
+                            continue  # Corte temporal estricto: nunca acceder a semanas en juego o futuras
+                    except (ValueError, TypeError):
+                        pass
 
                 off_pct, def_pct = snaps_map.get(g_id, (0.0, 0.0))
                 ppr_pts = float(row.get("fantasy_points_ppr") or 0.0)
@@ -1071,6 +1078,7 @@ class NFLAvailabilityService:
         pos_rank_context: Optional[Dict[str, Any]] = None,
         max_recent_games: int = 5,
         nflverse_raw_root: Optional[Path] = None,
+        evaluated_week: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Calcula la importancia del jugador a partir de sus estadísticas reales y participación
@@ -1082,6 +1090,7 @@ class NFLAvailabilityService:
         - pos_rank solo entra como contexto vigente con fecha/procedencia; sin multiplicadores fijos.
         - Si falta muestra reciente, devuelve status 'unknown'.
         - Si recent_game_logs no se pasa, intenta cargar de los parquets oficiales de nflverse.
+        - evaluated_week: corte temporal estricto para evitar temporal leakage (semana en juego o futuras nunca accesibles).
         """
         as_of_dt = self.parse_utc_timestamp(as_of)
         team_clean = str(current_team).strip().upper()
@@ -1123,6 +1132,7 @@ class NFLAvailabilityService:
                 as_of=as_of_dt,
                 raw_root=nflverse_raw_root,
                 max_games=max_recent_games * 2,
+                evaluated_week=evaluated_week,
             )
 
         if not logs:
@@ -1144,6 +1154,7 @@ class NFLAvailabilityService:
         # 2. Mismo equipo actual (no trasladar de equipos anteriores)
         # 3. Punto en el tiempo: game_date < as_of (estrictamente anterior, sin fuga)
         # 4. Misma temporada vigente (no sustituir con temporadas antiguas)
+        # 5. Corte temporal estricto: semana de stats < evaluated_week (cero fuga de semana en juego o futuras)
         as_of_year = as_of_dt.year
         active_season = as_of_year if as_of_dt.month >= 6 else as_of_year - 1
         eligible_logs = []
@@ -1158,6 +1169,13 @@ class NFLAvailabilityService:
             g_date = self.parse_utc_timestamp(g.get("game_date") or g.get("game_start_utc"))
             if g_date is None or g_date >= as_of_dt:
                 continue  # Excluido por falta de fecha o posterior/igual al corte
+            # Fuga temporal estricta por semana de juego
+            if evaluated_week is not None and g.get("week") is not None:
+                try:
+                    if int(g["week"]) >= int(evaluated_week):
+                        continue  # Corte temporal estricto: nunca acceder a semanas en juego o futuras
+                except (ValueError, TypeError):
+                    pass
             # Temporada vigente: no sustituir con temporadas antiguas
             g_season = g.get("season")
             if g_season is not None:
@@ -1283,6 +1301,12 @@ class NFLAvailabilityService:
 
         # Si prior_roster_stats no se proveyó externamente, conectar estadísticas
         # reales recientes del equipo actual anteriores a as_of desde nflverse
+        eval_week = None
+        if game_id and "_" in str(game_id):
+            parts = str(game_id).split("_")
+            if len(parts) >= 2 and parts[1].isdigit():
+                eval_week = int(parts[1])
+
         dynamic_prior_stats: Dict[str, Dict[str, float]] = {}
         if prior_roster_stats is None:
             for t_abbr in (h_upper, a_upper):
@@ -1303,6 +1327,7 @@ class NFLAvailabilityService:
                                 canonical_player_id=p_id,
                                 current_team=t_abbr,
                                 as_of=as_of,
+                                evaluated_week=eval_week,
                             )
                             if imp and imp.get("status") == "observed" and imp.get("rolling_ppr") is not None:
                                 dynamic_prior_stats[p_id] = {

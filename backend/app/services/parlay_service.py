@@ -10,9 +10,7 @@ Garantías Verificadas:
 - Emparejamiento por ambos equipos y fecha del calendario; rechazo de coincidencias ambiguas.
 """
 import itertools
-import json
 import math
-from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 import pandas as pd
@@ -27,7 +25,7 @@ from app.services.ev_engine import (
     decimal_to_american,
     calculate_ev,
 )
-from app.api.v1.predictions import _production_model_enabled, get_approved_model_version
+from app.api.v1.predictions import get_approved_model_version
 
 
 import re
@@ -144,10 +142,83 @@ def match_game_in_predictions(
     return None
 
 
+def _compute_joint_probability(evaluated_legs: List[Dict[str, Any]]) -> float:
+    """
+    Calcula la probabilidad conjunta considerando correlación intra-evento (mismo partido).
+    Para eventos independientes entre sí, multiplica las probabilidades de cada evento.
+    Para patas dentro del mismo evento:
+    - Si cubren equipos opuestos en el mismo partido: 0.0 (incompatible).
+    - Si combinan ML y Spread del mismo equipo:
+      - Spread negativo (favorito, ej -3.5): cubrir el spread implica ganar -> P(win AND cover) = P(cover).
+      - Spread positivo (underdog, ej +3.5): ganar implica cubrir el spread -> P(win AND cover) = P(win).
+    - Para otras combinaciones (ej. props ofensivos): aplica correlación positiva rho = 0.15.
+    """
+    event_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for idx, leg in enumerate(evaluated_legs):
+        ev_key = leg.get("event_id") or leg.get("game_id") or leg.get("matchup") or f"single_{idx}"
+        ev_key_str = str(ev_key)
+        matchup = (leg.get("matchup") or "").strip().lower()
+        if matchup and matchup != "entrada manual":
+            sep = "@" if "@" in matchup else ("vs" if "vs" in matchup else None)
+            if sep:
+                parts = matchup.split(sep)
+                if len(parts) == 2:
+                    t1 = normalize_nfl_team(parts[0])
+                    t2 = normalize_nfl_team(parts[1])
+                    if t1 and t2:
+                        ev_key_str = f"game_{min(t1, t2)}_{max(t1, t2)}"
+        event_groups.setdefault(ev_key_str, []).append(leg)
+
+    prob_total = 1.0
+    for ev_key, group in event_groups.items():
+        if len(group) == 1:
+            prob_total *= float(group[0]["prob_model"])
+            continue
+
+        teams = {normalize_nfl_team(l.get("team_name")) for l in group if l.get("team_name")}
+        teams.discard(None)
+        if len(teams) > 1:
+            return 0.0
+
+        p_event = None
+        for leg in group:
+            p_curr = float(leg["prob_model"])
+            mkt = str(leg.get("market", "")).lower()
+            point = leg.get("point")
+            if point is None and leg.get("line") is not None:
+                point = leg.get("line")
+
+            if p_event is None:
+                p_event = p_curr
+            else:
+                if "spread" in mkt and point is not None:
+                    try:
+                        pt_val = float(point)
+                        if pt_val <= 0:
+                            # Cubrir spread negativo garantiza victoria en el juego
+                            p_event = min(p_event, p_curr)
+                        else:
+                            # Ganar en Moneyline garantiza cubrir spread positivo
+                            p_event = min(p_event, p_curr)
+                        continue
+                    except (ValueError, TypeError):
+                        pass
+
+                # Correlación positiva intra-evento general (rho = 0.15)
+                rho = 0.15
+                cov = rho * math.sqrt(p_event * (1.0 - p_event) * p_curr * (1.0 - p_curr))
+                p_event = min(p_event, p_curr, max(0.01, (p_event * p_curr) + cov))
+
+        prob_total *= p_event if p_event is not None else 1.0
+
+    return max(0.0, min(1.0, prob_total))
+
+
 def evaluate_custom_parlay(
     legs: List[Dict[str, Any]],
     bankroll: float = 1000.0,
     kelly_fraction: float = 0.25,
+    allow_correlation: bool = False,
 ) -> Dict[str, Any]:
     """
     Evalúa matemáticamente un parlay personalizado de N patas.
@@ -213,7 +284,7 @@ def evaluate_custom_parlay(
                     break
                 seen_events.add(team_key)
 
-    if has_correlated_legs:
+    if has_correlated_legs and not allow_correlation:
         return {
             "viable": False,
             "has_correlated_legs": True,
@@ -265,6 +336,9 @@ def evaluate_custom_parlay(
                 "bookmaker": leg.get("bookmaker"),
                 "observed_at": leg.get("observed_at"),
                 "source": leg.get("source", "real"),
+                "event_id": leg.get("event_id") or leg.get("game_id"),
+                "matchup": leg.get("matchup"),
+                "point": leg.get("point") or leg.get("line"),
             })
             continue
 
@@ -293,6 +367,9 @@ def evaluate_custom_parlay(
             "bookmaker": leg.get("bookmaker"),
             "observed_at": leg.get("observed_at"),
             "source": leg.get("source", "real"),
+            "event_id": leg.get("event_id") or leg.get("game_id"),
+            "matchup": leg.get("matchup"),
+            "point": leg.get("point") or leg.get("line"),
         })
 
     is_manual = any(l.get("source") == "manual" for l in legs)
@@ -303,7 +380,7 @@ def evaluate_custom_parlay(
     if not has_sufficient_model_data or not all_odds_present:
         return {
             "viable": False,
-            "has_correlated_legs": False,
+            "has_correlated_legs": has_correlated_legs,
             "has_sufficient_model_data": False,
             "razon": "Datos insuficientes del modelo para calcular EV. Los totales Over/Under y eventos sin inferencia carecen de probabilidad del modelo (prohibido usar 0.50 o probabilidad implícita). No se muestra EV.",
             "n_legs": len(legs),
@@ -317,6 +394,9 @@ def evaluate_custom_parlay(
             "is_manual_calculation": is_manual,
             "legs_evaluadas": evaluated_legs,
         }
+
+    if has_correlated_legs and allow_correlation:
+        prob_combined = _compute_joint_probability(evaluated_legs)
 
     payout_net = odds_decimal - 1.0
     q = 1.0 - prob_combined
@@ -335,23 +415,39 @@ def evaluate_custom_parlay(
     )
 
     legs_have_heavy_negative = any((l.get("edge_pct") or 0.0) < -0.05 for l in evaluated_legs)
-    is_viable = (ev_dollars > 2.0) and (prob_combined >= 0.42) and not legs_have_heavy_negative
 
-    if is_viable:
-        razon = f"Parlay viable de {len(legs)} patas: Probabilidad combinada {prob_combined:.1%}, EV +${ev_dollars:.2f} con cuota {odds_american_comb:+d}."
-    elif ev_dollars <= 0:
-        razon = f"EV negativo (-${abs(ev_dollars):.2f}). La casa de apuestas mantiene ventaja matemática sobre esta combinación."
-    elif prob_combined < 0.42:
-        razon = f"Probabilidad combinada muy baja ({prob_combined:.1%}). Alto riesgo de quiebra a largo plazo."
+    if allow_correlation and has_correlated_legs:
+        # Microparlays targeting return >= 2.0x (+100) and EV > 0
+        is_viable = (ev_dollars > 0.0) and (odds_decimal >= 2.0) and (prob_combined >= 0.40) and not legs_have_heavy_negative
+        if is_viable:
+            razon = f"Microparlay correlacionado viable de {len(legs)} patas: Probabilidad conjunta {prob_combined:.1%}, EV +${ev_dollars:.2f} con cuota {odds_american_comb:+d}."
+        elif odds_decimal < 2.0:
+            razon = f"Cuota combinada ({odds_decimal:.2f}x) inferior al objetivo mínimo (2.0x / +100)."
+        elif ev_dollars <= 0:
+            razon = f"EV no positivo (-${abs(ev_dollars):.2f}). La correlación no supera la ventaja de la casa."
+        elif prob_combined < 0.40:
+            razon = f"Probabilidad conjunta insuficiente ({prob_combined:.1%}) para microparlay."
+        else:
+            razon = "Alguna pata seleccionada presenta expectativa fuertemente desfavorable."
     else:
-        razon = "Alguna pata seleccionada presenta expectativa fuertemente desfavorable."
+        is_viable = (ev_dollars > 2.0) and (prob_combined >= 0.42) and not legs_have_heavy_negative
+        if is_viable:
+            razon = f"Parlay viable de {len(legs)} patas: Probabilidad combinada {prob_combined:.1%}, EV +${ev_dollars:.2f} con cuota {odds_american_comb:+d}."
+        elif ev_dollars <= 0:
+            razon = f"EV negativo (-${abs(ev_dollars):.2f}). La casa de apuestas mantiene ventaja matemática sobre esta combinación."
+        elif prob_combined < 0.42:
+            razon = f"Probabilidad combinada muy baja ({prob_combined:.1%}). Alto riesgo de quiebra a largo plazo."
+        else:
+            razon = "Alguna pata seleccionada presenta expectativa fuertemente desfavorable."
 
     if is_manual:
         razon += " [Calculadora manual: estos cálculos no constituyen picks del modelo de Griddio]."
 
     return {
         "viable": is_viable,
-        "has_correlated_legs": False,
+        "has_correlated_legs": has_correlated_legs,
+        "is_correlated_microparlay": has_correlated_legs and allow_correlation,
+        "allow_correlation": allow_correlation,
         "has_sufficient_model_data": True,
         "razon": razon,
         "n_legs": len(legs),
@@ -367,6 +463,24 @@ def evaluate_custom_parlay(
     }
 
 
+def evaluate_correlated_microparlay(
+    legs: List[Dict[str, Any]],
+    bankroll: float = 1000.0,
+    kelly_fraction: float = 0.25,
+) -> Dict[str, Any]:
+    """
+    Evalúa un microparlay correlacionado (mismo juego/evento) utilizando probabilidades condicionales
+    y exigiendo un retorno objetivo >= 2.0x (+100) con EV positivo (> 0).
+    """
+    return evaluate_custom_parlay(
+        legs=legs,
+        bankroll=bankroll,
+        kelly_fraction=kelly_fraction,
+        allow_correlation=True,
+    )
+
+
+
 async def resolve_and_evaluate_parlay(
     legs: List[Dict[str, Any]],
     db: Optional[AsyncSession] = None,
@@ -375,24 +489,9 @@ async def resolve_and_evaluate_parlay(
 ) -> Dict[str, Any]:
     """
     SSOT de Parlays: recibe identificadores de eventos/selecciones reales o entradas manuales,
-    resuelve probabilidades del modelo experimental y momios observados en PostgreSQL,
+    resuelve probabilidades de un modelo aprobado y momios observados en PostgreSQL,
     valida su procedencia y evalúa la combinada.
     """
-    from ml.data_pipeline.common import project_root
-
-    # Cargar corrida experimental de inferencia para NFL si existe
-    exp_df = None
-    output_root = project_root() / "data" / "predictions" / "experimental"
-    manifests = sorted(output_root.glob("nfl_predictions_*.manifest.json"), reverse=True)
-    if manifests:
-        try:
-            m = json.loads(manifests[0].read_text(encoding="utf-8"))
-            csv_path = manifests[0].with_name(m["output_file"])
-            if csv_path.is_file():
-                exp_df = pd.read_csv(csv_path)
-        except Exception:
-            exp_df = None
-
     resolved_legs: List[Dict[str, Any]] = []
 
     for leg in legs:
@@ -488,16 +587,35 @@ async def resolve_and_evaluate_parlay(
             # Regla estricta: No calcular EV de modelo para totales hasta que exista una probabilidad del modelo para Over/Under.
             prob_model = None
             missing_reason = "No existe probabilidad de modelo correspondiente a Over/Under. Prohibido usar 0.50 o probabilidad implícita."
-        elif exp_df is not None and home_team_name and away_team_name:
-            matched_pred = match_game_in_predictions(home_team_name, away_team_name, game_date, exp_df)
-            if matched_pred is not None:
-                prob_model = float(matched_pred["home_win_probability"] if side == "home" else matched_pred["away_win_probability"])
+        elif resolved_game is not None:
+            approved_version = get_approved_model_version(resolved_game.sport)
+            if approved_version:
+                prediction_result = await db.execute(
+                    select(Prediction)
+                    .where(
+                        Prediction.game_id == resolved_game.id,
+                        Prediction.model_version == approved_version,
+                    )
+                    .order_by(Prediction.predicted_at.desc())
+                    .limit(1)
+                ) if db is not None else None
+                approved_prediction = prediction_result.scalar_one_or_none() if prediction_result else None
+                if approved_prediction is not None:
+                    raw_probability = (
+                        approved_prediction.home_win_prob if side == "home"
+                        else approved_prediction.away_win_prob
+                    )
+                    if raw_probability is not None and math.isfinite(float(raw_probability)) and 0 < float(raw_probability) < 1:
+                        prob_model = float(raw_probability)
+                    else:
+                        missing_reason = "La predicción aprobada contiene una probabilidad inválida."
+                else:
+                    missing_reason = "No hay predicción persistida del modelo aprobado para este partido."
             else:
-                prob_model = None
-                missing_reason = "No se encontró inferencia experimental para este enfrentamiento."
+                missing_reason = "El gate de producción está cerrado; la inferencia experimental no se usa para evaluar picks."
         else:
             prob_model = None
-            missing_reason = "Inferencia experimental de modelo no disponible."
+            missing_reason = "No se pudo resolver el partido en la base de datos."
 
         if odds_am is None and not missing_reason:
             missing_reason = "No se encontraron momios observados en la base de datos para este evento y mercado."
@@ -571,7 +689,15 @@ async def generate_recommended_parlays(
 
     candidates: List[Dict[str, Any]] = []
 
-    for pred, game, home_team in rows:
+    for row in rows:
+        if len(row) == 4:
+            pred, game, home_team, away_team = row
+        elif len(row) == 3:
+            pred, game, home_team = row
+            away_team = getattr(game, "away_team", None)
+        else:
+            continue
+
         # Validación de seguridad: rechazar registros que no coincidan con el deporte o versión aprobada
         if getattr(game, "sport", None) != target_sport or pred.model_version != approved_version:
             continue
@@ -585,6 +711,33 @@ async def generate_recommended_parlays(
         if not h_ml or not a_ml:
             continue
 
+        # Resolver bookmaker y observed_at del snapshot de odds o predicción
+        odds_snap = None
+        if db is not None and getattr(game, "id", None) is not None:
+            try:
+                odds_stmt = (
+                    select(OddsSnapshot)
+                    .where(OddsSnapshot.game_id == game.id)
+                    .where(OddsSnapshot.home_ml.isnot(None), OddsSnapshot.away_ml.isnot(None))
+                    .order_by(OddsSnapshot.observed_at.desc())
+                    .limit(1)
+                )
+                odds_res = await db.execute(odds_stmt)
+                odds_snap = odds_res.scalar_one_or_none()
+            except Exception:
+                odds_snap = None
+
+        leg_bookmaker = (odds_snap.bookmaker if odds_snap and odds_snap.bookmaker else None) or getattr(pred, "best_bookmaker", None) or "betmgm"
+        if odds_snap and getattr(odds_snap, "observed_at", None):
+            obs_dt = odds_snap.observed_at if odds_snap.observed_at.tzinfo else odds_snap.observed_at.replace(tzinfo=timezone.utc)
+            leg_observed_at = obs_dt.isoformat()
+        elif getattr(pred, "as_of", None) or getattr(pred, "predicted_at", None):
+            p_dt = getattr(pred, "as_of", None) or getattr(pred, "predicted_at", None)
+            p_dt_utc = p_dt if p_dt.tzinfo else p_dt.replace(tzinfo=timezone.utc)
+            leg_observed_at = p_dt_utc.isoformat()
+        else:
+            leg_observed_at = datetime.now(timezone.utc).isoformat()
+
         # Si el local tiene probabilidad atractiva (> 62%)
         if h_prob >= 0.62:
             ev = calculate_ev(h_prob, h_ml, bankroll=bankroll)
@@ -592,27 +745,34 @@ async def generate_recommended_parlays(
                 candidates.append({
                     "game_id": game.id,
                     "team_name": home_team.name,
-                    "opponent": "Visitante",
+                    "opponent": away_team.name if away_team and hasattr(away_team, "name") else "Visitante",
                     "side": "home",
+                    "market": "h2h",
                     "prob_model": h_prob,
                     "odds_american": h_ml,
                     "edge_pct": ev.edge_pct,
                     "tier": pred.confluence_tier,
+                    "bookmaker": leg_bookmaker,
+                    "observed_at": leg_observed_at,
                 })
 
         # Si el visitante tiene probabilidad atractiva (> 62%)
         if a_prob >= 0.62:
             ev = calculate_ev(a_prob, a_ml, bankroll=bankroll)
             if ev.edge_pct >= 0.01:
+                away_name = away_team.name if away_team and hasattr(away_team, "name") else f"Visita vs {getattr(home_team, 'abbreviation', '')}"
                 candidates.append({
                     "game_id": game.id,
-                    "team_name": f"Visita vs {home_team.abbreviation}",
-                    "opponent": home_team.name,
+                    "team_name": away_name,
+                    "opponent": home_team.name if home_team and hasattr(home_team, "name") else "Local",
                     "side": "away",
+                    "market": "h2h",
                     "prob_model": a_prob,
                     "odds_american": a_ml,
                     "edge_pct": ev.edge_pct,
                     "tier": pred.confluence_tier,
+                    "bookmaker": leg_bookmaker,
+                    "observed_at": leg_observed_at,
                 })
 
     # Si hay menos de 2 candidatos reales con gate aprobado en DB, no hay parlay viable

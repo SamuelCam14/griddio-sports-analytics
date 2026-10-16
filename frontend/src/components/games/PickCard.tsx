@@ -139,7 +139,7 @@ export function PickCard({ pick, bankroll }: Props) {
   )
 }
 
-function ProbBar({ homeProb, awayProb, pickSide }: {
+function ProbBar({ homeProb, awayProb: _awayProb, pickSide }: {
   homeProb: number
   awayProb: number
   pickSide: 'home' | 'away'

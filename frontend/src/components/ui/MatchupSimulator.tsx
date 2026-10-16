@@ -9,7 +9,7 @@ interface Props {
   bankroll?: number
 }
 
-export function MatchupSimulator({ bankroll }: Props) {
+export function MatchupSimulator({ bankroll: _bankroll }: Props) {
   return (
     <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-6 text-center space-y-4">
       <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">

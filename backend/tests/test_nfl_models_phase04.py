@@ -48,6 +48,20 @@ def test_model_metadata_phase04_compliance():
     assert log_eval["expected_calibration_error"] < 0.05  # well calibrated ECE < 5%
 
 
+def test_all_checked_in_model_metadata_keep_production_gate_closed():
+    """Verify that approved NFL production model has production_enabled=True while NBA/unapproved stay closed."""
+    for sport in ("nfl", "nba"):
+        paths = [backend_root() / "ml" / "models" / sport / "model_metadata.json"]
+        if sport == "nfl":
+            paths.append(backend_root() / "ml" / "models" / "nfl" / "team_only" / "model_metadata.json")
+        for metadata_path in paths:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if sport == "nfl" and metadata_path == backend_root() / "ml" / "models" / "nfl" / "model_metadata.json":
+                assert metadata.get("production_enabled") is True, str(metadata_path)
+            else:
+                assert metadata.get("production_enabled") is False, str(metadata_path)
+
+
 def test_chronological_splits_zero_leakage():
     """Chronological folds must have strict chronological separation and zero overlap."""
     df, meta = load_training_dataset("nfl", variant="team_only")

@@ -18,13 +18,15 @@ logger = structlog.get_logger(__name__)
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     logger.info("Starting Sports Analytics API", env=settings.APP_ENV)
+    settings.validate_security()
     await init_db()
     logger.info("Database initialized")
     yield
     logger.info("Shutting down Sports Analytics API")
 
 
-app = FastAPI(debug=True, 
+app = FastAPI(
+    debug=settings.debug,
     title="Sports Analytics Platform",
     description=(
         "API para análisis deportivo con ventaja matemática (EV+), "

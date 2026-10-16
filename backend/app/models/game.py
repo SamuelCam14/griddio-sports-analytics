@@ -91,6 +91,29 @@ class Game(Base):
     away_team       = relationship("Team", foreign_keys=[away_team_id], back_populates="away_games")
     predictions     = relationship("Prediction", back_populates="game")
     odds_snapshots  = relationship("OddsSnapshot", back_populates="game")
+    crosswalk_entries = relationship("ProviderGameCrosswalk", back_populates="game", cascade="all, delete-orphan")
+
+
+class ProviderGameCrosswalk(Base):
+    """
+    Tabla de correspondencias entre identificadores de proveedores externos
+    (ej: 'the_odds_api', 'nflverse', 'espn') y el Game canónico interno.
+    Garantiza una identidad unificada evitando registros duplicados.
+    """
+    __tablename__ = "provider_game_crosswalk"
+
+    id                  = Column(Integer, primary_key=True)
+    game_id             = Column(Integer, ForeignKey("games.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider            = Column(String(50), nullable=False)   # "the_odds_api" | "nflverse" | "espn"
+    provider_event_id   = Column(String(100), nullable=False)  # ID externo en el proveedor
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at          = Column(DateTime(timezone=True), onupdate=func.now())
+
+    game                = relationship("Game", back_populates="crosswalk_entries")
+
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_event_id", name="uq_provider_event"),
+    )
 
 
 class OddsSnapshot(Base):

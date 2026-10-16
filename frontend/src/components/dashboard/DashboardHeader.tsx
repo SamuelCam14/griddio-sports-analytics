@@ -1,5 +1,4 @@
 import {
-  Activity,
   BarChart3,
   Bell,
   Calendar,

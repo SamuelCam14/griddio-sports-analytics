@@ -6,9 +6,7 @@ import {
   ShieldAlert,
   BarChart3,
   SlidersHorizontal,
-  Calendar,
   Activity,
-  UserX,
   TrendingUp,
   Loader2,
   CheckCircle2
@@ -252,16 +250,23 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
               transition={{ duration: 0.18 }}
               className="mt-5 space-y-6"
             >
-              {/* Impacto de Producción (Fase 5 Fantasy & Snaps Impact) */}
-              <div className="rounded-xl border border-white/8 bg-white/[0.025] p-4">
+              <div className="rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 text-[11px] text-slate-400" role="status">
+                {context.injury_source.status === 'unavailable'
+                  ? 'No se pudo verificar el reporte de ESPN.'
+                  : context.injury_source.status === 'not_applicable_past_game'
+                    ? 'El reporte actual no aplica a un partido pasado.'
+                    : `Fuente: ${context.injury_source.source ?? 'desconocida'} · captura ${context.injury_source.captured_at_utc ?? 'sin timestamp'}${context.injury_source.is_from_cache ? ` · caché de ${Math.round((context.injury_source.cache_age_seconds ?? 0) / 60)} min` : ' · respuesta en vivo'}`}
+              </div>
+
+              {game.sport === 'NFL' && <div className="rounded-xl border border-white/8 bg-white/[0.025] p-4">
                 <div className="flex items-center gap-2">
                   <Activity className="h-4 w-4 text-emerald-400" />
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
-                    Impacto en Producción por Lesiones (Modelo Fase 5)
+                    Impacto de producción (requiere cobertura y roster verificados)
                   </h3>
                 </div>
                 <p className="mt-1 text-[11px] text-slate-400">
-                  Porcentaje estimado de producción ofensiva/defensiva fuera de combate respecto a la plantilla titular.
+                  Los porcentajes se muestran solo cuando existen denominadores y cobertura verificables.
                 </p>
 
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -313,7 +318,7 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                     </div>
                   </div>
                 </div>
-              </div>
+              </div>}
 
               {/* Listas Detalladas de Bajas */}
               <div className="grid gap-4 md:grid-cols-2">
@@ -321,11 +326,13 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                   teamName={awayName}
                   isAway
                   injuries={context.injuries.away}
+                  coverageState={context.injuries.away_impact.coverage_state}
                 />
                 <InjuriesListCard
                   teamName={homeName}
                   isAway={false}
                   injuries={context.injuries.home}
+                  coverageState={context.injuries.home_impact.coverage_state}
                 />
               </div>
             </motion.div>
@@ -486,11 +493,13 @@ function TeamFormCard({
 function InjuriesListCard({
   teamName,
   isAway,
-  injuries
+  injuries,
+  coverageState,
 }: {
   teamName: string
   isAway: boolean
   injuries: OfficialInjury[]
+  coverageState?: string
 }) {
   return (
     <div className="rounded-xl border border-white/8 bg-white/[0.025] p-3.5">
@@ -506,7 +515,7 @@ function InjuriesListCard({
       {injuries.length === 0 ? (
         <div className="flex min-h-28 flex-col items-center justify-center text-center text-slate-500">
           <CheckCircle2 className="h-5 w-5 text-emerald-500/50 mb-1" />
-          <p className="text-xs">Sin bajas reportadas para este partido</p>
+          <p className="text-xs">{coverageState === 'covered_healthy' ? 'Reporte verificado sin lesiones' : coverageState === 'no_injuries_listed_in_capture' ? 'Equipo ausente en el reporte; salud no confirmada' : 'Sin registros de lesiones verificables'}</p>
         </div>
       ) : (
         <div className="mt-2.5 max-h-72 space-y-2 overflow-y-auto pr-1">
@@ -553,17 +562,20 @@ function DuelComparisonBar({
   label,
   awayVal,
   homeVal,
-  awayName,
-  homeName,
+  awayName: _awayName,
+  homeName: _homeName,
   inverted = false
 }: {
   label: string
-  awayVal: number
-  homeVal: number
+  awayVal: number | null
+  homeVal: number | null
   awayName: string
   homeName: string
   inverted?: boolean
 }) {
+  if (awayVal == null || homeVal == null) {
+    return <div className="flex items-center justify-between gap-3 text-xs text-slate-400"><span>{label}</span><span>Sin datos suficientes</span></div>
+  }
   const sum = Math.abs(awayVal) + Math.abs(homeVal) || 1
   const awayPct = Math.min(100, Math.max(0, (Math.abs(awayVal) / sum) * 100))
   const homePct = 100 - awayPct
@@ -646,7 +658,7 @@ function LeagueMetricsSection({
         ))}
       </div>
       <p className="mt-3 text-[11px] text-slate-500">
-        Valores entregados por el calendario para este partido; los campos ausentes se muestran como —.
+        Métricas basadas solo en partidos completados antes de la fecha objetivo. Los campos sin cobertura se indican como —.
       </p>
     </div>
   )

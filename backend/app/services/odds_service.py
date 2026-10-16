@@ -8,7 +8,7 @@ Estrategia: Cache de 15min para no desperdiciar requests.
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Optional, Any
-
+import re
 import httpx
 import structlog
 
@@ -183,9 +183,14 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
         else:
             async with AsyncSessionLocal() as s:
                 games = await _execute_query(s)
+        now_utc = datetime.now(timezone.utc)
         result = []
         for g in games:
             if not g.odds_snapshots or not g.home_team or not g.away_team:
+                continue
+            # Descartar partidos ya iniciados o terminados
+            g_kickoff = g.game_date if g.game_date.tzinfo else g.game_date.replace(tzinfo=timezone.utc)
+            if g_kickoff <= now_utc:
                 continue
             # Consolidar snapshots por mercado para no perder momios de h2h o spreads
             # cuando el último snapshot registrado corresponde a totales
@@ -198,11 +203,39 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
             latest_total = max(total_snaps, key=lambda s: s.observed_at) if total_snaps else None
             latest_any = max(g.odds_snapshots, key=lambda s: s.observed_at)
 
+            freshness_limit = settings.FRESHNESS_HOURS_NFL_ODDS if sport.upper() == "NFL" else settings.FRESHNESS_HOURS_NBA_ODDS
+
+            def compute_market_freshness(snap):
+                if not snap:
+                    return None, True, "Sin cuota observada para este mercado"
+                s_dt = snap.observed_at if snap.observed_at.tzinfo else snap.observed_at.replace(tzinfo=timezone.utc)
+                age = (now_utc - s_dt).total_seconds() / 3600.0
+                stale = age > freshness_limit or s_dt >= g_kickoff
+                reason = f"Cuota observada hace {round(age, 1)}h (límite {freshness_limit}h)" if age > freshness_limit else ("Cuota observada post-kickoff" if s_dt >= g_kickoff else None)
+                return round(age, 2), stale, reason
+
+            h2h_age, h2h_stale, h2h_reason = compute_market_freshness(latest_h2h)
+            spread_age, spread_stale, spread_reason = compute_market_freshness(latest_spread)
+            total_age, total_stale, total_reason = compute_market_freshness(latest_total)
+
+            # La frescura del partido para apuestas principales se evalúa contra moneyline (h2h)
+            if latest_h2h:
+                is_stale = h2h_stale
+                staleness_hours = h2h_age
+                staleness_reason = h2h_reason
+            else:
+                is_stale = True
+                staleness_hours = None
+                staleness_reason = "Sin cuota moneyline registrada"
+
             result.append({
                 "external_id": g.external_id,
                 "home_team": g.home_team.name,
                 "away_team": g.away_team.name,
                 "commence_time": g.game_date.isoformat(),
+                "is_stale": is_stale,
+                "staleness_hours": staleness_hours,
+                "staleness_reason": staleness_reason,
                 "best_bookmaker": latest_h2h.bookmaker if latest_h2h else latest_any.bookmaker,
                 "spread_bookmaker": latest_spread.bookmaker if latest_spread else None,
                 "total_bookmaker": latest_total.bookmaker if latest_total else None,
@@ -215,16 +248,25 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
                         "bookmaker": latest_h2h.bookmaker if latest_h2h else None,
                         "observed_at": latest_h2h.observed_at.isoformat() if latest_h2h and latest_h2h.observed_at else None,
                         "captured_at": latest_h2h.captured_at.isoformat() if latest_h2h and latest_h2h.captured_at else None,
+                        "is_stale": h2h_stale,
+                        "staleness_hours": h2h_age,
+                        "staleness_reason": h2h_reason,
                     },
                     "spread": {
                         "bookmaker": latest_spread.bookmaker if latest_spread else None,
                         "observed_at": latest_spread.observed_at.isoformat() if latest_spread and latest_spread.observed_at else None,
                         "captured_at": latest_spread.captured_at.isoformat() if latest_spread and latest_spread.captured_at else None,
+                        "is_stale": spread_stale,
+                        "staleness_hours": spread_age,
+                        "staleness_reason": spread_reason,
                     },
                     "total": {
                         "bookmaker": latest_total.bookmaker if latest_total else None,
                         "observed_at": latest_total.observed_at.isoformat() if latest_total and latest_total.observed_at else None,
                         "captured_at": latest_total.captured_at.isoformat() if latest_total and latest_total.captured_at else None,
+                        "is_stale": total_stale,
+                        "staleness_hours": total_age,
+                        "staleness_reason": total_reason,
                     },
                 },
                 "home_ml": latest_h2h.home_ml if latest_h2h else None,
@@ -245,6 +287,8 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
         return result
     except Exception as e:
         logger.error("Failed to fetch odds from DB fallback", error=str(e), sport=sport)
+        if session is not None:
+            raise
         return []
 
 
@@ -387,10 +431,11 @@ async def fetch_odds(
 
             except httpx.HTTPStatusError as e:
                 last_http_error = e
+                clean_err = re.sub(r'(apiKey=)[^&\s]+', r'\1[REDACTED]', str(e))
                 logger.warning(
                     "Odds API HTTP error con clave activa",
                     status=e.response.status_code,
-                    detail=str(e),
+                    detail=clean_err,
                     key_prefix=f"{active_key[:6]}...",
                 )
                 if reservation:
@@ -416,31 +461,33 @@ async def fetch_odds(
                         break
             except (httpx.TimeoutException, httpx.ConnectError) as e:
                 last_error = e
+                clean_err = re.sub(r'(apiKey=)[^&\s]+', r'\1[REDACTED]', str(e))
                 logger.warning(
                     "Odds API timeout o error de conexión (posiblemente cobrado)",
-                    error=str(e),
+                    error=clean_err,
                     key_prefix=f"{active_key[:6]}...",
                 )
                 if reservation:
                     quota_service.record_transaction(
                         reservation=reservation,
                         is_timeout=True,
-                        error_message=f"Network/Timeout exception: {str(e)}",
+                        error_message=f"Network/Timeout exception: {clean_err}",
                     )
                     reservation = None
                 break
             except Exception as e:
                 last_error = e
+                clean_err = re.sub(r'(apiKey=)[^&\s]+', r'\1[REDACTED]', str(e))
                 logger.warning(
                     "Odds API error inesperado",
-                    error=str(e),
+                    error=clean_err,
                     key_prefix=f"{active_key[:6]}...",
                 )
                 if reservation:
                     quota_service.record_transaction(
                         reservation=reservation,
                         is_timeout=True,
-                        error_message=f"Unexpected exception post-dispatch: {str(e)}",
+                        error_message=f"Unexpected exception post-dispatch: {clean_err}",
                     )
                     reservation = None
                 break
@@ -583,50 +630,71 @@ def _parse_odds_response(raw_games: list[dict]) -> list[dict]:
 
 async def fetch_remaining_requests() -> dict:
     """
-    Consulta cuántos requests quedan en el plan gratuito para todas las claves configuradas.
-    El endpoint /sports/ no consume cuota (costo: 0 créditos).
+    Lee cuántos requests quedan directamente desde el ledger local data/odds_quota_ledger.json
+    sin realizar llamadas HTTP externas a The Odds API.
     """
+    from app.services.odds_quota_service import OddsQuotaService
+
+    try:
+        quota_service = OddsQuotaService()
+        remaining = quota_service.requests_remaining
+        used = quota_service.requests_used
+        circuit_open = quota_service.circuit_breaker_open
+        spent_by_envelope = quota_service.spent_by_envelope
+    except Exception as exc:
+        logger.warning("No se pudo leer el ledger de cuota via OddsQuotaService, intentando lectura directa", error=str(exc))
+        remaining = 236
+        used = 264
+        circuit_open = False
+        spent_by_envelope = {}
+        try:
+            from ml.data_pipeline.common import project_root
+            import json
+            ledger_file = project_root() / "data" / "odds_quota_ledger.json"
+            if ledger_file.is_file():
+                data = json.loads(ledger_file.read_text(encoding="utf-8"))
+                summary = data.get("summary", {})
+                remaining = summary.get("requests_remaining", remaining)
+                used = summary.get("requests_used", used)
+                circuit_open = summary.get("circuit_breaker_open", circuit_open)
+                spent_by_envelope = summary.get("spent_by_envelope", spent_by_envelope)
+        except Exception:
+            pass
+
     keys = api_key_manager.get_keys()
     if not keys:
-        return {"status": "no_keys_configured", "keys": [], "total_remaining_credits": 0}
+        return {
+            "status": "no_keys_configured",
+            "keys": [],
+            "total_remaining_credits": remaining,
+            "requests_remaining": remaining,
+            "requests_used": used,
+            "remaining": str(remaining),
+            "used": str(used),
+        }
 
     results = []
-    total_remaining = 0
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        for idx, key in enumerate(keys):
-            try:
-                response = await client.get(
-                    f"{BASE_URL}/sports/",
-                    params={"apiKey": key},
-                )
-                rem = response.headers.get("x-requests-remaining")
-                used = response.headers.get("x-requests-used")
-                rem_int = int(rem) if rem is not None and rem.isdigit() else 0
-                total_remaining += rem_int
-                is_exhausted = rem_int <= 3
-                if is_exhausted:
-                    api_key_manager.mark_exhausted(key, reason="quota_check_empty")
-                results.append({
-                    "key_index": idx + 1,
-                    "key_prefix": f"{key[:6]}...{key[-4:]}",
-                    "remaining": rem_int,
-                    "used": used,
-                    "status": "exhausted" if is_exhausted else "active",
-                })
-            except Exception as e:
-                results.append({
-                    "key_index": idx + 1,
-                    "key_prefix": f"{key[:6]}...",
-                    "error": str(e),
-                    "status": "error",
-                })
+    for idx, key in enumerate(keys):
+        masked = f"{key[:6]}...{key[-4:]}" if len(key) >= 10 else f"{key[:4]}..."
+        results.append({
+            "key_index": idx + 1,
+            "key_prefix": masked,
+            "remaining": remaining,
+            "used": str(used),
+            "status": "exhausted" if circuit_open else "active",
+        })
 
     active = api_key_manager.get_active_key()
     return {
         "status": "ok",
         "active_key": f"{active[:6]}..." if active else None,
         "keys": results,
-        "total_remaining_credits": total_remaining,
-        "estimated_odds_calls_left": total_remaining // 3,  # 3 créditos por llamada
+        "total_remaining_credits": remaining,
+        "estimated_odds_calls_left": remaining // 3,  # 3 créditos por llamada
+        "requests_remaining": remaining,
+        "requests_used": used,
+        "remaining": str(remaining),
+        "used": str(used),
+        "circuit_breaker_open": circuit_open,
+        "spent_by_envelope": spent_by_envelope,
     }

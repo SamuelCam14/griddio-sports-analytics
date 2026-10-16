@@ -34,6 +34,8 @@ class BetEvent:
     team_name: Optional[str] = None
     sport: str = "NBA"
     game_id: Optional[int] = None
+    model_agreement: Optional[int] = None
+    confluence_tier: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
 
     def __post_init__(self):
@@ -45,7 +47,11 @@ class BetEvent:
             self.edge_pct = self.prob_model - self.implied_prob
             self.ev_dollars = round((self.prob_model * self.net_payout * 100.0) - ((1.0 - self.prob_model) * 100.0), 2)
             self.ev_pct = f"{self.ev_dollars:+.2f}%"
-            self.has_edge = self.edge_pct >= 0.03 and self.ev_dollars > 0
+            meets_odds = self.odds_decimal >= 1.40
+            meets_confluence = (self.model_agreement is None or self.model_agreement >= 2) and (
+                self.confluence_tier is None or self.confluence_tier.upper() != "NONE"
+            )
+            self.has_edge = self.edge_pct >= 0.03 and self.ev_dollars > 0 and meets_odds and meets_confluence
             self.tier = "PREMIUM" if self.has_edge and self.edge_pct >= 0.08 else "VALUE" if self.has_edge else "SKIP"
 
 
@@ -68,6 +74,8 @@ def calculate_ev(
     odds_american: int,
     bankroll: float = 1000.0,
     min_edge_threshold: float = 0.03,
+    model_agreement: Optional[int] = None,
+    confluence_tier: Optional[str] = None,
 ) -> BetEvent:
     """Calcula el Valor Esperado (EV) de una apuesta por cada $100 arriesgados."""
     odds_decimal = american_to_decimal(odds_american)
@@ -83,7 +91,13 @@ def calculate_ev(
     kelly_frac = calculate_kelly_fraction(p_win, odds_decimal, fraction_multiplier=0.25, max_cap=0.05)
     kelly_amt = calculate_kelly_amount(bankroll, kelly_frac)
 
-    has_edge = edge_pct >= min_edge_threshold and ev_dollars > 0
+    # Confluence decision rule and minimum odds enforcement (Requirement R3)
+    meets_confluence = (model_agreement is None or model_agreement >= 2) and (
+        confluence_tier is None or confluence_tier.upper() != "NONE"
+    )
+    meets_odds = (odds_decimal >= 1.40)
+
+    has_edge = edge_pct >= min_edge_threshold and ev_dollars > 0 and meets_odds and meets_confluence
 
     if has_edge and edge_pct >= 0.08:
         tier = "PREMIUM"
@@ -97,6 +111,10 @@ def calculate_ev(
         warnings.append("Probabilidad inusualmente alta (>85%). Verificar posible sobreajuste.")
     if abs(odds_american) >= 300:
         warnings.append("Momio extremo. Varianza elevada.")
+    if not meets_odds:
+        warnings.append(f"Cuota decimal {odds_decimal:.2f} inferior al umbral mínimo de 1.40 (-250); pick descartado.")
+    if not meets_confluence:
+        warnings.append("Confluencia insuficiente de modelos (<2/3 de acuerdo); pick descartado.")
 
     return BetEvent(
         prob_model=round(prob_model, 4),
@@ -111,6 +129,8 @@ def calculate_ev(
         kelly_amount=kelly_amt,
         has_edge=has_edge,
         tier=tier,
+        model_agreement=model_agreement,
+        confluence_tier=confluence_tier,
         warnings=warnings,
     )
 
@@ -152,6 +172,14 @@ def build_parlay(
     kelly_frac = calculate_kelly_fraction(comb_prob, comb_dec, fraction_multiplier=0.20, max_cap=0.05)
     kelly_amt = calculate_kelly_amount(bankroll, kelly_frac)
 
+    # Microparlays target combined return >= 2.0x (+100) and combined EV > 0
+    is_viable = (comb_ev > 0) and (comb_dec >= 2.0)
+    reason = (
+        f"Micro-parlay de {len(selected)} legs con EV +${comb_ev:.2f} y cuota {comb_dec:.2f}."
+        if is_viable
+        else f"Micro-parlay no viable (EV: ${comb_ev:.2f}, cuota combinada: {comb_dec:.2f} < 2.0x)."
+    )
+
     return ParlayResult(
         events=selected,
         combined_prob=round(comb_prob, 4),
@@ -160,6 +188,6 @@ def build_parlay(
         combined_ev=round(comb_ev, 2),
         kelly_fraction=round(kelly_frac, 4),
         kelly_amount=kelly_amt,
-        is_viable=comb_ev > 0,
-        reason=f"Micro-parlay de {len(selected)} legs con EV +${comb_ev:.2f} por cada $100.",
+        is_viable=is_viable,
+        reason=reason,
     )

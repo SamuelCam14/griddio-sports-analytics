@@ -28,7 +28,26 @@ export const MatchupSpreadTab: React.FC<MatchupSpreadTabProps> = ({
     )
   }
 
-  const marketLineLabel = spread.market_line > 0 ? `+${spread.market_line}` : `${spread.market_line}`
+  const marketLineLabel =
+    spread.market_line != null
+      ? spread.market_line > 0
+        ? `+${spread.market_line}`
+        : `${spread.market_line}`
+      : 'Sin línea'
+
+  const projectedAway = spread.projected_away_score != null ? spread.projected_away_score : '—'
+  const projectedHome = spread.projected_home_score != null ? spread.projected_home_score : '—'
+  const spreadPick = spread.pick || 'Sin selección disponible'
+
+  const coverProbDisplay =
+    spread.cover_probability != null && Number.isFinite(spread.cover_probability)
+      ? `${(spread.cover_probability * 100).toFixed(1)}% Cubre`
+      : 'Prob. no disponible'
+
+  const edgePctDisplay =
+    spread.edge_pct != null && Number.isFinite(spread.edge_pct)
+      ? `+${spread.edge_pct.toFixed(1)}% Ventaja`
+      : 'Sin ventaja calculada'
 
   return (
     <div className="space-y-2.5">
@@ -42,21 +61,21 @@ export const MatchupSpreadTab: React.FC<MatchupSpreadTabProps> = ({
       <div className="flex justify-between items-center text-xs">
         <span className="text-gray-400">Marcador Proyectado:</span>
         <span className="font-mono text-purple-300 font-semibold">
-          {awayAbbr} {spread.projected_away_score} - {spread.projected_home_score} {homeAbbr}
+          {awayAbbr} {projectedAway} - {projectedHome} {homeAbbr}
         </span>
       </div>
 
       <div className="bg-purple-950/30 border border-purple-800/40 p-2 rounded-lg text-xs flex justify-between items-center">
         <div>
           <span className="text-[10px] text-purple-300 block uppercase font-bold">Pick en el Spread:</span>
-          <span className="text-white font-bold">{spread.pick}</span>
+          <span className="text-white font-bold">{spreadPick}</span>
         </div>
         <div className="text-right font-mono">
           <span className="text-green-400 font-bold">
-            {(spread.cover_probability * 100).toFixed(1)}% Cubre
+            {coverProbDisplay}
           </span>
           <span className="text-gray-400 text-[10px] block">
-            +{spread.edge_pct}% Ventaja
+            {edgePctDisplay}
           </span>
         </div>
       </div>
