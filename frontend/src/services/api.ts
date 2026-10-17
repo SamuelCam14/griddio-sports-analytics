@@ -165,6 +165,7 @@ export interface PlayerProp {
 }
 
 export interface MatchupSpread {
+  status?: string
   market_line: number
   odds_american: number
   projected_margin?: number

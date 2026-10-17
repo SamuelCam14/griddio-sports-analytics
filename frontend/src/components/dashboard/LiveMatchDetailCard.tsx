@@ -23,7 +23,6 @@ export function LiveMatchDetailCard({ match, sport, onOpenDeepDive }: LiveMatchD
   const game = match?.game
   const odds = match?.odds
   const prediction = match?.prediction
-  const experimental = match?.experimentalPrediction
   const home = odds?.home_team ?? 'Local sin identificar'
   const away = odds?.away_team ?? 'Visitante sin identificar'
   const kickoff = odds?.commence_time ?? game?.game_date
@@ -54,9 +53,7 @@ export function LiveMatchDetailCard({ match, sport, onOpenDeepDive }: LiveMatchD
         <div className="mt-3 border-t border-white/[0.08] pt-3 text-center text-xs text-slate-400">
           {prediction
             ? `Probabilidad local ${formatPercentage(prediction.home_win_prob)} · visitante ${formatPercentage(prediction.away_win_prob)}`
-            : experimental
-              ? `Probabilidad experimental: local ${formatPercentage(experimental.home_win_probability)} · visitante ${formatPercentage(experimental.away_win_probability)}`
-              : 'Pronóstico no disponible'}
+            : 'Pronóstico en espera de cuotas o lista de inactivos pre-partido'}
         </div>
       </div>
 
@@ -105,21 +102,27 @@ export function LiveMatchDetailCard({ match, sport, onOpenDeepDive }: LiveMatchD
           <div className="space-y-2 text-slate-300">
             {prediction ? (
               <>
-                <p>Probabilidad de producción · Local {formatPercentage(prediction.home_win_prob)} / visita {formatPercentage(prediction.away_win_prob)}</p>
-                <p>EV y selección: {prediction.best_bet ? `${prediction.best_bet.selection} · EV ${prediction.best_bet.ev_dollars > 0 ? '+' : ''}$${prediction.best_bet.ev_dollars} por cada $100` : 'Sin oportunidad calculable con ventaja publicada.'}</p>
+                <p className="font-semibold text-emerald-400">Modelo de producción (nfl_temporal_v1)</p>
+                <p>Probabilidad estimada: Local {formatPercentage(prediction.home_win_prob)} / Visita {formatPercentage(prediction.away_win_prob)}</p>
+                <p>EV y selección: {prediction.best_bet ? `${prediction.best_bet.selection} · EV ${prediction.best_bet.ev_dollars > 0 ? '+' : ''}$${prediction.best_bet.ev_dollars} por cada $100` : 'Sin ventaja matemática calculable en este mercado.'}</p>
+                {prediction.spread?.status === 'available' && prediction.spread.projected_margin != null && (
+                  <p className="text-slate-300">
+                    Hándicap proyectado: {prediction.spread.projected_margin > 0 ? '+' : ''}{prediction.spread.projected_margin.toFixed(1)} pts · Prob. cubrir {formatPercentage(prediction.spread.cover_probability)}
+                  </p>
+                )}
                 {prediction.key_factors?.map((factor, index) => <p key={`${factor}-${index}`} className="text-slate-400">{factor}</p>)}
               </>
-            ) : experimental ? (
-              <>
-                <p className="font-semibold text-amber-300">Probabilidades experimentales · no son pick</p>
-                <p>Local {formatPercentage(experimental.home_win_probability)} / visita {formatPercentage(experimental.away_win_probability)}</p>
-                <p>Mayor probabilidad experimental: {experimental.home_win_probability >= experimental.away_win_probability ? home : away} ({formatPercentage(Math.max(experimental.home_win_probability, experimental.away_win_probability))}).</p>
-                <p className="text-slate-400">Modelo {experimental.model_version} · inferencia {experimental.run_as_of}</p>
-                <p className="break-all text-[10px] text-slate-500">Dataset SHA-256: {experimental.dataset_sha256}</p>
-                <p className="break-all text-[10px] text-slate-500">Artefacto SHA-256: {experimental.artifact_sha256}</p>
-                <p className="text-slate-400">Sin modelo aprobado para este mercado, EV, handicap y pick recomendado no se calculan.</p>
-              </>
-            ) : <p>No existe inferencia vinculada a este partido y vigente para la fecha del evento.</p>}
+            ) : (
+              <div className="space-y-1">
+                <p className="font-medium text-slate-300">Sin recomendación para este partido</p>
+                <p className="text-slate-400">
+                  El ensamble requiere confluencia de modelos, cuotas verificadas (≥ 1.40) y valor esperado positivo (+EV).
+                </p>
+                <p className="text-[10px] text-slate-500">
+                  Las listas oficiales de inactivos se confirman a 90 min del kickoff. Cero datos simulados.
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>

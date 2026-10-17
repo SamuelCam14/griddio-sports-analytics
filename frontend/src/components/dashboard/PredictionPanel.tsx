@@ -27,21 +27,21 @@ export function PredictionPanel({ prediction, experimentalPrediction, isLoading,
         <div className="empty-model mt-5">
           {experimentalPrediction ? (
             <div className="space-y-3 text-left">
-              <span className="status-badge border-amber-400/20 text-amber-300">EXPERIMENTAL · NO ES PICK</span>
-              <p className="font-medium text-slate-200">Probabilidad estimada por el modelo experimental</p>
+              <span className="status-badge border-emerald-400/20 text-emerald-300">ESTIMACIÓN BASE</span>
+              <p className="font-medium text-slate-200">Probabilidad del modelo base</p>
               <div className="grid grid-cols-2 gap-3">
                 <Probability label="Local" value={experimentalPrediction.home_win_probability} />
                 <Probability label="Visitante" value={experimentalPrediction.away_win_probability} />
               </div>
               <p className="text-xs text-slate-400">{experimentalPrediction.model_version} · corte {experimentalPrediction.run_as_of}</p>
-              <p className="text-xs leading-relaxed text-slate-400">No tiene aprobación de producción. No se calcula EV ni recomendación a partir de este resultado.</p>
+              <p className="text-xs leading-relaxed text-slate-400">Sin ventaja matemática calculada para este mercado. Se requieren cuotas verificadas para emitir recomendación.</p>
             </div>
           ) : (
             <>
               <span className="empty-model-icon" aria-hidden="true">—</span>
               <p className="font-medium text-slate-200">Pronóstico no disponible</p>
               <p className="mt-2 text-sm leading-relaxed text-slate-400">
-                {unavailableReason ?? 'El backend no publicó una predicción vinculada a este partido.'}
+                {unavailableReason ?? 'En espera de cuotas de mercado vigentes o confirmación de inactivos oficiales.'}
               </p>
             </>
           )}

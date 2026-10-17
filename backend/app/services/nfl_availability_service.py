@@ -292,6 +292,151 @@ class NFLAvailabilityService:
         snaps = self.get_injury_snapshots(as_of=as_of)
         return snaps[-1] if snaps else None
 
+    _cached_crosswalk: Optional[Dict[str, str]] = None
+
+    def get_player_crosswalk(self, nflverse_raw_root: Optional[Path] = None) -> Dict[str, str]:
+        """Carga y cachea la correspondencia de nombres canónicos y ESPN IDs a GSIS ID."""
+        if self._cached_crosswalk is not None:
+            return self._cached_crosswalk
+
+        import polars as pl
+        import re
+        nflverse_dir = nflverse_raw_root or Path("data/raw/nflverse")
+        crosswalk_files = list(nflverse_dir.glob("players_*.parquet"))
+        cw: Dict[str, str] = {}
+        if not crosswalk_files:
+            self._cached_crosswalk = cw
+            return cw
+
+        try:
+            df = pl.read_parquet(crosswalk_files[0])
+            for row in df.iter_rows(named=True):
+                gid = row.get("gsis_id")
+                if not gid:
+                    continue
+                name = row.get("display_name")
+                espn = row.get("espn_id")
+                if espn:
+                    cw[str(espn).strip()] = gid
+                if name:
+                    clean_name = str(name).lower().strip()
+                    cw[clean_name] = gid
+                    no_punc = re.sub(r"[^\w\s]", "", clean_name).strip()
+                    cw[no_punc] = gid
+                    no_suf = re.sub(r"\b(jr|sr|ii|iii|iv)\b", "", no_punc).strip()
+                    no_suf = re.sub(r"\s+", " ", no_suf).strip()
+                    if no_suf:
+                        cw[no_suf] = gid
+            self._cached_crosswalk = cw
+        except Exception as exc:
+            logger.warning("Error cargando crosswalk de jugadores", error=str(exc))
+            self._cached_crosswalk = {}
+        return self._cached_crosswalk
+
+    def load_team_roster_stats_from_nflverse(
+        self,
+        team: str,
+        as_of: Any,
+        evaluated_week: Optional[int] = None,
+        raw_root: Optional[Path] = None,
+    ) -> Dict[str, Dict[str, float]]:
+        """
+        Carga estadísticas reales previas de TODOS los jugadores observados en el equipo
+        a partir de nflverse (player_stats y snap_counts) antes de as_of y evaluated_week.
+        Garantiza un denominador real team_potential_ppr libre de data leaks.
+        """
+        as_of_dt = self.parse_utc_timestamp(as_of)
+        if not as_of_dt:
+            return {}
+
+        team_clean = str(team).strip().upper()
+        team_candidates = [team_clean]
+        if team_clean in ("LA", "LAR"):
+            team_candidates = ["LA", "LAR"]
+        elif team_clean in ("WAS", "WSH"):
+            team_candidates = ["WAS", "WSH"]
+
+        active_season = as_of_dt.year if as_of_dt.month >= 6 else as_of_dt.year - 1
+        nflverse_dir = raw_root or Path("data/raw/nflverse")
+        season_dir = nflverse_dir / str(active_season)
+        if not season_dir.exists():
+            return {}
+
+        try:
+            import polars as pl
+            stat_files = list(season_dir.glob("player_stats_*.parquet"))
+            if not stat_files:
+                return {}
+            stats_df = pl.read_parquet(stat_files[0])
+            filt = pl.col("team").str.to_uppercase().is_in(team_candidates)
+            if evaluated_week is not None:
+                filt = filt & (pl.col("week") < evaluated_week)
+
+            sub = stats_df.filter(filt)
+            if sub.is_empty():
+                return {}
+
+            snaps_map: Dict[str, Dict[int, Tuple[float, float]]] = {}
+            snap_files = list(season_dir.glob("snap_counts_*.parquet"))
+            if snap_files:
+                try:
+                    snaps_df = pl.read_parquet(snap_files[0])
+                    snaps_team = snaps_df.filter(pl.col("team").str.to_uppercase().is_in(team_candidates))
+                    for r in snaps_team.iter_rows(named=True):
+                        pfr = r.get("pfr_player_id")
+                        wk = r.get("week")
+                        if pfr and wk is not None:
+                            if pfr not in snaps_map:
+                                snaps_map[pfr] = {}
+                            snaps_map[pfr][int(wk)] = (
+                                float(r.get("offense_pct") or 0.0),
+                                float(r.get("defense_pct") or 0.0),
+                            )
+                except Exception:
+                    pass
+
+            pfr_lookup = {}
+            crosswalk_files = list(nflverse_dir.glob("players_*.parquet"))
+            if crosswalk_files:
+                try:
+                    pdf = pl.read_parquet(crosswalk_files[0])
+                    for r in pdf.select(["gsis_id", "pfr_id"]).iter_rows(named=True):
+                        if r.get("gsis_id") and r.get("pfr_id"):
+                            pfr_lookup[r["gsis_id"]] = str(r["pfr_id"])
+                except Exception:
+                    pass
+
+            result: Dict[str, Dict[str, float]] = {}
+            for row in sub.group_by("player_id").agg(
+                rolling_ppr=pl.col("fantasy_points_ppr").tail(5).mean(),
+                weeks=pl.col("week").tail(5),
+            ).iter_rows(named=True):
+                pid = row.get("player_id")
+                if not pid:
+                    continue
+                ppr = float(row.get("rolling_ppr") or 0.0)
+                pfr = pfr_lookup.get(pid)
+                off_snaps = 0.0
+                def_snaps = 0.0
+                if pfr and pfr in snaps_map:
+                    wks = row.get("weeks") or []
+                    off_vals = [snaps_map[pfr][w][0] for w in wks if w in snaps_map[pfr]]
+                    def_vals = [snaps_map[pfr][w][1] for w in wks if w in snaps_map[pfr]]
+                    if off_vals:
+                        off_snaps = sum(off_vals) / len(off_vals)
+                    if def_vals:
+                        def_snaps = sum(def_vals) / len(def_vals)
+
+                result[pid] = {
+                    "rolling_ppr": ppr,
+                    "rolling_off_pct": off_snaps,
+                    "rolling_def_pct": def_snaps,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("Error construyendo prior roster stats de equipo", error=str(exc), team=team)
+            return {}
+
     @staticmethod
     def parse_utc_timestamp(val: Any) -> Optional[datetime]:
         """Convierte una cadena, fecha o timestamp en datetime consciente de UTC sin inventar fechas."""
@@ -593,9 +738,9 @@ class NFLAvailabilityService:
         observed_at = player_dict.get("observed_at") or player_dict.get("date_modified")
         espn_id = str(player_dict["espn_id"]) if player_dict.get("espn_id") else None
         canonical_id = player_dict.get("gsis_id") or player_dict.get("canonical_player_id")
-
-        if not canonical_id and crosswalk:
-            canonical_id = crosswalk.get(espn_id or "") or crosswalk.get(raw_name.lower())
+        effective_cw = crosswalk if crosswalk is not None else self.get_player_crosswalk()
+        if not canonical_id and effective_cw:
+            canonical_id = effective_cw.get(espn_id or "") or effective_cw.get(raw_name.lower())
 
         # 1. Resolver estado oficial point-in-time
         avail_status = self.resolve_availability_status(
@@ -661,6 +806,7 @@ class NFLAvailabilityService:
         is_source_available: bool = True,
         no_injuries_listed: bool = False,
         clean_report_evidence_ref: Optional[str] = None,
+        allow_unresolved_market: bool = False,
     ) -> TeamAvailabilitySummary:
         """
         Calcula el impacto deportivo del equipo usando métricas previas y denominadores definidos.
@@ -849,7 +995,15 @@ class NFLAvailabilityService:
 
         # Si hay jugadores con pérdida pero sin historial previo, advertir en metadata
         state = CoverageState.COVERED_WITH_INJURIES.value
-        if cnt_unk > 0 or missing_player_history_cnt > 0 or unresolved_market_count > 0:
+        should_fail_unknown = False
+        if not allow_unresolved_market:
+            if cnt_unk > 0 or missing_player_history_cnt > 0 or unresolved_market_count > 0:
+                should_fail_unknown = True
+        else:
+            if team_potential_ppr <= 0.0:
+                should_fail_unknown = True
+
+        if should_fail_unknown:
             # No baseline guess may masquerade as market-verified availability.
             return TeamAvailabilitySummary(
                 team=team_upper,
@@ -878,6 +1032,14 @@ class NFLAvailabilityService:
         off_snaps_lost_pct = min(1.0, round(total_off_snaps_lost / 11.0, 4))
         def_snaps_lost_pct = min(1.0, round(total_def_snaps_lost / 11.0, 4))
 
+        meta = {
+            "missing_player_history_count": missing_player_history_cnt,
+            "team_potential_ppr": round(team_potential_ppr, 2),
+        }
+        if allow_unresolved_market and unresolved_market_count > 0:
+            meta["preliminary_market_pending"] = True
+            meta["reporte_preliminar"] = "Las listas oficiales se confirman a 90 min del kickoff"
+
         return TeamAvailabilitySummary(
             team=team_upper,
             coverage_state=state,
@@ -894,10 +1056,7 @@ class NFLAvailabilityService:
             game_id=game_id,
             decision_cutoff=str(decision_cutoff) if decision_cutoff else None,
             players=[r.to_dict() for r in records],
-            metadata={
-                "missing_player_history_count": missing_player_history_cnt,
-                "team_potential_ppr": round(team_potential_ppr, 2),
-            },
+            metadata=meta,
         )
 
     def persist_team_availability(
@@ -1280,6 +1439,9 @@ class NFLAvailabilityService:
         if not active_snap:
             return {}
 
+        as_of_dt = self.parse_utc_timestamp(as_of) or datetime.now(timezone.utc)
+        cap_dt = self.parse_utc_timestamp(active_snap.get("captured_at_utc")) or as_of_dt
+
         cadence = active_snap.get("cadence", "start_of_day")
         if cadence in ("near_kickoff", "pre_kickoff"):
             cutoff_dt = kickoff_dt - timedelta(minutes=90)
@@ -1307,42 +1469,21 @@ class NFLAvailabilityService:
             if len(parts) >= 2 and parts[1].isdigit():
                 eval_week = int(parts[1])
 
-        dynamic_prior_stats: Dict[str, Dict[str, float]] = {}
-        if prior_roster_stats is None:
-            for t_abbr in (h_upper, a_upper):
-                raw_players = teams_payload.get(t_abbr, [])
-                for p in raw_players:
-                    p_name = str(p.get("player_name") or p.get("full_name") or "").strip().lower()
-                    espn_id_str = str(p.get("espn_id") or "")
-                    p_id = (
-                        p.get("gsis_id")
-                        or p.get("canonical_player_id")
-                        or (crosswalk.get(espn_id_str) if crosswalk and espn_id_str else None)
-                        or (crosswalk.get(p_name) if crosswalk and p_name else None)
-                        or p.get("espn_id")
-                    )
-                    if p_id and p_id not in dynamic_prior_stats:
-                        try:
-                            imp = self.calculate_player_recent_importance(
-                                canonical_player_id=p_id,
-                                current_team=t_abbr,
-                                as_of=as_of,
-                                evaluated_week=eval_week,
-                            )
-                            if imp and imp.get("status") == "observed" and imp.get("rolling_ppr") is not None:
-                                dynamic_prior_stats[p_id] = {
-                                    "rolling_ppr": float(imp["rolling_ppr"]),
-                                    "rolling_off_pct": float(imp.get("rolling_off_pct") or 0.0),
-                                    "rolling_def_pct": float(imp.get("rolling_def_pct") or 0.0),
-                                }
-                        except Exception:
-                            pass
-        effective_prior_stats = prior_roster_stats if prior_roster_stats is not None else (dynamic_prior_stats if dynamic_prior_stats else None)
+        def get_team_players(t: str) -> Optional[List[Dict[str, Any]]]:
+            if t in teams_payload:
+                return teams_payload[t]
+            alias_map = {"LA": "LAR", "LAR": "LA", "WAS": "WSH", "WSH": "WAS"}
+            alt = alias_map.get(t)
+            if alt and alt in teams_payload:
+                return teams_payload[alt]
+            return None
+
+        effective_cw = crosswalk if crosswalk is not None else self.get_player_crosswalk()
 
         summaries = {}
         for t_abbr in (h_upper, a_upper):
-            if t_abbr in teams_payload:
-                raw_players = teams_payload[t_abbr]
+            raw_players = get_team_players(t_abbr)
+            if raw_players is not None:
                 records = []
                 for p in raw_players:
                     r = self.process_player_injury(
@@ -1351,26 +1492,34 @@ class NFLAvailabilityService:
                         game_start_utc=kickoff_dt.isoformat(),
                         decision_cutoff=eval_cutoff_str,
                         live_props=live_props,
-                        crosswalk=crosswalk,
+                        crosswalk=effective_cw,
                         expected_event_id=props_event_id,
                         strict_unlisted_unknown=strict_unlisted_unknown,
                     )
                     records.append(r)
+
+                team_priors = (
+                    prior_roster_stats.get(t_abbr) if (prior_roster_stats and t_abbr in prior_roster_stats)
+                    else (prior_roster_stats if prior_roster_stats is not None
+                          else self.load_team_roster_stats_from_nflverse(t_abbr, as_of=as_of, evaluated_week=eval_week))
+                )
+
                 summary = self.compute_team_production_lost(
                     team=t_abbr,
                     records=records,
-                    prior_roster_stats=effective_prior_stats,
+                    prior_roster_stats=team_priors,
                     game_id=game_id,
                     decision_cutoff=cutoff_dt.isoformat(),
                     is_source_available=True,
                     clean_report_evidence_ref=f"espn_snapshot:{snap_id}:{t_abbr}:clean_report" if not records else None,
+                    allow_unresolved_market=True,
                 )
             else:
                 # Equipo omitido: registrar fielmente sin lesiones listadas en esta captura
                 summary = self.compute_team_production_lost(
                     team=t_abbr,
                     records=[],
-                    prior_roster_stats=effective_prior_stats,
+                    prior_roster_stats=None,
                     game_id=game_id,
                     decision_cutoff=cutoff_dt.isoformat(),
                     is_source_available=True,

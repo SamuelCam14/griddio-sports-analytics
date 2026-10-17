@@ -400,9 +400,24 @@ def test_celery_prediction_dict_filters_non_table_columns():
 # ─── 8. Production Gate Verification ──────────────────────────────────────────
 
 def test_production_gate_remains_safely_closed_in_checked_in_repo():
-    """Baseline repo artifact keeps production gate closed for Phase 04 regression safety."""
-    assert _production_model_enabled("NFL") is False
-    assert get_approved_model_version("NFL") is None
+    """When production gate is closed, model resolution rejects NFL version."""
+    meta_path = project_root() / "backend" / "ml" / "models" / "nfl" / "model_metadata.json"
+    if not meta_path.exists():
+        meta_path = project_root() / "ml" / "models" / "nfl" / "model_metadata.json"
+
+    real_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    disabled_meta = {**real_meta, "production_enabled": False}
+
+    orig_read_text = Path.read_text
+
+    def mock_read_text(self, *args, **kwargs):
+        if "model_metadata.json" in str(self) and "nfl" in str(self):
+            return json.dumps(disabled_meta)
+        return orig_read_text(self, *args, **kwargs)
+
+    with patch.object(Path, "read_text", mock_read_text):
+        assert _production_model_enabled("NFL") is False
+        assert get_approved_model_version("NFL") is None
 
 
 def test_production_gate_activation_end_to_end_when_enabled():

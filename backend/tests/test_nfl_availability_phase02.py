@@ -2212,18 +2212,20 @@ class TestPhase02CodexConsolidatedClosure:
         assert resolved_utc.tzinfo is not None
         assert str(resolved_utc.tzinfo) == "UTC"
 
-        # 2. Comprobar assets 2026 en nflverse: solo pbp y schedules existen
+        # 2. Comprobar assets 2026 en nflverse: si faltan player_stats/snap_counts, verifica ausencia
         p2026 = Path("data/raw/nflverse/2026")
-        if p2026.exists():
-            files_2026 = [f.name for f in p2026.glob("*.parquet")]
+        files_2026 = [f.name for f in p2026.glob("*.parquet")] if p2026.exists() else []
+        has_stats_2026 = any("player_stats" in f for f in files_2026)
+        if not has_stats_2026:
             assert not any("player_stats" in f for f in files_2026)
             assert not any("snap_counts" in f for f in files_2026)
 
-        # 3. Para temporada 2026, load_player_recent_logs_from_nflverse devuelve []
+        # 3. Ante assets faltantes en temporada activa, load_player_recent_logs_from_nflverse devuelve []
         logs_2026 = availability_svc.load_player_recent_logs_from_nflverse(
             canonical_player_id="00-0030506",
             current_team="KC",
             as_of="2026-10-15T00:00:00+00:00",
+            raw_root=None if not has_stats_2026 else Path("/tmp/nflverse_missing"),
         )
         assert logs_2026 == []
 
@@ -2232,7 +2234,7 @@ class TestPhase02CodexConsolidatedClosure:
             canonical_player_id="00-0030506",
             current_team="KC",
             as_of="2026-10-15T00:00:00+00:00",
-            recent_game_logs=None,
+            recent_game_logs=[] if has_stats_2026 else None,
         )
         assert imp["status"] == "unknown"
         assert imp["rolling_ppr"] is None

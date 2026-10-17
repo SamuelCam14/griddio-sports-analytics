@@ -22,7 +22,7 @@ export function DashboardPage() {
   const [carouselIndex, setCarouselIndex] = useState(0)
   const [activeModal, setActiveModal] = useState<ModalType>(null)
 
-  const { sport, predictionsQuery, experimentalQuery, recommendedParlaysQuery, externalForecastQuery, matchList } = useSportsDashboard(selectedGameId ?? undefined)
+  const { sport, predictionsQuery, recommendedParlaysQuery, externalForecastQuery, matchList } = useSportsDashboard(selectedGameId ?? undefined)
 
   const matches = matchList.matches
   const totalMatches = matches.length
@@ -38,7 +38,8 @@ export function DashboardPage() {
 
   const topPick = useMemo(() => {
     return matches.find((m) => m.prediction?.tier === 'PREMIUM')?.prediction ??
-      matches.find((m) => m.prediction?.tier === 'EXPERIMENTAL')?.prediction ??
+      matches.find((m) => m.prediction?.tier === 'VALUE')?.prediction ??
+      matches.find((m) => m.prediction?.tiene_ventaja)?.prediction ??
       matches[0]?.prediction
   }, [matches])
 
@@ -80,13 +81,6 @@ export function DashboardPage() {
   const predictionsError = predictionsQuery.error
     ? getApiErrorMessage(predictionsQuery.error)
     : undefined
-  const experimentalStatusMessage = experimentalQuery.error
-    ? `No se pudo leer la corrida: ${getApiErrorMessage(experimentalQuery.error)}`
-    : (experimentalQuery.data?.unlinked_game_count ?? 0) > 0
-      ? `${experimentalQuery.data?.unlinked_game_count} evento(s) de la corrida no tienen crosswalk canónico; no se asociaron a partidos.`
-      : experimentalQuery.data?.game_count === 0
-        ? 'La corrida verificada no contiene predicciones vigentes para partidos con identidad canónica.'
-        : undefined
 
   return (
     <MotionConfig reducedMotion="user">
@@ -158,9 +152,7 @@ export function DashboardPage() {
                 matches={matches}
                 sport={sport}
                 externalForecast={externalForecastQuery.data}
-                externalForecastError={externalForecastQuery.error ? getApiErrorMessage(externalForecastQuery.error) : undefined}
                 externalForecastLoading={externalForecastQuery.isLoading}
-                experimentalStatusMessage={experimentalStatusMessage}
                 onSelectMatch={handleSelectMatch}
               />
             </div>

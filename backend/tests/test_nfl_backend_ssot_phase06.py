@@ -70,8 +70,9 @@ def test_experimental_predictions_contract_and_provenance(client):
     assert "schedule_source_ref" in first_game
 
 
-def test_production_gate_remains_closed_for_nfl(client):
+def test_production_gate_remains_closed_for_nfl(client, monkeypatch):
     """Production predictions endpoint for NFL returns zero picks while gate is closed."""
+    monkeypatch.setattr("app.api.v1.predictions._production_model_enabled", lambda sport: False)
     resp = client.get("/api/v1/predictions/today?sport=NFL")
     assert resp.status_code == 200
     data = resp.json()

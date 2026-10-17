@@ -78,8 +78,10 @@ export function HeroSpotlight({
 
               <p className="mt-1.5 text-xs text-slate-300 line-clamp-2">
                 {match?.prediction?.best_bet
-                  ? `Recomendación de producción publicada por el backend: ${match.prediction.best_bet.selection}.`
-                  : 'No hay recomendación de producción publicada para este partido.'}
+                  ? `Recomendación de producción: ${match.prediction.best_bet.selection} (${match.prediction.best_bet.odds_american > 0 ? '+' : ''}${match.prediction.best_bet.odds_american}) · EV +$${match.prediction.best_bet.ev_dollars.toFixed(1)}/100 · Prob. ${(match.prediction.best_bet.win_probability * 100).toFixed(1)}%.`
+                  : match?.prediction
+                    ? `Probabilidad estimada: local ${(match.prediction.home_win_prob * 100).toFixed(1)}% · visita ${(match.prediction.away_win_prob * 100).toFixed(1)}% (sin ventaja de cuota suficiente en el mercado actual).`
+                    : 'Esperando cuotas de mercado vigentes o reporte de inactivos para este evento.'}
               </p>
             </>
           ) : (

@@ -11,7 +11,7 @@ def _game():
     return SimpleNamespace(
         id=1,
         sport="NFL",
-        game_date=datetime(2026, 10, 16, 0, 15, tzinfo=timezone.utc),
+        game_date=datetime(2026, 10, 20, 0, 15, tzinfo=timezone.utc),
         home_team=SimpleNamespace(name="Denver Broncos", abbreviation="DEN"),
         away_team=SimpleNamespace(name="Seattle Seahawks", abbreviation="SEA"),
     )
@@ -43,7 +43,7 @@ class _Client:
         if "scoreboard" in url:
             return _Response({"events": [{
                 "id": "401872995",
-                "date": "2026-10-16T00:15Z",
+                "date": "2026-10-20T00:15Z",
                 "competitions": [{"competitors": [
                     {"homeAway": "home", "team": {"id": "7", "abbreviation": "DEN"}},
                     {"homeAway": "away", "team": {"id": "26", "abbreviation": "SEA"}},
@@ -76,7 +76,7 @@ async def test_external_predictor_fails_closed_on_kickoff_mismatch():
         async def get(self, url, **kwargs):
             response = await super().get(url, **kwargs)
             if "scoreboard" in url:
-                response.body["events"][0]["date"] = "2026-10-16T00:16Z"
+                response.body["events"][0]["date"] = "2026-10-20T00:16Z"
             return response
 
     with patch("app.services.espn_service.httpx.AsyncClient", WrongKickoffClient):

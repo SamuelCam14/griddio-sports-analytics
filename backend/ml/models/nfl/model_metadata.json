@@ -343,7 +343,7 @@
   "model_version": "nfl_temporal_v1",
   "production_enabled": true,
   "sample_count": 672,
-  "source_manifest": "20d7d0fa0c6b2cddaf40dcf32b4a798277855cd251b5e92dfb24e39d0383643d",
+  "source_manifest": "dd68beecef952ccd001ce0104380ed9ac9088c445fbedbacaef4a843498fb445",
   "sport": "NFL",
   "validation_status": "temporal_evaluation_complete_verified"
 }

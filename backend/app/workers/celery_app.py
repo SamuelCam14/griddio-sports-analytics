@@ -222,7 +222,8 @@ def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] 
                         
                     from app.workers.espn_map import ESPN_NBA_ID_TO_ABBR, ESPN_NFL_ABBR_TO_ABBR
                     from app.models.game import Team, ProviderGameCrosswalk, Prediction
-                    from ml.data_pipeline.temporal_features import feature_columns, SPORT_STATS
+                    from ml.data_pipeline.temporal_features import feature_columns
+                    from ml.inference import SPORT_STATS
                     
                     # Preload team mappings for this sport
                     team_stmt = select(Team).where(Team.sport == sp)

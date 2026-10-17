@@ -287,7 +287,7 @@ def predict_matchups(
             # Cutoff debe ser prepartido (al menos 90 min antes del kickoff) y no en el futuro
             if snapshot_cutoff > kickoff - timedelta(minutes=90):
                 raise DataQualityError(f"NFL availability cutoff no coincide con el juego {game_id}: posterior al horizonte prepartido de 90 minutos")
-            if snapshot_cutoff > decision_now + timedelta(minutes=5):
+            if captured_at > decision_now + timedelta(minutes=5):
                 raise DataQualityError(f"NFL game {game_id} aún está fuera de la ventana de decisión")
 
             source_obs_val = snapshot.get("source_observed_at_utc")

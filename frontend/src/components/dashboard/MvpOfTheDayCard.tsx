@@ -56,7 +56,7 @@ export function MvpOfTheDayCard({ sport, topPick }: MvpOfTheDayCardProps) {
         <div className="mt-3 flex flex-col items-center justify-center rounded-xl border border-white/[0.05] bg-white/[0.02] p-4 text-center">
           <p className="text-xs font-medium text-slate-300">Sin pick MVP activo hoy</p>
           <p className="mt-1 text-[11px] text-slate-500 leading-relaxed max-w-[260px]">
-            {sport} no tiene una selección de producción publicada. El modelo experimental no genera recomendaciones ni EV.
+            No hay una selección con ventaja matemática suficiente (+EV con cuota ≥ 1.40) publicada para los partidos vigentes de hoy.
           </p>
         </div>
       )}

@@ -24,6 +24,11 @@ export function buildMatchList(
       continue
     }
 
+    // Excluir partidos que ya finalizaron
+    if (game.status === 'final') {
+      continue
+    }
+
     matched.push({
       game,
       odds: event,
