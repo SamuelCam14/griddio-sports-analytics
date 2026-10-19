@@ -40,16 +40,27 @@ async def sync_espn_team_catalog(sport: str, db: AsyncSession) -> int:
         logger.warning("ESPN team catalog unavailable", sport=sport, error=str(exc))
         return 0
 
+    # Canonical abbreviation crosswalk — ESPN uses some non-canonical codes
+    _ABBR_CROSSWALK = {"WSH": "WAS", "OAK": "LV", "SD": "LAC", "STL": "LAR"}
+
     league_list = payload.get("sports", [{}])[0].get("leagues", [])
     team_entries = league_list[0].get("teams", []) if league_list else []
     existing_result = await db.execute(select(Team).where(Team.sport == sport))
-    existing_abbrs = {team.abbreviation.upper() for team in existing_result.scalars().all()}
+    existing_teams = existing_result.scalars().all()
+    existing_abbrs = {team.abbreviation.upper() for team in existing_teams}
+    existing_names = {team.name.strip().lower() for team in existing_teams}
     inserted = 0
     for entry in team_entries:
         data = entry.get("team", {})
-        abbreviation = data.get("abbreviation")
+        raw_abbr = data.get("abbreviation")
         espn_id = data.get("id")
-        if not abbreviation or not espn_id or abbreviation.upper() in existing_abbrs:
+        if not raw_abbr or not espn_id:
+            continue
+        # Canonicalize the abbreviation before any check
+        abbreviation = _ABBR_CROSSWALK.get(raw_abbr.upper(), raw_abbr.upper())
+        display_name = (data.get("displayName") or data.get("name") or abbreviation).strip()
+        # Skip if already tracked by abbreviation OR by full team name
+        if abbreviation in existing_abbrs or display_name.lower() in existing_names:
             continue
         logos = data.get("logos") or []
         groups = data.get("groups")
@@ -57,13 +68,14 @@ async def sync_espn_team_catalog(sport: str, db: AsyncSession) -> int:
         db.add(Team(
             api_id=f"espn_{sport}_{espn_id}",
             sport=sport,
-            name=data.get("displayName") or data.get("name") or abbreviation,
-            abbreviation=abbreviation.upper(),
+            name=display_name,
+            abbreviation=abbreviation,
             city=data.get("location"),
             conference=conference,
             logo_url=logos[0].get("href") if logos else None,
         ))
-        existing_abbrs.add(abbreviation.upper())
+        existing_abbrs.add(abbreviation)
+        existing_names.add(display_name.lower())
         inserted += 1
     if inserted:
         await db.flush()

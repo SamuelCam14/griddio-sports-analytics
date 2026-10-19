@@ -248,10 +248,35 @@ async def sync_real_games(sport: str, db: AsyncSession) -> Dict[str, Any]:
         normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
         return re.sub(r"\s+", " ", normalized)
 
+    # Canonical abbreviations preferred over ESPN-aliased duplicates
+    _CANONICAL_ABBRS = {"WAS", "LAR", "LAC", "LV"}
+
     def find_team(query_name: str) -> Optional[Team]:
         q = normalize_team_name(query_name)
         matches = [t for t in teams if normalize_team_name(t.name) == q]
-        return matches[0] if len(matches) == 1 else None
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            # Prefer the team whose abbreviation is in the canonical set
+            canonical = [t for t in matches if t.abbreviation in _CANONICAL_ABBRS]
+            if len(canonical) == 1:
+                logger.warning(
+                    "find_team: múltiples equipos con mismo nombre; usando abreviatura canónica",
+                    name=query_name,
+                    chosen_abbr=canonical[0].abbreviation,
+                    all_ids=[t.id for t in matches],
+                )
+                return canonical[0]
+            # Fallback: prefer shorter abbreviation (less likely to be an alias)
+            matches_sorted = sorted(matches, key=lambda t: len(t.abbreviation))
+            logger.warning(
+                "find_team: ambigüedad no resuelta por canónica; eligiendo por longitud de abreviatura",
+                name=query_name,
+                chosen_abbr=matches_sorted[0].abbreviation,
+                all_ids=[t.id for t in matches],
+            )
+            return matches_sorted[0]
+        return None
 
     def as_utc(value: datetime) -> datetime:
         return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)

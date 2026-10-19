@@ -33,6 +33,9 @@ celery_app.conf.update(
 celery_app.conf.task_routes = {
     "app.workers.celery_app.ingest_odds_*": {"queue": "ingestion"},
     "app.workers.celery_app.capture_nfl_injuries_*": {"queue": "ingestion"},
+    "app.workers.celery_app.ingest_nfl_schedule_*": {"queue": "ingestion"},
+    "app.workers.celery_app.ingest_nba_schedule_*": {"queue": "ingestion"},
+    "app.workers.celery_app.schedule_nfl_gameday_*": {"queue": "ingestion"},
     "app.workers.celery_app.evaluate_predictions_*": {"queue": "ml"},
     "app.workers.celery_app.audit_card_*": {"queue": "alerts"},
 }
@@ -232,24 +235,32 @@ def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] 
                     
                     predictions_data = []
                     for _, row in preds_df.iterrows():
-                        game_dt = pd.to_datetime(row["game_date"]).date()
-                        
+                        # Use game_start_utc (UTC kickoff) when available.
+                        # game_date is the local US date and can differ from the UTC kickoff
+                        # date for night games (e.g. MNF at 00:15 UTC is Oct-19 ET but Oct-20 UTC).
+                        if "game_start_utc" in row and row["game_start_utc"] is not None:
+                            game_dt = pd.to_datetime(row["game_start_utc"]).date()
+                        else:
+                            game_dt = pd.to_datetime(row["game_date"]).date()
+                        # Also retain the local date for a ±1 day fallback
+                        local_game_dt = pd.to_datetime(row["game_date"]).date() if "game_date" in row else game_dt
+
                         if sp == "NBA":
                             home_abbr = ESPN_NBA_ID_TO_ABBR.get(int(row["home_team_id"]))
                             away_abbr = ESPN_NBA_ID_TO_ABBR.get(int(row["away_team_id"]))
                         else:
                             home_abbr = ESPN_NFL_ABBR_TO_ABBR.get(str(row["home_team_id"]))
                             away_abbr = ESPN_NFL_ABBR_TO_ABBR.get(str(row["away_team_id"]))
-                            
+
                         if not home_abbr or not away_abbr:
                             continue
-                            
+
                         home_db_id = db_teams.get(home_abbr)
                         away_db_id = db_teams.get(away_abbr)
-                        
+
                         if not home_db_id or not away_db_id:
                             continue
-                            
+
                         # Enlace 1:1 por identidad canónica exacta, crosswalk persistido o coincidencia unívoca de equipos y fecha exacta
                         canonical_game_id = str(row.get("game_id", ""))
                         matched_game = None
@@ -280,18 +291,26 @@ def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] 
                             )
                             continue
 
+                        # The DB stores kickoff as UTC; the pipeline game_date is local US.
+                        # Accept if DB date matches either the UTC kickoff date OR the local date
+                        # (they can differ by ±1 day for late-night games).
+                        db_date = matched_game.game_date.date() if matched_game.game_date else None
+                        date_ok = db_date in (game_dt, local_game_dt) if db_date else False
                         if (
                             matched_game.sport != sp
                             or matched_game.home_team_id != home_db_id
                             or matched_game.away_team_id != away_db_id
                             or not matched_game.game_date
-                            or matched_game.game_date.date() != game_dt
+                            or not date_ok
                         ):
                             logger.error(
                                 "Identidad canónica contradice sport/equipos/fecha de inferencia; se omite",
                                 sport=sp,
                                 canonical_id=canonical_game_id,
                                 game_pk=matched_game.id,
+                                db_date=str(db_date),
+                                utc_date=str(game_dt),
+                                local_date=str(local_game_dt),
                             )
                             continue
 

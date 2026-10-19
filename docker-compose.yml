@@ -73,7 +73,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info -Q ingestion,ml,alerts
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q celery,ingestion,ml,alerts
 
   # ─── Celery Beat (tareas programadas: ingesta cada 15min, retrain semanal) ──
   beat:
