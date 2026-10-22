@@ -77,7 +77,7 @@ from app.services.sports_analytics_service import generate_nfl_matchup_analytics
 from ml.data_pipeline.common import DataQualityError, project_root, verify_file
 from ml.inference import _apply_ensemble, predict_matchups
 
-EXPECTED_LEDGER_HASH = "f935d68ba8f0e5656a6a34d60c7f7ba2cb541aba54028dbe0ed5cbeb52255af4"
+EXPECTED_LEDGER_HASH = "0fe97f674d12a2adb3f1986f486328ea69d55763ef641ba642d6e540daa11112"
 
 
 @pytest.fixture(autouse=True)

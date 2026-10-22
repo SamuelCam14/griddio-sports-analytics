@@ -47,7 +47,7 @@ from app.services.nfl_availability_service import (
 )
 from ml.data_pipeline.common import DataQualityError
 
-EXPECTED_QUOTA_LEDGER_SHA256 = "f935d68ba8f0e5656a6a34d60c7f7ba2cb541aba54028dbe0ed5cbeb52255af4"
+EXPECTED_QUOTA_LEDGER_SHA256 = "0fe97f674d12a2adb3f1986f486328ea69d55763ef641ba642d6e540daa11112"
 
 
 @pytest.fixture

@@ -147,8 +147,19 @@ async def get_today_picks(
     HomeTeam = aliased(Team)
     AwayTeam = aliased(Team)
 
+    latest_pred_subq = (
+        select(
+            Prediction.game_id,
+            func.max(Prediction.id).label("max_id"),
+        )
+        .where(Prediction.model_version == approved_version)
+        .group_by(Prediction.game_id)
+        .subquery()
+    )
+
     stmt = (
         select(Prediction, Game, HomeTeam, AwayTeam)
+        .join(latest_pred_subq, Prediction.id == latest_pred_subq.c.max_id)
         .join(Game, Prediction.game_id == Game.id)
         .join(HomeTeam, Game.home_team_id == HomeTeam.id)
         .join(AwayTeam, Game.away_team_id == AwayTeam.id)
@@ -351,6 +362,10 @@ async def get_today_picks(
             "game_date":        game.game_date.isoformat(),
             "is_today":         is_today,
             "matchup_label":    f"{away.abbreviation} @ {home.abbreviation}",
+            "home_team_id":     home.id,
+            "away_team_id":     away.id,
+            "canonical_external_id": game.external_id,
+            "model_version":    pred.model_version,
             "home_team": {
                 "id":           home.id,
                 "name":         home.name,
@@ -370,6 +385,7 @@ async def get_today_picks(
             "tier":             normalized_tier,
             "tier_label":       tier_label,
             "tier_emoji":       tier_label,
+            "confluence_tier":  pred.confluence_tier,
             "model_agreement":  pred.model_agreement,
             "pick_side":        side,
             "pick_team_name":   home.name if side == "home" else away.name,

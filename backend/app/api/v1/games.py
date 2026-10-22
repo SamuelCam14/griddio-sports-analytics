@@ -217,6 +217,7 @@ async def get_upcoming_games(
 
     stmt = (
         select(Game)
+        .options(joinedload(Game.home_team), joinedload(Game.away_team))
         .where(Game.sport == sport.upper())
         .where(Game.game_date >= start)
         .where(Game.game_date <= end)
@@ -224,7 +225,7 @@ async def get_upcoming_games(
         .order_by(Game.game_date)
     )
     result = await db.execute(stmt)
-    games = result.scalars().all()
+    games = result.scalars().unique().all()
 
     return {
         "sport": sport.upper(),
@@ -244,12 +245,13 @@ async def _get_games_by_date(target_date: date, db: AsyncSession) -> dict:
 
     stmt = (
         select(Game)
+        .options(joinedload(Game.home_team), joinedload(Game.away_team))
         .where(Game.game_date >= start_utc)
         .where(Game.game_date <= end_utc)
         .order_by(Game.game_date)
     )
     result = await db.execute(stmt)
-    games = result.scalars().all()
+    games = result.scalars().unique().all()
 
     return {
         "date": target_date.isoformat(),
@@ -268,6 +270,10 @@ def _serialize_game(game: Game) -> dict:
         "status":        game.status,
         "home_team_id":  game.home_team_id,
         "away_team_id":  game.away_team_id,
+        "home_team_name": game.home_team.name if game.home_team else None,
+        "away_team_name": game.away_team.name if game.away_team else None,
+        "home_team_abbreviation": game.home_team.abbreviation if game.home_team else None,
+        "away_team_abbreviation": game.away_team.abbreviation if game.away_team else None,
         "home_score":    game.home_score,
         "away_score":    game.away_score,
         "home_win":      game.home_win,
