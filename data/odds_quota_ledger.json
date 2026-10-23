@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "updated_at_utc": "2026-10-17T17:51:58.256143+00:00",
+  "updated_at_utc": "2026-10-22T20:00:01.142241+00:00",
   "config": {
     "total_budget": 500,
     "protected_reserve": 75,
@@ -10,10 +10,10 @@
     "circuit_breaker_pct": 0.2
   },
   "summary": {
-    "requests_used": 267,
-    "requests_remaining": 233,
+    "requests_used": 288,
+    "requests_remaining": 212,
     "spent_by_envelope": {
-      "main_lines": 18,
+      "main_lines": 21,
       "props": 0,
       "operational": 1
     },
@@ -179,6 +179,26 @@
       "status": "success",
       "requests_used": 267,
       "requests_remaining": 233,
+      "error_message": null
+    },
+    {
+      "reservation_id": "618c26568b8c",
+      "timestamp_utc": "2026-10-22T20:00:01.142188+00:00",
+      "api_key_id": "key_sha_de093685",
+      "envelope": "main_lines",
+      "endpoint": "/sports/americanfootball_nfl/odds/",
+      "params": {
+        "regions": "us",
+        "markets": "h2h,spreads,totals",
+        "oddsFormat": "american",
+        "dateFormat": "iso"
+      },
+      "estimated_cost": 3,
+      "actual_cost": 3,
+      "status_code": 200,
+      "status": "success",
+      "requests_used": 288,
+      "requests_remaining": 212,
       "error_message": null
     }
   ]
