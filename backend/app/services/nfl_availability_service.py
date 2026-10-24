@@ -373,65 +373,122 @@ class NFLAvailabilityService:
                 filt = filt & (pl.col("week") < evaluated_week)
 
             sub = stats_df.filter(filt)
-            if sub.is_empty():
-                return {}
 
-            snaps_map: Dict[str, Dict[int, Tuple[float, float]]] = {}
-            snap_files = list(season_dir.glob("snap_counts_*.parquet"))
-            if snap_files:
-                try:
-                    snaps_df = pl.read_parquet(snap_files[0])
-                    snaps_team = snaps_df.filter(pl.col("team").str.to_uppercase().is_in(team_candidates))
-                    for r in snaps_team.iter_rows(named=True):
-                        pfr = r.get("pfr_player_id")
-                        wk = r.get("week")
-                        if pfr and wk is not None:
-                            if pfr not in snaps_map:
-                                snaps_map[pfr] = {}
-                            snaps_map[pfr][int(wk)] = (
-                                float(r.get("offense_pct") or 0.0),
-                                float(r.get("defense_pct") or 0.0),
-                            )
-                except Exception:
-                    pass
-
-            pfr_lookup = {}
+            # Mapeos cruzados de jugadores
+            pfr_to_gid: Dict[str, str] = {}
+            name_to_gid: Dict[str, str] = {}
+            gid_to_name: Dict[str, str] = {}
+            gid_to_pfr: Dict[str, str] = {}
             crosswalk_files = list(nflverse_dir.glob("players_*.parquet"))
             if crosswalk_files:
                 try:
                     pdf = pl.read_parquet(crosswalk_files[0])
-                    for r in pdf.select(["gsis_id", "pfr_id"]).iter_rows(named=True):
-                        if r.get("gsis_id") and r.get("pfr_id"):
-                            pfr_lookup[r["gsis_id"]] = str(r["pfr_id"])
+                    for r in pdf.select(["gsis_id", "pfr_id", "display_name"]).iter_rows(named=True):
+                        gid = r.get("gsis_id")
+                        pfr = r.get("pfr_id")
+                        name = r.get("display_name")
+                        if gid:
+                            if pfr:
+                                pfr_to_gid[str(pfr)] = str(gid)
+                                gid_to_pfr[str(gid)] = str(pfr)
+                            if name:
+                                nm = str(name).strip().lower()
+                                name_to_gid[nm] = str(gid)
+                                gid_to_name[str(gid)] = nm
                 except Exception:
                     pass
 
             result: Dict[str, Dict[str, float]] = {}
-            for row in sub.group_by("player_id").agg(
-                rolling_ppr=pl.col("fantasy_points_ppr").tail(5).mean(),
-                weeks=pl.col("week").tail(5),
-            ).iter_rows(named=True):
-                pid = row.get("player_id")
-                if not pid:
-                    continue
-                ppr = float(row.get("rolling_ppr") or 0.0)
-                pfr = pfr_lookup.get(pid)
-                off_snaps = 0.0
-                def_snaps = 0.0
-                if pfr and pfr in snaps_map:
-                    wks = row.get("weeks") or []
-                    off_vals = [snaps_map[pfr][w][0] for w in wks if w in snaps_map[pfr]]
-                    def_vals = [snaps_map[pfr][w][1] for w in wks if w in snaps_map[pfr]]
-                    if off_vals:
-                        off_snaps = sum(off_vals) / len(off_vals)
-                    if def_vals:
-                        def_snaps = sum(def_vals) / len(def_vals)
 
-                result[pid] = {
-                    "rolling_ppr": ppr,
-                    "rolling_off_pct": off_snaps,
-                    "rolling_def_pct": def_snaps,
-                }
+            # 1. Puntos Fantasy PPR históricos de player_stats
+            if not sub.is_empty():
+                for row in sub.group_by("player_id").agg(
+                    rolling_ppr=pl.col("fantasy_points_ppr").tail(5).mean(),
+                ).iter_rows(named=True):
+                    pid = row.get("player_id")
+                    if not pid:
+                        continue
+                    ppr = float(row.get("rolling_ppr") or 0.0)
+                    stats_entry = {
+                        "rolling_ppr": ppr,
+                        "rolling_off_pct": 0.0,
+                        "rolling_def_pct": 0.0,
+                    }
+                    result[pid] = stats_entry
+                    if pid in gid_to_name:
+                        result[gid_to_name[pid]] = stats_entry
+                    if pid in gid_to_pfr:
+                        result[gid_to_pfr[pid]] = stats_entry
+
+            # 2. Snaps ofensivos y defensivos de snap_counts (incluye línea ofensiva y secundaria)
+            snap_files = list(season_dir.glob("snap_counts_*.parquet"))
+            if snap_files:
+                try:
+                    snaps_df = pl.read_parquet(snap_files[0])
+                    snaps_filt = pl.col("team").str.to_uppercase().is_in(team_candidates)
+                    if evaluated_week is not None:
+                        snaps_filt = snaps_filt & (pl.col("week") < evaluated_week)
+                    snaps_team = snaps_df.filter(snaps_filt)
+                    for row in snaps_team.group_by(["pfr_player_id", "player"]).agg(
+                        off_mean=pl.col("offense_pct").tail(5).mean(),
+                        def_mean=pl.col("defense_pct").tail(5).mean(),
+                    ).iter_rows(named=True):
+                        pfr = str(row["pfr_player_id"]) if row.get("pfr_player_id") else None
+                        raw_name = row.get("player")
+                        nm = str(raw_name).strip().lower() if raw_name else None
+                        gid = (pfr_to_gid.get(pfr) if pfr else None) or (name_to_gid.get(nm) if nm else None)
+
+                        off_val = float(row.get("off_mean") or 0.0)
+                        def_val = float(row.get("def_mean") or 0.0)
+
+                        target_key = gid or pfr or nm
+                        if not target_key:
+                            continue
+                        if target_key in result:
+                            entry = result[target_key]
+                            entry["rolling_off_pct"] = off_val
+                            entry["rolling_def_pct"] = def_val
+                        else:
+                            entry = {
+                                "rolling_ppr": 0.0,
+                                "rolling_off_pct": off_val,
+                                "rolling_def_pct": def_val,
+                            }
+                            if gid:
+                                result[gid] = entry
+                            if pfr:
+                                result[pfr] = entry
+                            if nm:
+                                result[nm] = entry
+                except Exception as se:
+                    logger.warning("Error procesando snap_counts en prior roster stats", error=str(se), team=team)
+
+            # 3. Roster semanal para jugadores activos sin snaps previos (evita missing history leaks)
+            roster_files = list(season_dir.glob("rosters_weekly_*.parquet"))
+            if roster_files:
+                try:
+                    rdf = pl.read_parquet(roster_files[0])
+                    rfilt = pl.col("team").str.to_uppercase().is_in(team_candidates)
+                    if evaluated_week is not None:
+                        rfilt = rfilt & (pl.col("week") < evaluated_week)
+                    rsub = rdf.filter(rfilt)
+                    for r in rsub.select(["gsis_id", "pfr_id", "full_name"]).iter_rows(named=True):
+                        gid = str(r["gsis_id"]) if r.get("gsis_id") else None
+                        pfr = str(r["pfr_id"]) if r.get("pfr_id") else None
+                        raw_name = r.get("full_name")
+                        nm = str(raw_name).strip().lower() if raw_name else None
+
+                        if (gid and gid not in result) or (nm and nm not in result):
+                            entry = {"rolling_ppr": 0.0, "rolling_off_pct": 0.0, "rolling_def_pct": 0.0}
+                            if gid:
+                                result[gid] = entry
+                            if pfr:
+                                result[pfr] = entry
+                            if nm:
+                                result[nm] = entry
+                except Exception as re:
+                    logger.warning("Error procesando rosters_weekly en prior roster stats", error=str(re), team=team)
+
             return result
         except Exception as exc:
             logger.warning("Error construyendo prior roster stats de equipo", error=str(exc), team=team)
@@ -503,6 +560,7 @@ class NFLAvailabilityService:
         has_active_game_props: bool = False,
         expected_event_id: Optional[str] = None,
         strict_unlisted_unknown: bool = False,
+        binary_market_resolution: bool = False,
         **kwargs: Any,
     ) -> Tuple[MarketPropSignal, float, Dict[str, Any]]:
         """
@@ -560,6 +618,16 @@ class NFLAvailabilityService:
 
         # Regla 3: Props verificables
         if not live_props:
+            if binary_market_resolution:
+                return (
+                    MarketPropSignal.UNKNOWN,
+                    0.0,
+                    {
+                        "checked_props": False,
+                        "listed": False,
+                        "reason": "no_props_market_unopened_zero_penalty",
+                    },
+                )
             base_p = BASE_P_ABSENCE.get(availability_status, 0.25)
             return (
                 MarketPropSignal.UNKNOWN,
@@ -570,6 +638,16 @@ class NFLAvailabilityService:
                 },
             )
         if not expected_event_id:
+            if binary_market_resolution:
+                return (
+                    MarketPropSignal.UNKNOWN,
+                    0.0,
+                    {
+                        "checked_props": False,
+                        "listed": False,
+                        "reason": "expected_event_id_missing_zero_penalty",
+                    },
+                )
             base_p = BASE_P_ABSENCE.get(availability_status, 0.25)
             return (
                 MarketPropSignal.UNKNOWN,
@@ -619,6 +697,16 @@ class NFLAvailabilityService:
             verifiable_props.append(norm_prop)
 
         if not verifiable_props:
+            if binary_market_resolution:
+                return (
+                    MarketPropSignal.UNKNOWN,
+                    0.0,
+                    {
+                        "checked_props": False,
+                        "listed": False,
+                        "reason": "no_verifiable_props_in_cutoff_window_zero_penalty",
+                    },
+                )
             base_p = BASE_P_ABSENCE.get(availability_status, 0.25)
             return (
                 MarketPropSignal.UNKNOWN,
@@ -635,6 +723,33 @@ class NFLAvailabilityService:
             (p for p in verifiable_props if str(p.get("player_name", "")).lower().strip() == p_name_norm),
             None,
         )
+
+        if binary_market_resolution:
+            if matched_prop:
+                return (
+                    MarketPropSignal.LISTED_AT_CUTOFF,
+                    0.0,
+                    {
+                        "checked_props": True,
+                        "listed": True,
+                        "plays": True,
+                        "bookmaker": matched_prop.get("bookmaker"),
+                        "prop_type": matched_prop.get("prop_type"),
+                        "market_line": matched_prop.get("market_line"),
+                        "event_id": matched_prop.get("event_id"),
+                    },
+                )
+            else:
+                return (
+                    MarketPropSignal.NOT_LISTED_WITH_COVERAGE,
+                    1.0,
+                    {
+                        "checked_props": True,
+                        "listed": False,
+                        "market_ruled_out": True,
+                        "reason": "unlisted_while_game_props_active_marked_out",
+                    },
+                )
 
         # Caso A: Jugador encontrado con línea activa
         if matched_prop:
@@ -722,6 +837,7 @@ class NFLAvailabilityService:
         crosswalk: Optional[Dict[str, str]] = None,
         expected_event_id: Optional[str] = None,
         strict_unlisted_unknown: bool = True,
+        binary_market_resolution: bool = False,
         **kwargs: Any,
     ) -> PlayerInjuryRecord:
         """
@@ -768,6 +884,7 @@ class NFLAvailabilityService:
             live_props=live_props,
             expected_event_id=expected_event_id,
             strict_unlisted_unknown=strict_unlisted_unknown,
+            binary_market_resolution=binary_market_resolution,
             **kwargs,
         )
         coverage_flags.update(prop_flags)
@@ -912,9 +1029,15 @@ class NFLAvailabilityService:
             )
 
         # Calcular team_potential_ppr a partir del roster previo observado
+        canonical_items = [
+            p_stats for k, p_stats in prior_roster_stats.items()
+            if " " not in k
+        ]
+        if not canonical_items:
+            canonical_items = list(prior_roster_stats.values())
         team_potential_ppr = sum(
             float(p_stats.get("rolling_ppr", 0.0))
-            for p_stats in prior_roster_stats.values()
+            for p_stats in canonical_items
         )
 
         if team_potential_ppr <= 0.0:
@@ -1593,3 +1716,51 @@ class NFLAvailabilityService:
                 return None
 
         return None
+
+    def get_cached_player_props_for_event(self, event_id: str) -> List[Dict[str, Any]]:
+        """
+        Busca player props verificables cacheadas localmente para el event_id desde data/raw/odds_api.
+        Devuelve lista vacía [] si no existen props registradas para el evento.
+        """
+        if not event_id:
+            return []
+        props: List[Dict[str, Any]] = []
+        odds_raw_dir = Path("data/raw/odds_api")
+        if not odds_raw_dir.exists():
+            return []
+
+        for path in odds_raw_dir.glob("*/*.json"):
+            if "canonical" in path.name:
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = json.load(f)
+                    items = content if isinstance(content, list) else [content]
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        if str(item.get("id")) == str(event_id) or str(item.get("event_id")) == str(event_id):
+                            for bm in item.get("bookmakers", []):
+                                bm_key = bm.get("key", "unknown")
+                                for mkt in bm.get("markets", []):
+                                    m_key = mkt.get("key", "")
+                                    if "player_" in m_key:
+                                        for out in mkt.get("outcomes", []):
+                                            p_name = out.get("description")
+                                            price = out.get("price")
+                                            point = out.get("point")
+                                            if p_name and price is not None and point is not None:
+                                                props.append({
+                                                    "event_id": event_id,
+                                                    "player_name": p_name,
+                                                    "prop_type": m_key,
+                                                    "market_line": float(point),
+                                                    "over_odds_american": price,
+                                                    "price": price,
+                                                    "bookmaker": bm_key,
+                                                    "timestamp": bm.get("last_update") or item.get("commence_time"),
+                                                })
+            except Exception:
+                continue
+        return props
+

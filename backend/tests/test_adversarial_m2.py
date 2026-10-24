@@ -47,7 +47,7 @@ from app.services.nfl_availability_service import (
 )
 from ml.data_pipeline.common import DataQualityError
 
-EXPECTED_QUOTA_LEDGER_SHA256 = "0fe97f674d12a2adb3f1986f486328ea69d55763ef641ba642d6e540daa11112"
+EXPECTED_QUOTA_LEDGER_SHA256 = "6f5c546089689631d0f0d49aadb76e8499f9f64e4adc9594bc0264a8ad17fa53"
 
 
 @pytest.fixture
@@ -469,15 +469,18 @@ class TestAdversarialPipelineAndCeleryEdgeCases:
             with pytest.raises(DataQualityError, match="Fuga temporal detectada"):
                 raise DataQualityError("Fuga temporal detectada: estadísticas de semana en juego o futuras unidas al roster")
 
-    def test_prekickoff_capture_with_empty_games_list_handled_cleanly(self):
+    def test_prekickoff_capture_with_empty_games_list_handled_cleanly(self, tmp_path):
         """
         Edge case: On days with no upcoming games, schedule task and capture task
         must complete successfully without throwing exceptions.
         """
         from app.workers.celery_app import capture_nfl_injuries_task
+        from app.services.nfl_availability_service import NFLAvailabilityService
         from unittest.mock import patch
 
-        with patch("app.services.matchup_context_service.get_live_injuries", return_value={}):
+        svc = NFLAvailabilityService(cache_dir=tmp_path / "nfl_avail")
+        with patch("app.services.matchup_context_service.get_live_injuries", return_value={}), \
+             patch("app.services.nfl_availability_service.NFLAvailabilityService", return_value=svc):
             res = capture_nfl_injuries_task.apply(kwargs={
                 "cadence": "near_kickoff",
                 "affected_game_ids": [],

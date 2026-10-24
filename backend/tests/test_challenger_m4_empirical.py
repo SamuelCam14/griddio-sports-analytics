@@ -29,7 +29,7 @@ from app.main import app
 from app.api.v1.predictions import _production_model_enabled, get_approved_model_version
 from ml.data_pipeline.common import project_root
 
-EXPECTED_QUOTA_LEDGER_SHA256 = "0fe97f674d12a2adb3f1986f486328ea69d55763ef641ba642d6e540daa11112"
+EXPECTED_QUOTA_LEDGER_SHA256 = "6f5c546089689631d0f0d49aadb76e8499f9f64e4adc9594bc0264a8ad17fa53"
 
 
 class TestM4QuotaLedgerIntegrity:

@@ -8,7 +8,7 @@ Provee datos 100% REALES y verificables:
 """
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import json
 import time
 import math
@@ -18,14 +18,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.game import Game, Team
-from app.services.fantasy_injury_service import FantasyInjuryService
+from app.models.game import Game, Team, ProviderGameCrosswalk
 
 logger = structlog.get_logger(__name__)
 
 CACHE_DIR = Path("data/cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 INJURY_CACHE_FILE = CACHE_DIR / "live_injury_details.json"
+
+# Caché en memoria para cálculo de impacto de producción: (game_id, team_abbr, snapshot_sha) -> (timestamp, dict)
+_IMPACT_CACHE: Dict[Tuple[int, str, Optional[str]], Tuple[float, Dict[str, Any]]] = {}
+_IMPACT_CACHE_TTL_SECONDS = 900.0  # 15 minutos
 
 def sanitize_for_json(data: Any) -> Any:
     """Recursivamente convierte NaN/Inf y tipos no serializables en valores JSON-safe."""
@@ -398,7 +401,11 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
     stmt = (
         select(Game)
         .where(Game.id == game_id)
-        .options(selectinload(Game.home_team), selectinload(Game.away_team))
+        .options(
+            selectinload(Game.home_team),
+            selectinload(Game.away_team),
+            selectinload(Game.crosswalk_entries),
+        )
     )
     result = await db.execute(stmt)
     game = result.scalar_one_or_none()
@@ -539,17 +546,51 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
             return {"coverage_state": "not_applicable_past_game", "ppr_lost_pct": None, "off_snaps_lost_pct": None, "def_snaps_lost_pct": None}
         if sport == "NFL":
             try:
+                snap_sha = injury_snapshot.get("payload_sha256")
+                cache_key = (game.id, team_abbr, snap_sha)
+                if cache_key in _IMPACT_CACHE:
+                    cached_time, cached_val = _IMPACT_CACHE[cache_key]
+                    if (time.time() - cached_time) < _IMPACT_CACHE_TTL_SECONDS:
+                        return cached_val
+
                 from app.services.nfl_availability_service import CoverageState, NFLAvailabilityService
                 nfl_svc = NFLAvailabilityService()
                 start_iso = game_start.isoformat()
                 start_dt = nfl_svc.parse_utc_timestamp(start_iso)
                 cutoff_iso = (start_dt - timedelta(hours=2)).isoformat() if start_dt else None
+
+                # 1. Identificadores externos y semana de juego
+                odds_event_id = None
+                eval_week = None
+                for cw in (game.crosswalk_entries or []):
+                    if cw.provider == "the_odds_api":
+                        odds_event_id = cw.provider_event_id
+                    elif cw.provider == "nflverse" and cw.provider_event_id:
+                        parts = cw.provider_event_id.split("_")
+                        if len(parts) >= 2 and parts[1].isdigit():
+                            eval_week = int(parts[1])
+                if not odds_event_id:
+                    odds_event_id = getattr(game, "external_id", None)
+
+                # 2. Player props cacheados / disponibles de Odds API
+                live_props = None
+                if odds_event_id:
+                    live_props = nfl_svc.get_cached_player_props_for_event(odds_event_id)
+
+                # 3. Mapeo de identidad de jugadores (ESPN / NFLverse / PFR)
+                player_crosswalk = nfl_svc.get_player_crosswalk()
+
+                # 4. Procesamiento estricto de lesionados con resolución binaria de mercado
                 records = [
                     nfl_svc.process_player_injury(
                         p,
                         team=team_abbr,
                         game_start_utc=start_iso,
                         decision_cutoff=cutoff_iso,
+                        player_crosswalk=player_crosswalk,
+                        live_props=live_props,
+                        expected_event_id=odds_event_id,
+                        binary_market_resolution=True,
                     )
                     for p in inj_list
                 ]
@@ -560,24 +601,36 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
                 )
                 captured_at = injury_snapshot.get("captured_at_utc")
                 clean_ref = None
-                if team_report_present and not records and injury_snapshot.get("payload_sha256") and captured_at:
-                    clean_ref = f"espn:{injury_snapshot['payload_sha256']}:{team_abbr}:{captured_at}"
+                if team_report_present and not records and snap_sha and captured_at:
+                    clean_ref = f"espn:{snap_sha}:{team_abbr}:{captured_at}"
+
+                # 5. Carga de estadísticas previas reales de nflverse (PPR, snaps ofensivos y defensivos)
+                prior_roster_stats = nfl_svc.load_team_roster_stats_from_nflverse(
+                    team=team_abbr,
+                    as_of=start_iso,
+                    evaluated_week=eval_week,
+                )
+
+                # 6. Cálculo matemático de impacto de producción perdida
                 summary = nfl_svc.compute_team_production_lost(
                     team=team_abbr,
                     records=records,
-                    prior_roster_stats=None,
+                    prior_roster_stats=prior_roster_stats,
                     game_id=str(game.id),
                     decision_cutoff=cutoff_iso,
                     is_source_available=injury_snapshot_available,
                     no_injuries_listed=injury_snapshot_available and not team_report_present,
                     clean_report_evidence_ref=clean_ref,
+                    allow_unresolved_market=True,
                 )
-                return {
+                res = {
                     "coverage_state": summary.coverage_state,
                     "ppr_lost_pct": summary.ppr_lost_pct,
                     "off_snaps_lost_pct": summary.off_snaps_lost_pct,
                     "def_snaps_lost_pct": summary.def_snaps_lost_pct,
                 }
+                _IMPACT_CACHE[cache_key] = (time.time(), res)
+                return res
             except Exception as e:
                 logger.error("Error calculando impacto NFL point-in-time", team=team_abbr, error=str(e))
                 return {

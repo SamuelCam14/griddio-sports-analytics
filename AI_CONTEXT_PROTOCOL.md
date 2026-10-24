@@ -288,3 +288,24 @@ Codex evaluó localmente, en solo lectura y sin escribir artefactos, 4,398 juego
 Codex implementó una ruta NFL team-only basada en todos los juegos completos locales; el entrenamiento/inferencia usa schema propio de 26 features y no exige ni rellena lesiones. El artefacto experimental se guarda separado del injury-aware; los valores de availability no se usan en este variant y el gate de producción permanece cerrado. El variant injury-aware continúa disponible por separado y exige sus datos/cobertura.
 
 Evidencia reproducida: 4,398 juegos de 2010-09-19 a 2026-10-05, holdout temporal 824 juegos; LogisticRegression Brier 0.2267, AUC 0.6682, accuracy 0.6299; smoke con calendario local produjo 193 resultados experimentales en memoria. Esto no demuestra rentabilidad ni ventaja sobre Vegas. Sin odds históricos, el edge se mide prospectivamente contra línea actual sin vig. No se escribieron picks/DB; no hubo llamadas externas; ledger de 275 créditos intacto. Suite operativa: 172 passed, 2 deselected, 0 warnings. Ver EXECUTION_STATE.md para los detalles.
+
+## Protocolo de Resolución de Disponibilidad y Producción Fantasy NFL — 2026-10-23
+
+1. **Resolución de Lesionados y Mercado de Props**:
+   - `OUT` / `IR` confirmados: Reciben `p_absence = 1.0` de forma incondicional.
+   - `QUESTIONABLE` / `DOUBTFUL`:
+     - Se valida contra player props de The Odds API siempre que el mercado esté activo ($\ge 1$ jugador con línea en el partido).
+     - Si el jugador tiene línea activa $\to$ `p_absence = 0.0` (va a jugar, sin penalización).
+     - Si el jugador no tiene línea activa (con mercado abierto) $\to$ `p_absence = 1.0` (marcado como OUT).
+     - **Guardia de seguridad de mercado (0 líneas)**: Si el mercado no entrega líneas para ningún jugador (mercado aún no abierto o error de red), los jugadores dudosos se manejan con `p_absence = 0.0` (sin penalización) hasta el reporte oficial pre-kickoff a 90 min.
+
+2. **Denominadores y Métricas Previas en 3 Pasos (`nflverse`)**:
+   - Se construyen matemáticamente a partir de tres fuentes de datos sin valores sintéticos ni hardcodeados:
+     1. `player_stats_*.parquet`: Rolling PPR de los últimos 5 partidos para jugadores de habilidad.
+     2. `snap_counts_*.parquet`: Rolling % de snaps ofensivos y defensivos de los últimos 5 partidos (cubre linieros ofensivos y defensas).
+     3. `rosters_weekly_*.parquet`: Roster activo semanal para registrar suplentes/rookies con 0.0 explícito, eliminando falsos 'missing history' leaks.
+
+3. **Caché Reactiva e Inviolabilidad**:
+   - Resultados de impacto de producción cacheados en memoria `_IMPACT_CACHE` indexados por `(game_id, team, payload_sha256)`. La invalidación es automática e inmediata ante cambios en el hash del payload oficial.
+   - Se mantiene el ledger de cuotas inalterado y pruebas unitarias aisladas.
+

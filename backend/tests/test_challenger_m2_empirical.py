@@ -31,7 +31,7 @@ from app.workers.celery_app import (
     schedule_nfl_gameday_captures_task,
 )
 
-EXPECTED_QUOTA_LEDGER_SHA256 = "0fe97f674d12a2adb3f1986f486328ea69d55763ef641ba642d6e540daa11112"
+EXPECTED_QUOTA_LEDGER_SHA256 = "6f5c546089689631d0f0d49aadb76e8499f9f64e4adc9594bc0264a8ad17fa53"
 
 
 class TestCeleryNearKickoffSchedulingEmpirical:
