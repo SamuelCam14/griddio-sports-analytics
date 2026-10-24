@@ -396,7 +396,7 @@ def get_live_injuries(sport: str) -> Dict[str, List[Dict[str, Any]]]:
     return resp.get("teams", {})
 
 
-async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
+async def get_matchup_context(game_id: int, db: AsyncSession, as_of: Optional[datetime] = None) -> Dict[str, Any]:
     """Genera el contexto completo de H2H, L5, Lesiones y Métricas para un partido."""
     stmt = (
         select(Game)
@@ -513,7 +513,8 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
         game_start = game_start.tz_localize("UTC")
     else:
         game_start = game_start.tz_convert("UTC")
-    is_future_game = game_start.to_pydatetime() > datetime.now(timezone.utc)
+    eval_ref = as_of if (as_of and as_of.tzinfo) else (as_of.replace(tzinfo=timezone.utc) if as_of else datetime.now(timezone.utc))
+    is_future_game = game_start.to_pydatetime() > eval_ref
     injury_snapshot = fetch_live_injuries_response(sport, allow_live_download=False) if is_future_game else {
         "raw_payload": None, "teams": {}, "captured_at_utc": None,
         "is_from_cache": False, "cache_age_seconds": None, "payload_sha256": None,

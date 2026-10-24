@@ -316,3 +316,137 @@ async def test_matchup_context_game_16_returns_verified_production_loss():
         assert away_impact["ppr_lost_pct"] > 0.0
         assert away_impact["off_snaps_lost_pct"] > 0.0
         assert away_impact["def_snaps_lost_pct"] > 0.0
+
+
+def test_practice_participation_modulation(tmp_path):
+    """Verifica que la participación en prácticas module adecuadamente P(absence) para Questionable."""
+    from app.services.nfl_availability_service import NFLAvailabilityService, AvailabilityStatus, parse_practice_participation, resolve_base_p_absence
+
+    svc = NFLAvailabilityService()
+    cw = {"p_dnp": "ID_DNP", "p_fp": "ID_FP", "p_lp": "ID_LP", "p_none": "ID_NONE"}
+    game_start = "2026-10-25T18:00:00Z"
+    cutoff = "2026-10-23T20:00:00Z"
+    obs = "2026-10-23T18:00:00Z"
+
+    # 1. DNP en viernes -> P(absence) sube al 70% (0.70)
+    rec_dnp = svc.process_player_injury(
+        player_dict={
+            "player_name": "Player DNP",
+            "position": "RB",
+            "status": "QUESTIONABLE",
+            "practice_status": "Did not practice on Friday (ankle)",
+            "espn_id": "p_dnp",
+            "observed_at": obs,
+        },
+        team="KC",
+        game_start_utc=game_start,
+        decision_cutoff=cutoff,
+        crosswalk=cw,
+    )
+    assert rec_dnp.p_absence == 0.70
+    assert rec_dnp.coverage_flags.get("practice_participation") == "DNP"
+    assert rec_dnp.coverage_flags.get("practice_modulated") is True
+
+    # 2. FP en viernes -> P(absence) baja al 5% (0.05)
+    rec_fp = svc.process_player_injury(
+        player_dict={
+            "player_name": "Player FP",
+            "position": "WR",
+            "status": "QUESTIONABLE",
+            "practice_status": "Upgraded to full participant on Friday",
+            "espn_id": "p_fp",
+            "observed_at": obs,
+        },
+        team="KC",
+        game_start_utc=game_start,
+        decision_cutoff=cutoff,
+        crosswalk=cw,
+    )
+    assert rec_fp.p_absence == 0.05
+    assert rec_fp.coverage_flags.get("practice_participation") == "FP"
+    assert rec_fp.coverage_flags.get("practice_modulated") is True
+
+    # 3. LP en viernes -> P(absence) conserva base histórica 25% (0.25)
+    rec_lp = svc.process_player_injury(
+        player_dict={
+            "player_name": "Player LP",
+            "position": "TE",
+            "status": "QUESTIONABLE",
+            "practice_status": "Limited participant in practice Friday",
+            "espn_id": "p_lp",
+            "observed_at": obs,
+        },
+        team="KC",
+        game_start_utc=game_start,
+        decision_cutoff=cutoff,
+        crosswalk=cw,
+    )
+    assert rec_lp.p_absence == 0.25
+    assert rec_lp.coverage_flags.get("practice_participation") == "LP"
+
+    # 4. Sin reporte de práctica -> P(absence) base histórica 25% (0.25)
+    rec_none = svc.process_player_injury(
+        player_dict={
+            "player_name": "Player None",
+            "position": "QB",
+            "status": "QUESTIONABLE",
+            "practice_status": None,
+            "espn_id": "p_none",
+            "observed_at": obs,
+        },
+        team="KC",
+        game_start_utc=game_start,
+        decision_cutoff=cutoff,
+        crosswalk=cw,
+    )
+    assert rec_none.p_absence == 0.25
+
+
+def test_get_cached_player_props_unpacks_odds_api_wrapper(tmp_path, monkeypatch):
+    """Verifica que get_cached_player_props_for_event desempaquete correctamente archivos con envoltura 'data'."""
+    import json
+    from app.services.nfl_availability_service import NFLAvailabilityService
+
+    raw_dir = tmp_path / "odds_api" / "2026-10-23"
+    raw_dir.mkdir(parents=True)
+    payload = {
+        "source": "the_odds_api_v4",
+        "endpoint": "/sports/americanfootball_nfl/events/evt_test_999/odds",
+        "data": {
+            "id": "evt_test_999",
+            "sport_key": "americanfootball_nfl",
+            "bookmakers": [
+                {
+                    "key": "draftkings",
+                    "title": "DraftKings",
+                    "last_update": "2026-10-23T18:00:00Z",
+                    "markets": [
+                        {
+                            "key": "player_rush_yds",
+                            "outcomes": [
+                                {
+                                    "name": "Over",
+                                    "description": "Rico Dowdle",
+                                    "price": -115,
+                                    "point": 48.5,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    }
+    mock_file = raw_dir / "mock_event.json"
+    mock_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr("app.services.nfl_availability_service.Path", lambda p: tmp_path / "odds_api" if p == "data/raw/odds_api" else Path(p))
+
+    svc = NFLAvailabilityService()
+    props = svc.get_cached_player_props_for_event("evt_test_999")
+    assert len(props) == 1
+    assert props[0]["player_name"] == "Rico Dowdle"
+    assert props[0]["market_line"] == 48.5
+    assert props[0]["prop_type"] == "player_rush_yds"
+    assert props[0]["bookmaker"] == "draftkings"
+

@@ -48,10 +48,10 @@ celery_app.conf.beat_schedule = {
     #     "schedule": crontab(minute=0, hour="15,21"),
     #     "args": ("NBA",),
     # },
-    # --- NFL Odds Ingestion: Solo días de juego (Jueves, Sábado víspera, Domingo matutino/tarde, Lunes) ---
+    # --- NFL Odds Ingestion: Días de juego y víspera de reportes (Jueves, Viernes reporte final, Sábado víspera, Domingo, Lunes) ---
     "ingest-nfl-odds-optimized": {
         "task": "app.workers.celery_app.ingest_odds_task",
-        "schedule": crontab(minute=0, hour="14,20", day_of_week="0,1,4,6"),
+        "schedule": crontab(minute=0, hour="14,20", day_of_week="0,1,4,5,6"),
         "args": ("NFL",),
     },
     "ingest-nba-schedule-weekly": {
@@ -70,7 +70,7 @@ celery_app.conf.beat_schedule = {
     # No usar horarios fijos; el calendario local de la NFL es la única fuente de verdad para las ventanas.
     "schedule-nfl-gameday-captures": {
         "task": "app.workers.celery_app.schedule_nfl_gameday_captures_task",
-        "schedule": crontab(minute=0, hour=12, day_of_week="0,1,4,6"),
+        "schedule": crontab(minute=0, hour=12, day_of_week="0,1,4,5,6"),
     },
     "evaluate-nba-predictions-optimized": {
         "task": "app.workers.celery_app.evaluate_predictions_task",
@@ -79,7 +79,7 @@ celery_app.conf.beat_schedule = {
     },
     "evaluate-nfl-predictions-optimized": {
         "task": "app.workers.celery_app.evaluate_predictions_task",
-        "schedule": crontab(minute=15, hour="14,20", day_of_week="0,1,4,6"),
+        "schedule": crontab(minute=15, hour="14,20", day_of_week="0,1,4,5,6"),
         "args": ("NFL",),
     },
 }
@@ -190,12 +190,14 @@ def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] 
                             k_utc = up_row.get("game_start_utc")
                             if g_id and h_t and a_t and k_utc:
                                 try:
+                                    odds_eid = str(up_row.get("external_id")) if up_row.get("external_id") else None
                                     g_snap = avail_svc.build_game_availability_snapshot(
                                         game_id=g_id,
                                         home_team=h_t,
                                         away_team=a_t,
                                         kickoff_utc=k_utc,
                                         as_of=cutoff,
+                                        props_event_id=odds_eid,
                                     )
                                     if g_snap:
                                         availability_by_game[g_id] = g_snap

@@ -99,6 +99,66 @@ MARKET_MODULATED_P_ABSENCE: Dict[Tuple[AvailabilityStatus, MarketPropSignal], fl
     (AvailabilityStatus.UNKNOWN, MarketPropSignal.UNKNOWN): 0.0,
 }
 
+
+def parse_practice_participation(practice_text: Optional[str]) -> Optional[str]:
+    """
+    Parsea el reporte oficial de participación en práctica semanal (típicamente del viernes) de la NFL.
+    Retorna 'DNP', 'LP', 'FP' o None.
+    """
+    if not practice_text or not isinstance(practice_text, str):
+        return None
+    text = practice_text.lower()
+    # Chequear si fue DNP (Did not practice / did not participate)
+    if any(k in text for k in ["did not practice", "did not participate", "dnp", "no entrenó", "no participó"]):
+        return "DNP"
+    # Chequear si fue FP (Full practice / full participant)
+    if any(k in text for k in ["full participant", "full practice", "participó plenamente", "entrenamiento completo"]):
+        return "FP"
+    # Chequear si fue LP (Limited practice / limited participant)
+    if any(k in text for k in ["limited participant", "limited practice", "participación limitada", "limitado"]):
+        return "LP"
+    return None
+
+
+def resolve_base_p_absence(
+    availability_status: AvailabilityStatus,
+    practice_status: Optional[str] = None,
+) -> Tuple[float, Dict[str, Any]]:
+    """
+    Calcula la probabilidad empírica base P(absence) para estatus Q/D sin líneas de props.
+    Ajustada según participación demostrada en prácticas (SumerSports / Action Network standard):
+    - DNP en viernes: P(ausencia) sube a 0.70 para Q (0.95 para D).
+    - LP en viernes: P(ausencia) permanece en base histórica 0.25 para Q (0.85 para D).
+    - FP en viernes: P(ausencia) baja a 0.05 para Q (0.50 para D).
+    - Sin reporte de práctica: base histórica estándar 0.25 para Q (0.85 para D).
+    """
+    base = BASE_P_ABSENCE.get(availability_status, 0.25)
+    prac_part = parse_practice_participation(practice_status)
+    flags: Dict[str, Any] = {}
+    if prac_part:
+        flags["practice_participation"] = prac_part
+        if availability_status == AvailabilityStatus.QUESTIONABLE:
+            if prac_part == "DNP":
+                base = 0.70
+                flags["practice_modulated"] = True
+            elif prac_part == "FP":
+                base = 0.05
+                flags["practice_modulated"] = True
+            elif prac_part == "LP":
+                base = 0.25
+        elif availability_status == AvailabilityStatus.DOUBTFUL:
+            if prac_part == "DNP":
+                base = 0.95
+                flags["practice_modulated"] = True
+            elif prac_part == "FP":
+                base = 0.50
+                flags["practice_modulated"] = True
+            elif prac_part == "LP":
+                base = 0.85
+
+    return base, flags
+
+
 SKILL_POSITIONS: Set[str] = {"QB", "WR", "RB", "TE"}
 OFFENSIVE_POSITIONS: Set[str] = {"QB", "WR", "RB", "TE", "T", "G", "C", "OT", "OG", "OL"}
 DEFENSIVE_POSITIONS: Set[str] = {"DE", "DT", "LB", "CB", "S", "FS", "SS", "NT", "ILB", "OLB", "DL", "DB"}
@@ -611,15 +671,17 @@ class NFLAvailabilityService:
             and start_dt > cutoff_dt
         )
         if not is_future_unplayed:
-            base_p = BASE_P_ABSENCE.get(availability_status, 0.25)
+            base_p, prac_flags = resolve_base_p_absence(availability_status, kwargs.get("practice_status"))
+            res_flags = {
+                "checked_props": False,
+                "reason": "historical_or_past_game_no_props_query",
+                "is_future_unplayed": False,
+            }
+            res_flags.update(prac_flags)
             return (
                 MarketPropSignal.UNKNOWN,
                 base_p,
-                {
-                    "checked_props": False,
-                    "reason": "historical_or_past_game_no_props_query",
-                    "is_future_unplayed": False,
-                },
+                res_flags,
             )
 
         # Regla 3: Props verificables
@@ -634,14 +696,16 @@ class NFLAvailabilityService:
                         "reason": "no_props_market_unopened_zero_penalty",
                     },
                 )
-            base_p = BASE_P_ABSENCE.get(availability_status, 0.25)
+            base_p, prac_flags = resolve_base_p_absence(availability_status, kwargs.get("practice_status"))
+            res_flags = {
+                "checked_props": False,
+                "reason": "no_verifiable_props_provided",
+            }
+            res_flags.update(prac_flags)
             return (
                 MarketPropSignal.UNKNOWN,
                 base_p,
-                {
-                    "checked_props": False,
-                    "reason": "no_verifiable_props_provided",
-                },
+                res_flags,
             )
         if not expected_event_id:
             if binary_market_resolution:
@@ -654,11 +718,13 @@ class NFLAvailabilityService:
                         "reason": "expected_event_id_missing_zero_penalty",
                     },
                 )
-            base_p = BASE_P_ABSENCE.get(availability_status, 0.25)
+            base_p, prac_flags = resolve_base_p_absence(availability_status, kwargs.get("practice_status"))
+            res_flags = {"checked_props": False, "reason": "expected_event_id_missing"}
+            res_flags.update(prac_flags)
             return (
                 MarketPropSignal.UNKNOWN,
                 base_p,
-                {"checked_props": False, "reason": "expected_event_id_missing"},
+                res_flags,
             )
 
         # Filtrar props verificables con metadata completa anterior al corte
@@ -713,14 +779,16 @@ class NFLAvailabilityService:
                         "reason": "no_verifiable_props_in_cutoff_window_zero_penalty",
                     },
                 )
-            base_p = BASE_P_ABSENCE.get(availability_status, 0.25)
+            base_p, prac_flags = resolve_base_p_absence(availability_status, kwargs.get("practice_status"))
+            res_flags = {
+                "checked_props": False,
+                "reason": "no_verifiable_props_in_cutoff_window",
+            }
+            res_flags.update(prac_flags)
             return (
                 MarketPropSignal.UNKNOWN,
                 base_p,
-                {
-                    "checked_props": False,
-                    "reason": "no_verifiable_props_in_cutoff_window",
-                },
+                res_flags,
             )
 
         # Aquí comprobamos el mercado
@@ -777,16 +845,18 @@ class NFLAvailabilityService:
         # Regla: Si no existe línea y se exige señal estricta, conserva el estado desconocido
         # para esa señal y no lo interpreta como prueba de que no jugará.
         if strict_unlisted_unknown:
-            base_p = BASE_P_ABSENCE.get(availability_status, 0.25)
+            base_p, prac_flags = resolve_base_p_absence(availability_status, kwargs.get("practice_status"))
+            res_flags = {
+                "checked_props": True,
+                "listed": False,
+                "signal": "unknown",
+                "reason": "no_line_observed_signal_preserved_as_unknown",
+            }
+            res_flags.update(prac_flags)
             return (
                 MarketPropSignal.UNKNOWN,
                 base_p,
-                {
-                    "checked_props": True,
-                    "listed": False,
-                    "signal": "unknown",
-                    "reason": "no_line_observed_signal_preserved_as_unknown",
-                },
+                res_flags,
             )
 
         # Caso B: No listado pero con cobertura comparable demostrada
@@ -821,16 +891,18 @@ class NFLAvailabilityService:
             )
 
         # Sin cobertura comparable demostrada
-        base_p = BASE_P_ABSENCE.get(availability_status, 0.25)
+        base_p, prac_flags = resolve_base_p_absence(availability_status, kwargs.get("practice_status"))
+        res_flags = {
+            "checked_props": True,
+            "listed": False,
+            "has_comparable_coverage": False,
+            "reason": "insufficient_comparable_coverage",
+        }
+        res_flags.update(prac_flags)
         return (
             MarketPropSignal.UNKNOWN,
             base_p,
-            {
-                "checked_props": True,
-                "listed": False,
-                "has_comparable_coverage": False,
-                "reason": "insufficient_comparable_coverage",
-            },
+            res_flags,
         )
 
     def process_player_injury(
@@ -891,6 +963,7 @@ class NFLAvailabilityService:
             expected_event_id=expected_event_id,
             strict_unlisted_unknown=strict_unlisted_unknown,
             binary_market_resolution=binary_market_resolution,
+            practice_status=prac_status,
             **kwargs,
         )
         coverage_flags.update(prop_flags)
@@ -1579,6 +1652,9 @@ class NFLAvailabilityService:
         if not active_snap:
             return {}
 
+        if live_props is None and props_event_id:
+            live_props = self.get_cached_player_props_for_event(props_event_id)
+
         as_of_dt = self.parse_utc_timestamp(as_of) or datetime.now(timezone.utc)
         cap_dt = self.parse_utc_timestamp(active_snap.get("captured_at_utc")) or as_of_dt
 
@@ -1752,7 +1828,18 @@ class NFLAvailabilityService:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     content = json.load(f)
-                    items = content if isinstance(content, list) else [content]
+                    items = []
+                    if isinstance(content, list):
+                        items = content
+                    elif isinstance(content, dict):
+                        inner = content.get("data")
+                        if isinstance(inner, list):
+                            items = inner
+                        elif isinstance(inner, dict):
+                            items = [inner]
+                        else:
+                            items = [content]
+
                     for item in items:
                         if not isinstance(item, dict):
                             continue
