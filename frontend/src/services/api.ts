@@ -365,11 +365,28 @@ export interface OfficialInjury {
   source?: string
 }
 
+export interface AffectedPlayerProduction {
+  player_name: string
+  position: string
+  status: string
+  p_absence: number
+  rolling_ppr: number
+  rolling_off_pct: number
+  rolling_def_pct: number
+  lost_ppr: number
+  lost_off_snaps: number
+  lost_def_snaps: number
+}
+
 export interface TeamProductionImpact {
   ppr_lost_pct: number | null
   off_snaps_lost_pct: number | null
   def_snaps_lost_pct: number | null
   coverage_state?: string
+  total_injured_count?: number
+  confirmed_out_count?: number
+  questionable_count?: number
+  affected_players?: AffectedPlayerProduction[]
 }
 
 export interface InjurySourceInfo {

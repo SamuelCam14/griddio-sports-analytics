@@ -9,10 +9,14 @@ import {
   Activity,
   TrendingUp,
   Loader2,
-  CheckCircle2
+  CheckCircle2,
+  Zap,
+  ChevronDown,
+  ChevronUp,
+  Info
 } from 'lucide-react'
 
-import { gamesApi, type Game, type MatchupContext, type OfficialInjury } from '@/services/api'
+import { gamesApi, type Game, type MatchupContext, type OfficialInjury, type AffectedPlayerProduction } from '@/services/api'
 import { formatNumber, formatPercentage } from '@/utils/dashboard'
 
 interface TeamMetricsPanelProps {
@@ -25,6 +29,7 @@ type TabType = 'h2h' | 'injuries' | 'stats' | 'calendar'
 
 export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelProps) {
   const [activeTab, setActiveTab] = useState<TabType>('h2h')
+  const [showFantasyBreakdown, setShowFantasyBreakdown] = useState(true)
 
   const { data: context, isLoading, isError } = useQuery<MatchupContext>({
     queryKey: ['gameContext', game.id],
@@ -318,6 +323,80 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                     </div>
                   </div>
                 </div>
+
+                {/* Reporte Detallado de Puntos Fantasy y Snaps Perdidos */}
+                {((context.injuries.away_impact.affected_players?.length ?? 0) > 0 ||
+                  (context.injuries.home_impact.affected_players?.length ?? 0) > 0) && (
+                  <div className="mt-4 border-t border-white/5 pt-3.5">
+                    <button
+                      type="button"
+                      onClick={() => setShowFantasyBreakdown((prev) => !prev)}
+                      className="flex w-full items-center justify-between text-left group"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Zap className="h-4 w-4 text-amber-400" />
+                        <span className="text-xs font-semibold text-slate-200 group-hover:text-amber-300 transition-colors">
+                          Reporte de Puntos Fantasy y Snaps Perdidos por Jugador (nflverse SSOT)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 text-[11px] text-slate-400 group-hover:text-slate-300">
+                        <span>{showFantasyBreakdown ? 'Ocultar' : 'Ver detalle'}</span>
+                        {showFantasyBreakdown ? (
+                          <ChevronUp className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        )}
+                      </div>
+                    </button>
+
+                    {showFantasyBreakdown && (
+                      <div className="mt-3 space-y-3">
+                        <div className="flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 p-2.5 text-[11px] text-amber-200/90">
+                          <Info className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+                          <p>
+                            <strong>Cálculo Real:</strong> Los puntos fantasy PPR (promedio histórico reciente) y volumen de snaps son obtenidos desde estadísticas reales de <em>nflverse</em>. Las ausencias confirmadas (OUT) se descuentan al 100%, mientras que las bajas cuestionables aplican la probabilidad base del 25%. El modelo de Machine Learning penaliza la probabilidad final del equipo en base a este impacto directo.
+                          </p>
+                        </div>
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                          {/* Columna Visitante */}
+                          <div className="rounded-lg bg-white/[0.015] border border-white/5 p-3">
+                            <p className="text-[11px] font-semibold text-cyan-300 mb-2 truncate">
+                              Bajas con impacto · {awayName}
+                            </p>
+                            {(!context.injuries.away_impact.affected_players ||
+                              context.injuries.away_impact.affected_players.length === 0) ? (
+                              <p className="text-[11px] text-slate-500">Sin penalizaciones de producción registradas.</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {context.injuries.away_impact.affected_players.map((p, idx) => (
+                                  <PlayerProductionImpactRow key={idx} player={p} />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Columna Local */}
+                          <div className="rounded-lg bg-white/[0.015] border border-white/5 p-3">
+                            <p className="text-[11px] font-semibold text-emerald-300 mb-2 truncate">
+                              Bajas con impacto · {homeName}
+                            </p>
+                            {(!context.injuries.home_impact.affected_players ||
+                              context.injuries.home_impact.affected_players.length === 0) ? (
+                              <p className="text-[11px] text-slate-500">Sin penalizaciones de producción registradas.</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {context.injuries.home_impact.affected_players.map((p, idx) => (
+                                  <PlayerProductionImpactRow key={idx} player={p} />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>}
 
               {/* Listas Detalladas de Bajas */}
@@ -327,12 +406,14 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                   isAway
                   injuries={context.injuries.away}
                   coverageState={context.injuries.away_impact.coverage_state}
+                  affectedPlayers={context.injuries.away_impact.affected_players}
                 />
                 <InjuriesListCard
                   teamName={homeName}
                   isAway={false}
                   injuries={context.injuries.home}
                   coverageState={context.injuries.home_impact.coverage_state}
+                  affectedPlayers={context.injuries.home_impact.affected_players}
                 />
               </div>
             </motion.div>
@@ -490,16 +571,81 @@ function TeamFormCard({
   )
 }
 
+function PlayerProductionImpactRow({ player }: { player: AffectedPlayerProduction }) {
+  const isOut = player.status.toUpperCase() === 'OUT' || player.p_absence >= 0.99
+  const hasPpr = player.rolling_ppr > 0 || player.lost_ppr > 0
+  const hasOffSnaps = player.rolling_off_pct > 0 || player.lost_off_snaps > 0
+  const hasDefSnaps = player.rolling_def_pct > 0 || player.lost_def_snaps > 0
+
+  return (
+    <div className="rounded-md bg-white/[0.02] border border-white/5 p-2 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="font-medium text-slate-200 truncate">{player.player_name}</span>
+          <span className="rounded bg-white/5 px-1 py-0.2 font-mono text-[9px] text-slate-400">
+            {player.position}
+          </span>
+        </div>
+        <span
+          className={`shrink-0 rounded px-1.5 py-0.2 font-mono text-[10px] font-semibold ${
+            isOut
+              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+              : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+          }`}
+        >
+          {player.status} ({Math.round(player.p_absence * 100)}% ausente)
+        </span>
+      </div>
+
+      <div className="mt-1.5 space-y-1 font-mono text-[10px]">
+        {hasPpr ? (
+          <div className="flex items-center justify-between text-slate-400">
+            <span>Puntos Fantasy (PPR):</span>
+            <span className="text-slate-200">
+              {player.rolling_ppr.toFixed(1)} habitual · <strong className="text-rose-400">-{player.lost_ppr.toFixed(1)} pts</strong>
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between text-slate-500">
+            <span>Puntos Fantasy (PPR):</span>
+            <span>0.0 (Posición de trinchera / defensa)</span>
+          </div>
+        )}
+
+        {hasOffSnaps && (
+          <div className="flex items-center justify-between text-slate-400">
+            <span>Snaps Ofensivos:</span>
+            <span className="text-slate-200">
+              {Math.round(player.rolling_off_pct * 100)}% habitual · <strong className="text-amber-400">-{Math.round(player.lost_off_snaps * 100)}% en campo</strong>
+            </span>
+          </div>
+        )}
+
+        {hasDefSnaps && (
+          <div className="flex items-center justify-between text-slate-400">
+            <span>Snaps Defensivos:</span>
+            <span className="text-slate-200">
+              {Math.round(player.rolling_def_pct * 100)}% habitual · <strong className="text-cyan-400">-{Math.round(player.lost_def_snaps * 100)}% en campo</strong>
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function InjuriesListCard({
   teamName,
   isAway,
   injuries,
   coverageState,
+  affectedPlayers,
 }: {
   teamName: string
   isAway: boolean
   injuries: OfficialInjury[]
   coverageState?: string
+  affectedPlayers?: AffectedPlayerProduction[]
 }) {
   return (
     <div className="rounded-xl border border-white/8 bg-white/[0.025] p-3.5">
@@ -522,33 +668,62 @@ function InjuriesListCard({
           {injuries.map((item, idx) => {
             const isOut = item.status.toUpperCase() === 'OUT' || item.status.toUpperCase().includes('IR')
             const isQuest = item.status.toUpperCase().includes('QUESTIONABLE')
+            const impact = affectedPlayers?.find(
+              (ap) =>
+                ap.player_name.toLowerCase().trim() === item.player_name.toLowerCase().trim() ||
+                ap.player_name.toLowerCase().includes(item.player_name.toLowerCase().trim()) ||
+                item.player_name.toLowerCase().includes(ap.player_name.toLowerCase().trim())
+            )
             return (
               <div
                 key={idx}
-                className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.02] p-2 text-xs"
+                className="rounded-lg bg-white/[0.02] p-2 text-xs border border-white/5"
               >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate font-medium text-slate-200">{item.player_name}</span>
-                    <span className="rounded bg-white/5 px-1 py-0.2 font-mono text-[9px] text-slate-400">
-                      {item.position}
-                    </span>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate font-medium text-slate-200">{item.player_name}</span>
+                      <span className="rounded bg-white/5 px-1 py-0.2 font-mono text-[9px] text-slate-400">
+                        {item.position}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 truncate text-[10px] text-slate-500">
+                      {item.injury !== '—' ? item.injury : 'No especificado'}
+                    </p>
                   </div>
-                  <p className="mt-0.5 truncate text-[10px] text-slate-500">
-                    {item.injury !== '—' ? item.injury : 'No especificado'}
-                  </p>
+                  <span
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                      isOut
+                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                        : isQuest
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        : 'bg-zinc-700/30 text-zinc-300 border border-zinc-600/30'
+                    }`}
+                  >
+                    {item.status}
+                  </span>
                 </div>
-                <span
-                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                    isOut
-                      ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                      : isQuest
-                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                      : 'bg-zinc-700/30 text-zinc-300 border border-zinc-600/30'
-                  }`}
-                >
-                  {item.status}
-                </span>
+
+                {/* Métricas individuales de Fantasy Points y Snaps */}
+                {impact && (impact.lost_ppr > 0 || impact.lost_off_snaps > 0 || impact.lost_def_snaps > 0) && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5 font-mono text-[9px] border-t border-white/5 pt-1">
+                    {impact.lost_ppr > 0 && (
+                      <span className="rounded bg-rose-500/15 px-1 py-0.5 text-rose-300 border border-rose-500/30">
+                        -{impact.lost_ppr.toFixed(1)} pts PPR ({impact.rolling_ppr.toFixed(1)} hab.)
+                      </span>
+                    )}
+                    {impact.lost_off_snaps > 0 && (
+                      <span className="rounded bg-amber-500/15 px-1 py-0.5 text-amber-300 border border-amber-500/30">
+                        -{Math.round(impact.lost_off_snaps * 100)}% snaps OF
+                      </span>
+                    )}
+                    {impact.lost_def_snaps > 0 && (
+                      <span className="rounded bg-cyan-500/15 px-1 py-0.5 text-cyan-300 border border-cyan-500/30">
+                        -{Math.round(impact.lost_def_snaps * 100)}% snaps DEF
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             )
           })}

@@ -117,10 +117,13 @@ def _apply_ensemble(
     models: Mapping[str, Any],
     X: pd.DataFrame,
     df: pd.DataFrame,
+    model_metadata: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     """
     Aplica inferencia concurrente sobre el diccionario de modelos y genera probabilidades combinadas,
     acuerdo de modelos (1-3) y nivel de confluencia ('HIGH', 'MODERATE', 'NONE').
+    Si model_metadata contiene métricas de validación 'evaluation', aplica gating de calibración
+    (descalificando modelos con Brier > 0.255, peores que el azar) y ponderación por precisión inversa al Brier.
     """
     model_probs = {}
     for m_name, m_obj in models.items():
@@ -135,8 +138,38 @@ def _apply_ensemble(
     if not model_probs:
         raise DataQualityError("Ningún modelo produjo probabilidades válidas")
 
-    all_prob_arrays = list(model_probs.values())
-    probabilities = np.mean(all_prob_arrays, axis=0)
+    # Evaluación cruzada y ponderación por calibración (inverse-Brier weighting)
+    eval_dict = (model_metadata.get("evaluation") or {}) if isinstance(model_metadata, Mapping) else {}
+    brier_scores = {}
+    for m_name in model_probs:
+        m_eval = eval_dict.get(m_name, {})
+        brier = m_eval.get("mean_brier") or m_eval.get("holdout_evaluation", {}).get("brier")
+        if brier is not None and isinstance(brier, (int, float)) and brier > 0:
+            brier_scores[m_name] = float(brier)
+
+    valid_weights = {}
+    for m_name in model_probs:
+        if m_name in brier_scores:
+            b_val = brier_scores[m_name]
+            if b_val <= 0.255:
+                valid_weights[m_name] = 1.0 / (b_val ** 2)
+            else:
+                logger.warning(
+                    f"Modelo {m_name} excluido de ensamble por Brier {b_val:.4f} > 0.255 (inferior al baseline)"
+                )
+        else:
+            valid_weights[m_name] = 1.0
+
+    active_models = [m for m in model_probs if valid_weights.get(m, 0.0) > 0]
+    if not active_models:
+        active_models = list(model_probs.keys())
+        valid_weights = {m: 1.0 for m in active_models}
+
+    w_arr = np.array([valid_weights[m] for m in active_models], dtype=float)
+    w_arr = w_arr / np.sum(w_arr)
+    prob_arrays = [model_probs[m] for m in active_models]
+    probabilities = np.average(prob_arrays, weights=w_arr, axis=0)
+
     if not np.isfinite(probabilities).all() or ((probabilities < 0) | (probabilities > 1)).any():
         raise DataQualityError("El ensamble produjo probabilidades inválidas")
 
@@ -387,10 +420,10 @@ def predict_matchups(
     if sport == "nfl":
         all_models = load_all_ensemble_models(sport, model_variant=model_variant)
         all_models[model_name] = model
-        ensemble_df = _apply_ensemble(all_models, X, features)
+        ensemble_df = _apply_ensemble(all_models, X, features, model_metadata=metadata)
         models_evaluated = list(all_models.keys())
     else:
-        ensemble_df = _apply_ensemble({model_name: model}, X, features)
+        ensemble_df = _apply_ensemble({model_name: model}, X, features, model_metadata=metadata)
         models_evaluated = [model_name]
 
     features["home_win_probability"] = ensemble_df["home_win_probability"]

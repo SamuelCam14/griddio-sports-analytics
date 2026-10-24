@@ -580,7 +580,7 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
                 # 3. Mapeo de identidad de jugadores (ESPN / NFLverse / PFR)
                 player_crosswalk = nfl_svc.get_player_crosswalk()
 
-                # 4. Procesamiento estricto de lesionados con resolución binaria de mercado
+                # 4. Procesamiento estricto de lesionados
                 records = [
                     nfl_svc.process_player_injury(
                         p,
@@ -590,7 +590,6 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
                         player_crosswalk=player_crosswalk,
                         live_props=live_props,
                         expected_event_id=odds_event_id,
-                        binary_market_resolution=True,
                     )
                     for p in inj_list
                 ]
@@ -623,11 +622,35 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
                     clean_report_evidence_ref=clean_ref,
                     allow_unresolved_market=True,
                 )
+                affected_players = []
+                for p in summary.players:
+                    p_abs = float(p.get("p_absence", 0.0))
+                    r_ppr = float(p.get("rolling_ppr", 0.0))
+                    r_off = float(p.get("rolling_off_pct", 0.0))
+                    r_def = float(p.get("rolling_def_pct", 0.0))
+                    if p_abs > 0.0 or r_ppr > 0.0 or r_off > 0.0 or r_def > 0.0:
+                        affected_players.append({
+                            "player_name": p.get("player_name"),
+                            "position": p.get("position"),
+                            "status": p.get("raw_status") or p.get("availability_status"),
+                            "p_absence": p_abs,
+                            "rolling_ppr": r_ppr,
+                            "rolling_off_pct": r_off,
+                            "rolling_def_pct": r_def,
+                            "lost_ppr": float(p.get("lost_ppr", 0.0)),
+                            "lost_off_snaps": float(p.get("lost_off_snaps", 0.0)),
+                            "lost_def_snaps": float(p.get("lost_def_snaps", 0.0)),
+                        })
+
                 res = {
                     "coverage_state": summary.coverage_state,
                     "ppr_lost_pct": summary.ppr_lost_pct,
                     "off_snaps_lost_pct": summary.off_snaps_lost_pct,
                     "def_snaps_lost_pct": summary.def_snaps_lost_pct,
+                    "total_injured_count": summary.total_injured_count,
+                    "confirmed_out_count": summary.confirmed_out_count,
+                    "questionable_count": summary.questionable_count,
+                    "affected_players": affected_players,
                 }
                 _IMPACT_CACHE[cache_key] = (time.time(), res)
                 return res
@@ -638,9 +661,16 @@ async def get_matchup_context(game_id: int, db: AsyncSession) -> Dict[str, Any]:
                     "ppr_lost_pct": None,
                     "off_snaps_lost_pct": None,
                     "def_snaps_lost_pct": None,
+                    "affected_players": [],
                 }
 
-        return {"coverage_state": "impact_model_unavailable", "ppr_lost_pct": None, "off_snaps_lost_pct": None, "def_snaps_lost_pct": None}
+        return {
+            "coverage_state": "impact_model_unavailable",
+            "ppr_lost_pct": None,
+            "off_snaps_lost_pct": None,
+            "def_snaps_lost_pct": None,
+            "affected_players": [],
+        }
 
     injuries_data = {
         "home": home_inj_list,

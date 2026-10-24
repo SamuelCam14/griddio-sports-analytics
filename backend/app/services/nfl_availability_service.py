@@ -152,6 +152,12 @@ class PlayerInjuryRecord:
     p_play: float = 1.0
     coverage_flags: Dict[str, Any] = field(default_factory=dict)
     resolver_version: str = RESOLVER_VERSION
+    rolling_ppr: float = 0.0
+    rolling_off_pct: float = 0.0
+    rolling_def_pct: float = 0.0
+    lost_ppr: float = 0.0
+    lost_off_snaps: float = 0.0
+    lost_def_snaps: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -1091,10 +1097,6 @@ class NFLAvailabilityService:
             elif stat_enum in (AvailabilityStatus.QUESTIONABLE.value, AvailabilityStatus.DOUBTFUL.value):
                 unresolved_market_count += 1
 
-            p_abs = r.p_absence
-            if p_abs <= 0.0:
-                continue
-
             # Buscar stats históricas verificadas
             prior = (
                 prior_roster_stats.get(r.canonical_player_id or "")
@@ -1102,6 +1104,21 @@ class NFLAvailabilityService:
                 or prior_roster_stats.get(r.player_name.lower())
                 or {}
             )
+
+            p_abs = r.p_absence
+            if prior:
+                p_ppr = float(prior.get("rolling_ppr", 0.0))
+                p_off = float(prior.get("rolling_off_pct", 0.0))
+                p_def = float(prior.get("rolling_def_pct", 0.0))
+                r.rolling_ppr = round(p_ppr, 2)
+                r.rolling_off_pct = round(p_off, 4)
+                r.rolling_def_pct = round(p_def, 4)
+                r.lost_ppr = round(p_ppr * p_abs, 2)
+                r.lost_off_snaps = round(p_off * p_abs, 4)
+                r.lost_def_snaps = round(p_def * p_abs, 4)
+
+            if p_abs <= 0.0:
+                continue
 
             if not prior:
                 # El jugador carece de historial previo observado: no inventar datos
