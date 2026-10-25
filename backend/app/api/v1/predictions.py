@@ -290,32 +290,34 @@ async def get_today_picks(
             prob_model=pred.home_win_prob,
             odds_american=home_ml,
             bankroll=0.0,
+            model_agreement=pred.model_agreement,
+            confluence_tier=pred.confluence_tier,
         )
         away_bet = calculate_ev(
             prob_model=pred.away_win_prob,
             odds_american=away_ml,
             bankroll=0.0,
+            model_agreement=pred.model_agreement,
+            confluence_tier=pred.confluence_tier,
         )
 
-        # Determinar lado y tier usando el precio actual, no el almacenado al inferir.
-        if home_bet.has_edge and (not away_bet.has_edge or home_bet.edge_pct >= away_bet.edge_pct):
-            side = "home"
-            ev   = home_bet.ev_dollars
-            ml   = home_ml
-            prob = pred.home_win_prob
-            kelly= home_bet.kelly_fraction
-        elif away_bet.has_edge:
-            side = "away"
-            ev   = away_bet.ev_dollars
-            ml   = away_ml
-            prob = pred.away_win_prob
-            kelly= away_bet.kelly_fraction
-        else:
-            side = "home" if pred.home_win_prob >= pred.away_win_prob else "away"
-            ev   = max(home_bet.ev_dollars, away_bet.ev_dollars)
-            ml   = home_ml if side == "home" else away_ml
-            prob = max(pred.home_win_prob, pred.away_win_prob)
-            kelly= 0.0
+        # Regla estricta: El pick siempre corresponde al equipo proyectado a ganar por el modelo
+        # (Nunca recomendar un underdog con baja probabilidad)
+        side = "home" if pred.home_win_prob >= pred.away_win_prob else "away"
+        fav_bet = home_bet if side == "home" else away_bet
+        ml = home_ml if side == "home" else away_ml
+        prob = pred.home_win_prob if side == "home" else pred.away_win_prob
+
+        # Confianza requiere estrictamente:
+        # 1. Probabilidad del modelo > 55%
+        # 2. Todos los modelos coinciden (model_agreement >= 3 o unánime)
+        # 3. Ventaja matemática positiva (+EV y edge >= 3%)
+        # 4. Momios válidos (>= 1.40)
+        is_confianza = (fav_bet.tier == "CONFIANZA") and fav_bet.has_edge and (prob > 0.55)
+        normalized_tier = "CONFIANZA" if is_confianza else "NO PICK"
+        tier_label = normalized_tier
+        ev = fav_bet.ev_dollars if is_confianza else 0.0
+        kelly = fav_bet.kelly_fraction if is_confianza else 0.0
 
         # Detectar si el partido es hoy según el calendario oficial del evento
         is_today = (game.game_date.astimezone(us_tz).date() == now_us.date())
@@ -336,21 +338,18 @@ async def get_today_picks(
             live_player_props=real_props,
             model_prob_home=pred.home_win_prob,
             model_prob_away=pred.away_win_prob,
+            model_agreement=pred.model_agreement,
+            confluence_tier=pred.confluence_tier,
         )
 
-        # Evaluar la oportunidad máxima entre todos los mercados disponibles (Moneyline, Spread, Totales, Props)
-        ml_is_premium = home_bet.tier == "PREMIUM" or away_bet.tier == "PREMIUM"
-        ml_is_value = home_bet.tier == "VALUE" or away_bet.tier == "VALUE"
-        props_has_premium = any("PREMIUM" in p.get("tier", "").upper() for p in real_props)
-        props_has_value = any("VALUE" in p.get("tier", "").upper() for p in real_props)
-        has_premium = ml_is_premium or props_has_premium
-        has_value = ml_is_value or props_has_value
-
-        normalized_tier = "PREMIUM" if has_premium else ("VALUE" if has_value else "SKIP")
-        tier_label = normalized_tier
-
-        if tier != "all" and normalized_tier != tier.upper():
-            continue
+        if tier != "all":
+            t_req = tier.upper()
+            if t_req in ("CONFIANZA", "PREMIUM", "VALUE") and normalized_tier != "CONFIANZA":
+                continue
+            elif t_req in ("NO PICK", "NO_PICK", "SKIP") and normalized_tier != "NO PICK":
+                continue
+            elif t_req not in ("CONFIANZA", "PREMIUM", "VALUE", "NO PICK", "NO_PICK", "SKIP") and normalized_tier != t_req:
+                continue
 
         p_pred_at = pred.predicted_at if (pred.predicted_at and pred.predicted_at.tzinfo) else (pred.predicted_at.replace(tzinfo=timezone.utc) if pred.predicted_at else None)
         p_as_of_val = pred.as_of or pred.predicted_at
@@ -417,10 +416,12 @@ async def get_today_picks(
         "predictions_enabled": True,
         "total_picks": len(picks),
         "excluded_missing_market_data": excluded_missing_market_data,
-        "premium": sum(1 for p in picks if p["tier"] == "PREMIUM"),
-        "value":   sum(1 for p in picks if p["tier"] == "VALUE"),
-        "skip":    sum(1 for p in picks if p["tier"] == "SKIP"),
-        "picks":   picks,
+        "confianza": sum(1 for p in picks if p["tier"] == "CONFIANZA"),
+        "no_pick":   sum(1 for p in picks if p["tier"] == "NO PICK"),
+        "premium":   sum(1 for p in picks if p["tier"] == "CONFIANZA"),
+        "value":     0,
+        "skip":      sum(1 for p in picks if p["tier"] == "NO PICK"),
+        "picks":     picks,
     }
 
 
@@ -451,8 +452,8 @@ async def get_experimental_predictions(
             schedule_retrieved = pd.to_datetime(run["schedule_retrieved_at"], utc=True, errors="coerce")
             if (pd.isna(run_as_of) or pd.isna(schedule_retrieved)
                     or run_as_of > pd.Timestamp(now) + timedelta(minutes=5)
-                    or now - run_as_of.to_pydatetime() > timedelta(days=7)
-                    or now - schedule_retrieved.to_pydatetime() > timedelta(days=7)):
+                    or now - run_as_of.to_pydatetime() > timedelta(days=30)
+                    or now - schedule_retrieved.to_pydatetime() > timedelta(days=30)):
                 raise ValueError("La corrida o el calendario están vencidos")
             allowed_models = {f"{sport_lower}_temporal_v1"}
             if sport_lower == "nfl":

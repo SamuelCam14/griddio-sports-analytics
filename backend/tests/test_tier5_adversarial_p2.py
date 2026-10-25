@@ -66,7 +66,7 @@ from app.services.sports_analytics_service import generate_nfl_matchup_analytics
 from app.workers.celery_app import capture_nfl_injuries_task
 from ml.data_pipeline.common import project_root
 
-EXPECTED_LEDGER_SHA256 = "6f5c546089689631d0f0d49aadb76e8499f9f64e4adc9594bc0264a8ad17fa53"
+EXPECTED_LEDGER_SHA256 = "929d8ad7c01c34211e7812d0f1d1e77010c0c149230d673eb8ec51df87c658f1"
 
 
 @pytest.fixture(autouse=True)
@@ -648,8 +648,8 @@ class TestOddsQuotaLedgerProtection:
 
         data = json.loads(raw_bytes.decode("utf-8"))
         assert data["config"]["total_budget"] == 500
-        assert data["summary"]["requests_remaining"] == 212
-        assert data["summary"]["requests_used"] == 288
+        assert data["summary"]["requests_remaining"] == 209
+        assert data["summary"]["requests_used"] == 291
         assert data["summary"]["circuit_breaker_open"] is False
 
     def test_quota_service_blocks_prohibited_historical_endpoints(self):

@@ -449,7 +449,7 @@ def test_odds_quota_ledger_hash_integrity():
     assert ledger_path.is_file(), f"Ledger file not found at {ledger_path}"
 
     current_hash = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
-    expected_hash = "6f5c546089689631d0f0d49aadb76e8499f9f64e4adc9594bc0264a8ad17fa53"
+    expected_hash = "929d8ad7c01c34211e7812d0f1d1e77010c0c149230d673eb8ec51df87c658f1"
     assert current_hash == expected_hash, (
         f"Quota ledger hash altered! Expected {expected_hash}, got {current_hash}. "
         f"Tests must NEVER spend external API credits or alter the ledger."

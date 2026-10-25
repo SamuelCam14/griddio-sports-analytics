@@ -296,6 +296,14 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                           {formatPercentage(context.injuries.away_impact.def_snaps_lost_pct)}
                         </span>
                       </div>
+                      {context.injuries.away_impact.qb_starter_injured && (
+                        <div className="flex justify-between text-amber-300 font-medium">
+                          <span>Apalancamiento QB (VORP)</span>
+                          <span className="font-mono">
+                            -{context.injuries.away_impact.qb_lost_vorp?.toFixed(1) ?? '0.0'} pts
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -320,6 +328,14 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                           {formatPercentage(context.injuries.home_impact.def_snaps_lost_pct)}
                         </span>
                       </div>
+                      {context.injuries.home_impact.qb_starter_injured && (
+                        <div className="flex justify-between text-amber-300 font-medium">
+                          <span>Apalancamiento QB (VORP)</span>
+                          <span className="font-mono">
+                            -{context.injuries.home_impact.qb_lost_vorp?.toFixed(1) ?? '0.0'} pts
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

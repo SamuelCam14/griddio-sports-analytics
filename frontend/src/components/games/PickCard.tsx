@@ -11,7 +11,17 @@ interface Props {
   bankroll: number
 }
 
-const TIER_STYLES = {
+const TIER_STYLES: Record<string, { border: string; badge: string; glow: string }> = {
+  CONFIANZA: {
+    border: 'border-emerald-500',
+    badge: 'bg-emerald-950 text-emerald-300 border border-emerald-500/50',
+    glow: 'shadow-emerald-900/40 ring-1 ring-emerald-500/30',
+  },
+  'NO PICK': {
+    border: 'border-gray-800',
+    badge: 'bg-gray-800/80 text-gray-400',
+    glow: '',
+  },
   PREMIUM: {
     border: 'border-purple-700',
     badge: 'bg-purple-900 text-purple-200',

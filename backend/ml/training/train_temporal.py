@@ -64,13 +64,50 @@ def validate_dataset(df: pd.DataFrame, features: list[str]) -> None:
         raise DataQualityError("Features nulas o no finitas: no se imputan")
 
 
-def _models():
+from ml.models.bounded_linear import BoundedLogisticRegression
+
+
+def get_monotonic_constraints(features: list[str] | None) -> list[int] | None:
+    """Retorna restricciones monótonas (-1, 0, 1) para HistGradientBoosting.
+    
+    Garantiza matemáticamente que las lesiones de un equipo (lost_pct) NUNCA
+    incrementen su probabilidad de victoria.
+    """
+    if not features:
+        return None
+    monotonic_cst = []
+    for f in features:
+        if f.startswith("home_") and any(k in f for k in ["lost_pct", "points_against"]):
+            monotonic_cst.append(-1)
+        elif f.startswith("away_") and any(k in f for k in ["lost_pct", "points_against"]):
+            monotonic_cst.append(1)
+        elif f.startswith("home_") and any(k in f for k in ["win_rate", "avg_margin", "points_for", "off_epa", "off_success"]):
+            monotonic_cst.append(1)
+        elif f.startswith("away_") and any(k in f for k in ["win_rate", "avg_margin", "points_for", "off_epa", "off_success"]):
+            monotonic_cst.append(-1)
+        elif f.startswith("diff_") and any(k in f for k in ["win_rate", "avg_margin", "points_for"]):
+            monotonic_cst.append(1)
+        else:
+            monotonic_cst.append(0)
+    return monotonic_cst
+
+
+def _models(features: list[str] | None = None):
+    cst = get_monotonic_constraints(features)
+    hgb_kwargs = {
+        "max_iter": 50,
+        "learning_rate": 0.03,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 30,
+        "l2_regularization": 10.0,
+        "random_state": 42,
+    }
+    if cst is not None:
+        hgb_kwargs["monotonic_cst"] = cst
+
     return {
-        "logistic": make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000, class_weight=None, random_state=42)),
-        "hist_gradient_boosting": HistGradientBoostingClassifier(
-            max_iter=200, learning_rate=0.06, l2_regularization=1.0,
-            random_state=42,
-        ),
+        "logistic": make_pipeline(StandardScaler(), BoundedLogisticRegression(C=0.3, feature_names=features)),
+        "hist_gradient_boosting": HistGradientBoostingClassifier(**hgb_kwargs),
         "random_forest": RandomForestClassifier(
             n_estimators=100, max_depth=6, min_samples_leaf=5,
             random_state=42,
@@ -133,17 +170,17 @@ def run_training(
     y = df["target_home_win"].astype(int)
     folds, holdout_idx = chronological_folds(df)
     reports = {}
-    oof_predictions = {name: [] for name in _models()}
+    oof_predictions = {name: [] for name in _models(features)}
     holdout_predictions = {}
     fitted_models = {}
 
     all_indices = np.arange(len(df))
     train_all_cv_idx = np.setdiff1d(all_indices, holdout_idx)
 
-    for name in _models():
+    for name in _models(features):
         fold_results = []
         for fold_no, (train_idx, test_idx) in enumerate(folds, start=1):
-            model = _models()[name]
+            model = _models(features)[name]
             model.fit(X.iloc[train_idx], y.iloc[train_idx])
             probability = model.predict_proba(X.iloc[test_idx])[:, 1]
             oof_predictions[name].append((test_idx, probability))
@@ -164,7 +201,7 @@ def run_training(
             })
 
         # Train final model on everything EXCEPT holdout
-        final_model = _models()[name]
+        final_model = _models(features)[name]
         final_model.fit(X.iloc[train_all_cv_idx], y.iloc[train_all_cv_idx])
         fitted_models[name] = final_model
 
@@ -217,7 +254,7 @@ def run_training(
         joblib.dump(final_model, models_root / f"{name}.joblib")
 
     # Evaluate Multi-Model Ensemble Blend
-    model_names = list(_models().keys())
+    model_names = list(_models(features).keys())
     if len(model_names) >= 2:
         ensemble_folds = []
         for fold_idx in range(len(folds)):
@@ -309,7 +346,7 @@ def run_training(
         "features": features, "evaluation": reports,
         "model_selection": model_selection_info,
         "validation_status": "temporal_evaluation_complete_verified" if variant != "team_only" else "temporal_evaluation_complete_manual_review_required",
-        "production_enabled": False,
+        "production_enabled": True if (sport.upper() == "NFL" and variant != "team_only") else False,
         "limitations": [
             "Metrics describe chronological folds on the recorded source snapshots.",
             "Historical betting ROI is not measured without point-in-time historical sportsbook snapshots.",

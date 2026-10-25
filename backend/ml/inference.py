@@ -14,6 +14,7 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 from ml.data_pipeline.common import DataQualityError, backend_root, project_root
+from ml.models.bounded_linear import BoundedLogisticRegression  # noqa: F401
 from ml.data_pipeline.temporal_features import (
     NBA_GAME_STATS, NFL_GAME_STATS, build_matchup_features, feature_columns,
 )

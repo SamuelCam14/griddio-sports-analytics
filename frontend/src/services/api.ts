@@ -120,7 +120,7 @@ export interface EVResult {
   kelly_fraccion: number
   kelly_monto: number
   tiene_ventaja: boolean
-  tier: 'PREMIUM' | 'VALUE' | 'SKIP'
+  tier: 'CONFIANZA' | 'NO PICK' | 'PREMIUM' | 'VALUE' | 'SKIP'
   advertencias: string[]
   recomendacion: string
 }
@@ -229,7 +229,7 @@ export interface Pick {
   away_team?: TeamDetail
   home_team_id: number
   away_team_id: number
-  tier: 'PREMIUM' | 'VALUE' | 'SKIP' | 'NEUTRAL' | 'EXPERIMENTAL'
+  tier: 'CONFIANZA' | 'NO PICK' | 'PREMIUM' | 'VALUE' | 'SKIP' | 'NEUTRAL' | 'EXPERIMENTAL'
   tier_emoji: string
   model_agreement: number
   pick_side: 'home' | 'away' | null
@@ -387,6 +387,8 @@ export interface TeamProductionImpact {
   confirmed_out_count?: number
   questionable_count?: number
   affected_players?: AffectedPlayerProduction[]
+  qb_starter_injured?: boolean
+  qb_lost_vorp?: number
 }
 
 export interface InjurySourceInfo {
@@ -479,7 +481,7 @@ export const oddsApi = {
 
 // ─── Predictions ─────────────────────────────────────────────────────────────
 
-export type PredictionTier = 'PREMIUM' | 'VALUE' | 'EXPERIMENTAL' | 'all'
+export type PredictionTier = 'CONFIANZA' | 'NO PICK' | 'PREMIUM' | 'VALUE' | 'SKIP' | 'EXPERIMENTAL' | 'all'
 
 export interface ExperimentalPredictionGame {
   game_id: string

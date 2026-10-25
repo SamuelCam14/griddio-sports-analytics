@@ -19,6 +19,7 @@ from app.services.math.odds_converter import (
     remove_vig,
 )
 from app.services.math.kelly import calculate_kelly_fraction, calculate_kelly_amount
+from app.services.math.ev import TierStr
 from scipy.stats import norm
 
 logger = structlog.get_logger(__name__)
@@ -39,6 +40,8 @@ def generate_nfl_matchup_analytics(
     model_prob_away: Optional[float] = None,
     model_agreement: Optional[int] = None,
     confluence_tier: Optional[str] = None,
+    qb_vorp_home: float = 0.0,
+    qb_vorp_away: float = 0.0,
 ) -> Dict[str, Any]:
     """
     Genera el análisis probabilístico, líneas de spread, totales y player props reales para un partido NFL.
@@ -65,7 +68,10 @@ def generate_nfl_matchup_analytics(
 
     # Modelo de margen y scores proyectados (distribución diferencial NFL sigma ~ 13.5)
     if model_valid:
-        proj_margin_raw = float(norm.ppf(min(0.999, max(0.001, model_prob_home))) * 13.5)
+        proj_margin_base = float(norm.ppf(min(0.999, max(0.001, model_prob_home))) * 13.5)
+        # Ajuste VORP: la baja del QB titular reduce el margen neto proyectado del equipo
+        vorp_diff = float(qb_vorp_home - qb_vorp_away)
+        proj_margin_raw = proj_margin_base - vorp_diff
         t_base = total_line if total_line is not None else 44.0
         proj_home_score = round((t_base + proj_margin_raw) / 2.0, 1)
         proj_away_score = round((t_base - proj_margin_raw) / 2.0, 1)
@@ -95,44 +101,32 @@ def generate_nfl_matchup_analytics(
     home_eligible = model_valid and confluence_ok and (dec_h >= 1.40) and (ev_h is not None and ev_h > 0)
     away_eligible = model_valid and confluence_ok and (dec_a >= 1.40) and (ev_a is not None and ev_a > 0)
 
+    # Confianza estricta: prob > 0.55, unánime (agreement >= 3 o None), edge >= 0.03, ev > 0, odds >= 1.40
+    home_is_confianza = home_eligible and (p_home_model > 0.55) and (edge_h >= 0.03) and (model_agreement is None or model_agreement >= 3)
+    away_is_confianza = away_eligible and (p_away_model > 0.55) and (edge_a >= 0.03) and (model_agreement is None or model_agreement >= 3)
+
     if not model_valid:
         ml_tier, ml_side, ml_pick_team, ml_ev, ml_prob, ml_odds, kelly_frac = (
             "UNAVAILABLE", None, None, None, None, None, 0.0
         )
-    elif home_eligible and edge_h >= 0.045 and ev_h >= 3.5:
-        ml_tier = "PREMIUM"
+    elif home_is_confianza:
+        ml_tier = TierStr("CONFIANZA")
         ml_side = "home"
         ml_pick_team = home_team
         ml_ev = ev_h
         ml_prob = p_home_model
         ml_odds = home_ml
         kelly_frac = calculate_kelly_fraction(p_home_model, dec_h, fraction_multiplier=0.25, max_cap=0.05)
-    elif away_eligible and edge_a >= 0.045 and ev_a >= 3.5:
-        ml_tier = "PREMIUM"
+    elif away_is_confianza:
+        ml_tier = TierStr("CONFIANZA")
         ml_side = "away"
         ml_pick_team = away_team
         ml_ev = ev_a
         ml_prob = p_away_model
         ml_odds = away_ml
         kelly_frac = calculate_kelly_fraction(p_away_model, dec_a, fraction_multiplier=0.25, max_cap=0.05)
-    elif home_eligible and edge_h >= 0.02 and ev_h > 0:
-        ml_tier = "VALUE"
-        ml_side = "home"
-        ml_pick_team = home_team
-        ml_ev = ev_h
-        ml_prob = p_home_model
-        ml_odds = home_ml
-        kelly_frac = calculate_kelly_fraction(p_home_model, dec_h, fraction_multiplier=0.15, max_cap=0.03)
-    elif away_eligible and edge_a >= 0.02 and ev_a > 0:
-        ml_tier = "VALUE"
-        ml_side = "away"
-        ml_pick_team = away_team
-        ml_ev = ev_a
-        ml_prob = p_away_model
-        ml_odds = away_ml
-        kelly_frac = calculate_kelly_fraction(p_away_model, dec_a, fraction_multiplier=0.15, max_cap=0.03)
     else:
-        ml_tier = "SKIP"
+        ml_tier = TierStr("NO PICK")
         ml_side = "home" if (p_home_model or 0.5) >= (p_away_model or 0.5) else "away"
         ml_pick_team = home_team if ml_side == "home" else away_team
         ml_ev = max(ev_h or 0.0, ev_a or 0.0)
@@ -157,26 +151,26 @@ def generate_nfl_matchup_analytics(
         edge_home_spread = p_home_cover - 0.50
         edge_away_spread = p_away_cover - 0.50
 
-        if ev_home_spread > 0 and p_home_cover > p_away_cover and dec_spread >= 1.40 and confluence_ok:
+        if ev_home_spread > 0 and p_home_cover > p_away_cover and dec_spread >= 1.40 and confluence_ok and p_home_cover > 0.55 and edge_home_spread >= 0.03:
             spread_pick = f"{home_team} {spread_line:+0.1f}"
             spread_cover_prob = round(p_home_cover, 4)
             ev_spread = round(ev_home_spread, 2)
             spread_edge = round(edge_home_spread * 100.0, 1)
-            spread_tier = "PREMIUM" if ev_spread >= 3.5 and edge_home_spread >= 0.045 else "VALUE"
+            spread_tier = TierStr("CONFIANZA")
             spread_kelly_frac = calculate_kelly_fraction(p_home_cover, dec_spread, fraction_multiplier=0.15, max_cap=0.03)
-        elif ev_away_spread > 0 and p_away_cover > p_home_cover and dec_spread >= 1.40 and confluence_ok:
+        elif ev_away_spread > 0 and p_away_cover > p_home_cover and dec_spread >= 1.40 and confluence_ok and p_away_cover > 0.55 and edge_away_spread >= 0.03:
             spread_pick = f"{away_team} {-spread_line:+0.1f}"
             spread_cover_prob = round(p_away_cover, 4)
             ev_spread = round(ev_away_spread, 2)
             spread_edge = round(edge_away_spread * 100.0, 1)
-            spread_tier = "PREMIUM" if ev_spread >= 3.5 and edge_away_spread >= 0.045 else "VALUE"
+            spread_tier = TierStr("CONFIANZA")
             spread_kelly_frac = calculate_kelly_fraction(p_away_cover, dec_spread, fraction_multiplier=0.15, max_cap=0.03)
         else:
             spread_pick = None
             spread_cover_prob = round(max(p_home_cover, p_away_cover), 4)
             ev_spread = round(max(ev_home_spread, ev_away_spread), 2)
             spread_edge = round(max(edge_home_spread, edge_away_spread) * 100.0, 1)
-            spread_tier = "SKIP"
+            spread_tier = TierStr("NO PICK")
             spread_kelly_frac = 0.0
 
         spread_kelly_stake = calculate_kelly_amount(bankroll, spread_kelly_frac) if valid_bankroll else None
@@ -315,6 +309,15 @@ def generate_nfl_matchup_analytics(
     else:
         factors.append("No hay oportunidad calculable con los inputs disponibles; no se infiere eficiencia del mercado.")
 
+    if qb_vorp_home > 0:
+        factors.append(
+            f"Apalancamiento QB (VORP): Bajas en mariscal titular de {home_team} (-{qb_vorp_home:.1f} pts VORP estimados vs reemplazo)."
+        )
+    if qb_vorp_away > 0:
+        factors.append(
+            f"Apalancamiento QB (VORP): Bajas en mariscal titular de {away_team} (-{qb_vorp_away:.1f} pts VORP estimados vs reemplazo)."
+        )
+
     return {
         "home_team": home_team,
         "away_team": away_team,
@@ -326,6 +329,8 @@ def generate_nfl_matchup_analytics(
         "prob_away": p_away_model,
         "market_prob_home_no_vig": round(p_h_fair, 4),
         "market_prob_away_no_vig": round(p_a_fair, 4),
+        "qb_vorp_home": round(qb_vorp_home, 2),
+        "qb_vorp_away": round(qb_vorp_away, 2),
         "tier": ml_tier,
         "has_edge": ml_tier in ["PREMIUM", "VALUE"],
         "best_bet": best_bet,

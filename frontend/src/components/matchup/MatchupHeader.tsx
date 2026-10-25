@@ -23,13 +23,15 @@ export const MatchupHeader: React.FC<MatchupHeaderProps> = ({ pick, isSaved, onT
   const homeName = pick.home_team?.name || 'Local'
   const awayName = pick.away_team?.name || 'Visitante'
 
-  const tierStyles = {
+  const tierStyles: Record<string, string> = {
+    CONFIANZA: 'bg-emerald-950 text-emerald-300 border-emerald-500 font-bold',
+    'NO PICK': 'bg-gray-800/80 text-gray-400 border-gray-700',
     PREMIUM: 'bg-purple-950 text-purple-300 border-purple-800',
     VALUE: 'bg-blue-950 text-blue-300 border-blue-800',
     SKIP: 'bg-gray-800 text-gray-400 border-gray-700',
     NEUTRAL: 'bg-gray-800 text-gray-300 border-gray-600',
   }
-  const badgeStyle = tierStyles[pick.tier as keyof typeof tierStyles] || tierStyles.NEUTRAL
+  const badgeStyle = tierStyles[pick.tier] || tierStyles.NEUTRAL
 
   const formatGameDate = (dateStr: string) => {
     try {

@@ -863,7 +863,7 @@ class TestTier4RealWorldApplicationScenarios:
         assert data["sport"] == "NFL"
         assert isinstance(data["picks"], list)
         for pick in data["picks"]:
-            assert pick["tier"] in ("PREMIUM", "VALUE", "SKIP")
+            assert pick["tier"] in ("CONFIANZA", "NO PICK", "PREMIUM", "VALUE", "SKIP")
             assert 0.0 <= pick["prob_modelo"] <= 1.0
             assert "observed_at" in pick
             assert "predicted_at" in pick

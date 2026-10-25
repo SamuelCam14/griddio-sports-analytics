@@ -21,10 +21,12 @@ export function EVCalculator({ bankroll }: Props) {
     onSuccess: setResult,
   })
 
-  const tierColor = {
-    PREMIUM: 'text-purple-400 border-purple-700 bg-purple-950',
-    VALUE:   'text-blue-400 border-blue-700 bg-blue-950',
-    SKIP:    'text-gray-400 border-gray-700 bg-gray-900',
+  const tierColor: Record<string, string> = {
+    CONFIANZA: 'text-emerald-300 border-emerald-500 bg-emerald-950',
+    'NO PICK': 'text-gray-400 border-gray-700 bg-gray-900',
+    PREMIUM:   'text-purple-400 border-purple-700 bg-purple-950',
+    VALUE:     'text-blue-400 border-blue-700 bg-blue-950',
+    SKIP:      'text-gray-400 border-gray-700 bg-gray-900',
   }
 
   return (

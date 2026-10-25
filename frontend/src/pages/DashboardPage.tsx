@@ -37,7 +37,8 @@ export function DashboardPage() {
   }, [matches, selectedGameId, carouselIndex, totalMatches])
 
   const topPick = useMemo(() => {
-    return matches.find((m) => m.prediction?.tier === 'PREMIUM')?.prediction ??
+    return matches.find((m) => m.prediction?.tier === 'CONFIANZA')?.prediction ??
+      matches.find((m) => m.prediction?.tier === 'PREMIUM')?.prediction ??
       matches.find((m) => m.prediction?.tier === 'VALUE')?.prediction ??
       matches.find((m) => m.prediction?.tiene_ventaja)?.prediction ??
       matches[0]?.prediction

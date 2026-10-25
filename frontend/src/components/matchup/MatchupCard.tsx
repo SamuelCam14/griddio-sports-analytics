@@ -47,13 +47,15 @@ export const MatchupCard: React.FC<MatchupCardProps> = ({ pick, bankroll }) => {
   const homeAbbr = pick.home_team?.abbreviation || 'LOC'
   const awayAbbr = pick.away_team?.abbreviation || 'VIS'
 
-  const tierBorders = {
+  const tierBorders: Record<string, string> = {
+    CONFIANZA: 'border-emerald-500/80',
+    'NO PICK': 'border-gray-800',
     PREMIUM: 'border-purple-600/70',
     VALUE: 'border-blue-600/70',
     SKIP: 'border-gray-800',
     NEUTRAL: 'border-gray-700',
   }
-  const borderClass = tierBorders[pick.tier as keyof typeof tierBorders] || tierBorders.NEUTRAL
+  const borderClass = tierBorders[pick.tier] || tierBorders.NEUTRAL
 
   const handleToggleSave = () => {
     if (isSaved) {

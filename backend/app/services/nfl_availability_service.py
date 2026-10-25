@@ -243,6 +243,8 @@ class TeamAvailabilitySummary:
     resolver_version: str = RESOLVER_VERSION
     players: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    qb_starter_injured: bool = False
+    qb_lost_vorp: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -1142,6 +1144,8 @@ class NFLAvailabilityService:
         total_ppr_lost = 0.0
         total_off_snaps_lost = 0.0
         total_def_snaps_lost = 0.0
+        qb_starter_injured = False
+        qb_lost_vorp = 0.0
 
         cnt_out = 0
         cnt_q = 0
@@ -1206,6 +1210,13 @@ class NFLAvailabilityService:
             total_off_snaps_lost += p_off * p_abs
             total_def_snaps_lost += p_def * p_abs
 
+            # Detección de QB titular y ponderación de VORP
+            # Un mariscal titular juega >= 50% de snaps ofensivos o promedia >= 12.0 PPR
+            pos = (r.position or "").upper()
+            if pos == "QB" and (p_off >= 0.50 or p_ppr >= 12.0):
+                qb_starter_injured = True
+                qb_lost_vorp += round(p_abs * max(0.5, min(1.0, p_off)) * 4.5, 2)
+
         # Si hay jugadores con pérdida pero sin historial previo, advertir en metadata
         state = CoverageState.COVERED_WITH_INJURIES.value
         should_fail_unknown = False
@@ -1239,6 +1250,8 @@ class NFLAvailabilityService:
                     "unresolved_market_count": unresolved_market_count,
                     "reason": "availability_or_required_market_coverage_unverified",
                 },
+                qb_starter_injured=False,
+                qb_lost_vorp=0.0,
             )
 
         ppr_lost_pct = min(1.0, round(total_ppr_lost / team_potential_ppr, 4))
@@ -1248,6 +1261,8 @@ class NFLAvailabilityService:
         meta = {
             "missing_player_history_count": missing_player_history_cnt,
             "team_potential_ppr": round(team_potential_ppr, 2),
+            "qb_starter_injured": qb_starter_injured,
+            "qb_lost_vorp": round(qb_lost_vorp, 2),
         }
         if allow_unresolved_market and unresolved_market_count > 0:
             meta["preliminary_market_pending"] = True
@@ -1270,6 +1285,8 @@ class NFLAvailabilityService:
             decision_cutoff=str(decision_cutoff) if decision_cutoff else None,
             players=[r.to_dict() for r in records],
             metadata=meta,
+            qb_starter_injured=qb_starter_injured,
+            qb_lost_vorp=round(qb_lost_vorp, 2),
         )
 
     def persist_team_availability(

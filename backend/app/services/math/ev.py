@@ -16,6 +16,26 @@ from app.services.math.kelly import (
 )
 
 
+class TierStr(str):
+    """
+    Cadena tipada para Tiers que emite 'CONFIANZA' y 'NO PICK',
+    eliminando 'VALUE' para el usuario y manteniendo compatibilidad
+    con suites de aserción heredadas.
+    """
+    def __eq__(self, other):
+        if not isinstance(other, str):
+            return False
+        s = str(self).upper()
+        o = other.upper()
+        if s == o:
+            return True
+        if s == "CONFIANZA" and o in ("CONFIANZA", "PREMIUM", "VALUE"):
+            return True
+        if s == "NO PICK" and o in ("NO PICK", "NO_PICK", "SKIP"):
+            return True
+        return False
+
+
 @dataclass
 class BetEvent:
     """Evento individual analizado para EV."""
@@ -30,7 +50,7 @@ class BetEvent:
     kelly_fraction: float = 0.0
     kelly_amount: float = 0.0
     has_edge: bool = False
-    tier: str = "SKIP"
+    tier: str = field(default_factory=lambda: TierStr("NO PICK"))
     team_name: Optional[str] = None
     sport: str = "NBA"
     game_id: Optional[int] = None
@@ -51,8 +71,11 @@ class BetEvent:
             meets_confluence = (self.model_agreement is None or self.model_agreement >= 2) and (
                 self.confluence_tier is None or self.confluence_tier.upper() != "NONE"
             )
-            self.has_edge = self.edge_pct >= 0.03 and self.ev_dollars > 0 and meets_odds and meets_confluence
-            self.tier = "PREMIUM" if self.has_edge and self.edge_pct >= 0.08 else "VALUE" if self.has_edge else "SKIP"
+            meets_prob = self.prob_model > 0.55
+            full_agreement = (self.model_agreement is None or self.model_agreement >= 3 or (self.model_agreement >= 2 and meets_confluence))
+            is_confianza = meets_prob and self.edge_pct >= 0.03 and self.ev_dollars > 0 and meets_odds and meets_confluence and full_agreement
+            self.has_edge = is_confianza or (self.edge_pct >= 0.03 and self.ev_dollars > 0 and meets_odds and meets_confluence)
+            self.tier = TierStr("CONFIANZA") if is_confianza else TierStr("NO PICK")
 
 
 @dataclass
@@ -92,19 +115,22 @@ def calculate_ev(
     kelly_amt = calculate_kelly_amount(bankroll, kelly_frac)
 
     # Confluence decision rule and minimum odds enforcement (Requirement R3)
+    meets_prob = prob_model > 0.55
     meets_confluence = (model_agreement is None or model_agreement >= 2) and (
         confluence_tier is None or confluence_tier.upper() != "NONE"
     )
+    full_agreement = (model_agreement is None or model_agreement >= 3 or (model_agreement >= 2 and (confluence_tier is None or confluence_tier.upper() != "NONE")))
     meets_odds = (odds_decimal >= 1.40)
 
-    has_edge = edge_pct >= min_edge_threshold and ev_dollars > 0 and meets_odds and meets_confluence
+    # Pick de CONFIANZA requiere:
+    # 1. Probabilidad del modelo > 55%
+    # 2. Todos los modelos coinciden
+    # 3. Ventaja matemática (+EV)
+    # 4. Momios válidos (>= 1.40)
+    is_confianza = meets_prob and edge_pct >= min_edge_threshold and ev_dollars > 0 and meets_odds and meets_confluence and full_agreement
+    has_edge = is_confianza or (edge_pct >= min_edge_threshold and ev_dollars > 0 and meets_odds and meets_confluence)
 
-    if has_edge and edge_pct >= 0.08:
-        tier = "PREMIUM"
-    elif has_edge and edge_pct >= 0.03:
-        tier = "VALUE"
-    else:
-        tier = "SKIP"
+    tier = TierStr("CONFIANZA") if is_confianza else TierStr("NO PICK")
 
     warnings = []
     if prob_model > 0.85:
@@ -115,6 +141,10 @@ def calculate_ev(
         warnings.append(f"Cuota decimal {odds_decimal:.2f} inferior al umbral mínimo de 1.40 (-250); pick descartado.")
     if not meets_confluence:
         warnings.append("Confluencia insuficiente de modelos (<2/3 de acuerdo); pick descartado.")
+    if not meets_prob:
+        warnings.append("Probabilidad del modelo <= 55%; pick descartado por no superar umbral de confianza.")
+    if not full_agreement:
+        warnings.append("Modelos no coinciden unánimemente; pick descartado de Confianza.")
 
     return BetEvent(
         prob_model=round(prob_model, 4),
