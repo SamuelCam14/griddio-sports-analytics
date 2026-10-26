@@ -92,9 +92,9 @@ export function LiveMatchDetailCard({ match, sport, onOpenDeepDive }: LiveMatchD
         {activeTab === 'lineup' && <p className="text-slate-400">El reporte de lesiones no está disponible en la cartelera. Abre el contexto del partido para consultar cobertura y fuente.</p>}
         {activeTab === 'stats' && game && (
           <div className="space-y-2">
-            <Fact label="Win rate" value={game.team_stats.home.wpct != null && game.team_stats.away.wpct != null ? `${formatPercentage(game.team_stats.away.wpct)} / ${formatPercentage(game.team_stats.home.wpct)}` : null} />
-            <Fact label="Rating neto" value={game.team_stats.home.net_rtg != null && game.team_stats.away.net_rtg != null ? `${formatNumber(game.team_stats.away.net_rtg)} / ${formatNumber(game.team_stats.home.net_rtg)}` : null} />
-            <Fact label="Ritmo" value={game.team_stats.home.pace != null && game.team_stats.away.pace != null ? `${formatNumber(game.team_stats.away.pace)} / ${formatNumber(game.team_stats.home.pace)}` : null} />
+            <Fact label="Win rate" value={game.team_stats?.home?.wpct != null && game.team_stats?.away?.wpct != null ? `${formatPercentage(game.team_stats.away.wpct)} / ${formatPercentage(game.team_stats.home.wpct)}` : null} />
+            <Fact label="Rating neto" value={game.team_stats?.home?.net_rtg != null && game.team_stats?.away?.net_rtg != null ? `${formatNumber(game.team_stats.away.net_rtg)} / ${formatNumber(game.team_stats.home.net_rtg)}` : null} />
+            <Fact label="Ritmo" value={game.team_stats?.home?.pace != null && game.team_stats?.away?.pace != null ? `${formatNumber(game.team_stats.away.pace)} / ${formatNumber(game.team_stats.home.pace)}` : null} />
           </div>
         )}
         {activeTab === 'stats' && !game && <p className="text-slate-400">No hay un registro canónico de partido para leer estadísticas.</p>}
@@ -102,7 +102,7 @@ export function LiveMatchDetailCard({ match, sport, onOpenDeepDive }: LiveMatchD
           <div className="space-y-2 text-slate-300">
             {prediction ? (
               <>
-                <p className="font-semibold text-emerald-400">Modelo de producción (nfl_temporal_v1)</p>
+                <p className="font-semibold text-emerald-400">Modelo de producción ({prediction.model_version ?? `${sport.toLowerCase()}_temporal_v1`})</p>
                 <p>Probabilidad estimada: Local {formatPercentage(prediction.home_win_prob)} / Visita {formatPercentage(prediction.away_win_prob)}</p>
                 <p>EV y selección: {prediction.best_bet ? `${prediction.best_bet.selection} · EV ${prediction.best_bet.ev_dollars > 0 ? '+' : ''}$${prediction.best_bet.ev_dollars} por cada $100` : 'Sin ventaja matemática calculable en este mercado.'}</p>
                 {prediction.spread?.status === 'available' && prediction.spread.projected_margin != null && (

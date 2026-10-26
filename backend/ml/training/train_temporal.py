@@ -150,6 +150,66 @@ def chronological_folds(df: pd.DataFrame, folds: int = 4, holdout_frac: float = 
         raise DataQualityError("Test de folds de validación posterior o igual al holdout")
 
     return result, holdout_indices
+
+
+def select_model_from_folds(
+    reports: dict[str, dict], *, ensemble_name: str = "ensemble_blend",
+) -> dict:
+    """Select the ensemble only when it consistently beats logistic out of fold.
+
+    The lockbox is deliberately excluded from selection. Logistic is the
+    parsimonious default; an ensemble must beat it on Brier in every common
+    fold, beat the majority baseline in every fold, and have lower mean log
+    loss across those folds.
+    """
+    logistic_folds = reports.get("logistic", {}).get("folds", [])
+    ensemble_folds = reports.get(ensemble_name, {}).get("folds", [])
+    if not logistic_folds or len(logistic_folds) != len(ensemble_folds):
+        return {
+            "selected_model": "logistic",
+            "decision": "single_model_retained",
+            "ensemble_evaluated": bool(ensemble_folds),
+            "selection_rule": "ensemble_must_dominate_logistic_and_majority_on_common_oof_folds",
+            "rationale": "Common chronological folds unavailable or mismatched; retained logistic by parsimony.",
+        }
+
+    paired = []
+    for logistic, ensemble in zip(logistic_folds, ensemble_folds):
+        if logistic.get("fold") != ensemble.get("fold"):
+            raise DataQualityError("Logistic y ensemble no comparten los mismos IDs de fold")
+        paired.append({
+            "fold": logistic["fold"],
+            "logistic_brier": logistic["brier"],
+            "ensemble_brier": ensemble["brier"],
+            "majority_brier": ensemble["majority_baseline_brier"],
+            "logistic_log_loss": logistic["log_loss"],
+            "ensemble_log_loss": ensemble["log_loss"],
+        })
+
+    brier_dominates_logistic = all(x["ensemble_brier"] < x["logistic_brier"] for x in paired)
+    beats_majority_all_folds = all(x["ensemble_brier"] < x["majority_brier"] for x in paired)
+    mean_log_loss_better = np.mean([x["ensemble_log_loss"] for x in paired]) < np.mean(
+        [x["logistic_log_loss"] for x in paired]
+    )
+    select_ensemble = brier_dominates_logistic and beats_majority_all_folds and mean_log_loss_better
+    return {
+        "selected_model": "ensemble" if select_ensemble else "logistic",
+        "decision": "ensemble_selected" if select_ensemble else "single_model_retained",
+        "ensemble_evaluated": True,
+        "models": list(reports.keys()),
+        "selection_rule": "ensemble_must_dominate_logistic_by_brier_in_every_oof_fold_and_majority_in_every_fold_and_improve_mean_log_loss",
+        "checks": {
+            "ensemble_brier_better_than_logistic_all_folds": brier_dominates_logistic,
+            "ensemble_brier_better_than_majority_all_folds": beats_majority_all_folds,
+            "ensemble_mean_log_loss_better_than_logistic": bool(mean_log_loss_better),
+        },
+        "fold_comparison": paired,
+        "rationale": (
+            "Ensemble passed all preregistered development-fold criteria."
+            if select_ensemble else
+            "Retained bounded logistic by parsimony; ensemble did not pass every development-fold criterion."
+        ),
+    }
 def run_training(
     sport: str, data_root: Path | None = None, models_root: Path | None = None,
     variant: str = "injury_aware",
@@ -250,8 +310,6 @@ def run_training(
                 fold["brier"] < fold["majority_baseline_brier"] for fold in fold_results
             ),
         }
-        models_root.mkdir(parents=True, exist_ok=True)
-        joblib.dump(final_model, models_root / f"{name}.joblib")
 
     # Evaluate Multi-Model Ensemble Blend
     model_names = list(_models(features).keys())
@@ -313,25 +371,23 @@ def run_training(
             ),
         }
 
-    # Model selection analysis
-    if variant == "team_only":
-        model_selection_info = {
-            "selected_model": "logistic",
-            "decision": "single_model_retained",
-            "ensemble_evaluated": True,
-            "rationale": "Phase 04 baseline retained parsimonious logistic model for team_only.",
-        }
-    else:
-        model_selection_info = {
-            "selected_model": "ensemble",
-            "decision": "ensemble_selected",
-            "ensemble_evaluated": True,
-            "models": model_names,
-            "rationale": (
-                f"Multi-model ensemble combining {', '.join(model_names)} with walk-forward validation "
-                f"and confluence agreement across chronological folds."
-            ),
-        }
+    # Select from common development folds only; never use lockbox metrics here.
+    model_selection_info = select_model_from_folds(reports)
+    # The historical holdout has already been inspected and is not confirmatory.
+    # Refit artifacts on all available historical data; the new prospective
+    # cohort, not this consumed holdout, is the independent evaluation.
+    final_fit_idx = all_indices
+    for name in model_names:
+        final_model = _models(features)[name]
+        final_model.fit(X.iloc[final_fit_idx], y.iloc[final_fit_idx])
+        fitted_models[name] = final_model
+        models_root.mkdir(parents=True, exist_ok=True)
+        joblib.dump(final_model, models_root / f"{name}.joblib")
+
+    artifact_hashes = {
+        name: hashlib.sha256((models_root / f"{name}.joblib").read_bytes()).hexdigest()
+        for name in model_names
+    }
 
     metadata = {
         "sport": sport.upper(),
@@ -343,14 +399,29 @@ def run_training(
         "source_manifest": source_manifest.get("source_manifest_sha256"),
         "sample_count": int(len(df)), "date_from": str(pd.to_datetime(df.game_date).min().date()),
         "date_to": str(pd.to_datetime(df.game_date).max().date()),
+        "final_artifact_fit": {
+            "rows": int(len(final_fit_idx)),
+            "date_from": str(pd.to_datetime(df.iloc[final_fit_idx].game_date).min().date()),
+            "date_through": str(pd.to_datetime(df.iloc[final_fit_idx].game_date).max().date()),
+            "includes_previously_inspected_holdout": True,
+            "holdout_metrics_are_confirmatory": False,
+        },
+        "evaluation_scope": (
+            "OOF folds drive model selection. Historical holdout was previously inspected; "
+            "reported holdout metrics are diagnostic for the pre-refit candidate only. "
+            "Final artifacts are fit on all available historical rows and require prospective confirmation."
+        ),
         "features": features, "evaluation": reports,
         "model_selection": model_selection_info,
+        "artifact_sha256": artifact_hashes,
+        "selected_artifact_sha256": artifact_hashes[model_selection_info["selected_model"]]
+        if model_selection_info["selected_model"] != "ensemble" else None,
         "validation_status": "temporal_evaluation_complete_verified" if variant != "team_only" else "temporal_evaluation_complete_manual_review_required",
         "production_enabled": True if (sport.upper() == "NFL" and variant != "team_only") else False,
         "limitations": [
             "Metrics describe chronological folds on the recorded source snapshots.",
             "Historical betting ROI is not measured without point-in-time historical sportsbook snapshots.",
-            "Production inference stays disabled until feature/source parity and calibration are reviewed.",
+            "Production availability follows the configured project gate; it is not evidence of predictive validation.",
         ],
     }
     write_manifest(models_root / "model_metadata.json", metadata)

@@ -87,10 +87,10 @@ export function AiPredictionList({ matches, sport, externalForecast, externalFor
         </div>
       )}
 
-      {sport === 'NFL' && externalForecast?.status === 'available' && (
+      {externalForecast?.status === 'available' && (
         <div className="rounded-lg border border-white/[0.05] bg-white/[0.015] p-2.5 text-xs text-slate-400">
           <div className="flex items-center justify-between text-[10px] uppercase text-slate-500">
-            <span>Benchmark externo ({externalForecast.source})</span>
+            <span>Benchmark externo ({externalForecast.source ?? 'ESPN'})</span>
             <span>{externalForecast.retrieved_at_utc ? `Observado ${externalForecast.retrieved_at_utc.slice(11, 16)} UTC` : ''}</span>
           </div>
           <p className="mt-1 font-mono text-slate-300">
@@ -98,7 +98,7 @@ export function AiPredictionList({ matches, sport, externalForecast, externalFor
           </p>
         </div>
       )}
-      {sport === 'NFL' && externalForecastLoading && (
+      {externalForecastLoading && (
         <p className="text-[10px] text-slate-500" role="status">Consultando referencia externa…</p>
       )}
     </div>

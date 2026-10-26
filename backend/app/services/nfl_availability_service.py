@@ -37,6 +37,7 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 RESOLVER_VERSION = "nfl_availability_v2"
+QB_REPLACEMENT_ESTIMATOR_VERSION = "qb_epa_replacement_p25_shrink50_v1"
 AVAILABILITY_CACHE_DIR = Path("data/cache/nfl_availability")
 AVAILABILITY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -244,7 +245,7 @@ class TeamAvailabilitySummary:
     players: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     qb_starter_injured: bool = False
-    qb_lost_vorp: float = 0.0
+    qb_lost_expected_epa: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -407,7 +408,7 @@ class NFLAvailabilityService:
         as_of: Any,
         evaluated_week: Optional[int] = None,
         raw_root: Optional[Path] = None,
-    ) -> Dict[str, Dict[str, float]]:
+    ) -> Dict[str, Dict[str, Any]]:
         """
         Carga estadísticas reales previas de TODOS los jugadores observados en el equipo
         a partir de nflverse (player_stats y snap_counts) antes de as_of y evaluated_week.
@@ -433,14 +434,57 @@ class NFLAvailabilityService:
         try:
             import polars as pl
             stat_files = list(season_dir.glob("player_stats_*.parquet"))
-            if not stat_files:
+            schedule_files = list(season_dir.glob("schedules_*.parquet"))
+            if not stat_files or not schedule_files:
                 return {}
             stats_df = pl.read_parquet(stat_files[0])
-            filt = pl.col("team").str.to_uppercase().is_in(team_candidates)
-            if evaluated_week is not None:
-                filt = filt & (pl.col("week") < evaluated_week)
+            schedule_df = pl.read_parquet(schedule_files[0])
 
-            sub = stats_df.filter(filt)
+            # Use the canonical game kickoff to filter every statistic strictly
+            # before as_of. evaluated_week is only an additional guard; it is
+            # never trusted as the temporal boundary by itself.
+            from ml.data_pipeline.nfl_source import resolve_nfl_kickoff_utc
+            game_kickoffs: Dict[str, datetime] = {}
+            upcoming_weeks: List[Tuple[datetime, int]] = []
+            all_weeks: List[int] = []
+            for row in schedule_df.select(["game_id", "gameday", "gametime", "week"]).iter_rows(named=True):
+                gid = row.get("game_id")
+                if not gid or not row.get("gameday"):
+                    continue
+                try:
+                    kickoff = resolve_nfl_kickoff_utc(row["gameday"], row.get("gametime"), str(gid))
+                except Exception:
+                    continue
+                try:
+                    week_no = int(row.get("week"))
+                    all_weeks.append(week_no)
+                    if kickoff >= as_of_dt:
+                        upcoming_weeks.append((kickoff, week_no))
+                except (TypeError, ValueError):
+                    pass
+                if kickoff < as_of_dt:
+                    game_kickoffs[str(gid)] = kickoff
+            if not game_kickoffs:
+                return {}
+
+            # Infer the target week from the first scheduled kickoff at/after
+            # as_of. This protects snap/roster sources too, even when callers
+            # pass a malformed week parsed from a provider-specific game ID.
+            inferred_week = min(upcoming_weeks)[1] if upcoming_weeks else (max(all_weeks) + 1 if all_weeks else None)
+            week_cutoff = inferred_week
+            if evaluated_week is not None:
+                try:
+                    supplied_week = int(evaluated_week)
+                    week_cutoff = min(week_cutoff, supplied_week) if week_cutoff is not None else supplied_week
+                except (TypeError, ValueError):
+                    pass
+
+            filt = pl.col("team").str.to_uppercase().is_in(team_candidates)
+            filt = filt & pl.col("game_id").cast(pl.Utf8).is_in(list(game_kickoffs))
+            if week_cutoff is not None:
+                filt = filt & (pl.col("week") < week_cutoff)
+
+            sub = stats_df.filter(filt).sort(["week", "game_id"])
 
             # Mapeos cruzados de jugadores
             pfr_to_gid: Dict[str, str] = {}
@@ -470,7 +514,7 @@ class NFLAvailabilityService:
 
             # 1. Puntos Fantasy PPR históricos de player_stats
             if not sub.is_empty():
-                for row in sub.group_by("player_id").agg(
+                for row in sub.group_by("player_id", maintain_order=True).agg(
                     rolling_ppr=pl.col("fantasy_points_ppr").tail(5).mean(),
                 ).iter_rows(named=True):
                     pid = row.get("player_id")
@@ -488,14 +532,74 @@ class NFLAvailabilityService:
                     if pid in gid_to_pfr:
                         result[gid_to_pfr[pid]] = stats_entry
 
+            # QB replacement proxy: trailing-five-game EPA per opportunity,
+            # shrunk later against a league replacement percentile. This is
+            # based only on completed games whose kickoff precedes as_of.
+            qb_all = stats_df.filter(
+                (pl.col("position").cast(pl.Utf8).str.to_uppercase() == "QB")
+                & pl.col("game_id").cast(pl.Utf8).is_in(list(game_kickoffs))
+                & (pl.col("season_type").cast(pl.Utf8).str.to_uppercase() == "REG")
+                & (pl.col("week") < week_cutoff if week_cutoff is not None else pl.lit(True))
+            ).with_columns(
+                (pl.col("passing_epa").fill_null(0.0) + pl.col("rushing_epa").fill_null(0.0)).alias("_qb_epa"),
+                (pl.col("attempts").fill_null(0.0) + pl.col("sacks_suffered").fill_null(0.0)
+                 + pl.col("carries").fill_null(0.0)).alias("_qb_opportunities"),
+            ).sort(["week", "game_id"])
+            qb_recent = qb_all.group_by(["player_id", "team"], maintain_order=True).agg(
+                qb_epa=pl.col("_qb_epa").tail(5).sum(),
+                qb_opportunities=pl.col("_qb_opportunities").tail(5).sum(),
+            )
+            qb_rates = []
+            for q in qb_recent.iter_rows(named=True):
+                opps = float(q.get("qb_opportunities") or 0.0)
+                if opps >= 50.0:
+                    qb_rates.append(float(q.get("qb_epa") or 0.0) / opps)
+            if len(qb_rates) < 20:
+                replacement_epa_rate = None
+            else:
+                qb_rates.sort()
+                q_idx = 0.25 * (len(qb_rates) - 1)
+                lo = int(q_idx)
+                hi = min(lo + 1, len(qb_rates) - 1)
+                replacement_epa_rate = qb_rates[lo] + (qb_rates[hi] - qb_rates[lo]) * (q_idx - lo)
+
+            team_qb = qb_all.filter(pl.col("team").str.to_uppercase().is_in(team_candidates))
+            team_game_opps = team_qb.group_by(["game_id", "week"]).agg(
+                opportunities=pl.col("_qb_opportunities").sum(),
+            ).sort(["week", "game_id"]).tail(5)
+            projected_team_qb_opportunities = (
+                float(team_game_opps["opportunities"].mean()) if team_game_opps.height else None
+            )
+            if replacement_epa_rate is not None and projected_team_qb_opportunities is not None:
+                for q in qb_recent.filter(pl.col("team").str.to_uppercase().is_in(team_candidates)).iter_rows(named=True):
+                    pid = str(q.get("player_id") or "")
+                    if not pid:
+                        continue
+                    qb_opps = float(q.get("qb_opportunities") or 0.0)
+                    qb_epa = float(q.get("qb_epa") or 0.0)
+                    entry = result.setdefault(pid, {
+                        "rolling_ppr": 0.0, "rolling_off_pct": 0.0, "rolling_def_pct": 0.0,
+                    })
+                    entry.update({
+                        "rolling_qb_epa_per_opportunity": qb_epa / qb_opps if qb_opps > 0 else None,
+                        "rolling_qb_opportunities": qb_opps,
+                        "league_replacement_qb_epa_per_opportunity": replacement_epa_rate,
+                        "team_qb_opportunities_per_game": projected_team_qb_opportunities,
+                        "qb_pregame_stats_through_utc": max(game_kickoffs.values()).isoformat(),
+                    })
+                    if pid in gid_to_name:
+                        result[gid_to_name[pid]] = entry
+                    if pid in gid_to_pfr:
+                        result[gid_to_pfr[pid]] = entry
+
             # 2. Snaps ofensivos y defensivos de snap_counts (incluye línea ofensiva y secundaria)
             snap_files = list(season_dir.glob("snap_counts_*.parquet"))
             if snap_files:
                 try:
                     snaps_df = pl.read_parquet(snap_files[0])
                     snaps_filt = pl.col("team").str.to_uppercase().is_in(team_candidates)
-                    if evaluated_week is not None:
-                        snaps_filt = snaps_filt & (pl.col("week") < evaluated_week)
+                    if week_cutoff is not None:
+                        snaps_filt = snaps_filt & (pl.col("week") < week_cutoff)
                     snaps_team = snaps_df.filter(snaps_filt)
                     for row in snaps_team.group_by(["pfr_player_id", "player"]).agg(
                         off_mean=pl.col("offense_pct").tail(5).mean(),
@@ -537,8 +641,8 @@ class NFLAvailabilityService:
                 try:
                     rdf = pl.read_parquet(roster_files[0])
                     rfilt = pl.col("team").str.to_uppercase().is_in(team_candidates)
-                    if evaluated_week is not None:
-                        rfilt = rfilt & (pl.col("week") < evaluated_week)
+                    if week_cutoff is not None:
+                        rfilt = rfilt & (pl.col("week") < week_cutoff)
                     rsub = rdf.filter(rfilt)
                     for r in rsub.select(["gsis_id", "pfr_id", "full_name"]).iter_rows(named=True):
                         gid = str(r["gsis_id"]) if r.get("gsis_id") else None
@@ -998,7 +1102,7 @@ class NFLAvailabilityService:
         self,
         team: str,
         records: List[PlayerInjuryRecord],
-        prior_roster_stats: Optional[Dict[str, Dict[str, float]]],
+        prior_roster_stats: Optional[Dict[str, Dict[str, Any]]],
         game_id: Optional[str] = None,
         decision_cutoff: Optional[Any] = None,
         is_source_available: bool = True,
@@ -1145,7 +1249,10 @@ class NFLAvailabilityService:
         total_off_snaps_lost = 0.0
         total_def_snaps_lost = 0.0
         qb_starter_injured = False
-        qb_lost_vorp = 0.0
+        qb_lost_expected_epa = 0.0
+        qb_estimates_available = 0
+        qb_estimate_missing = False
+        qb_pregame_stats_through_utc = None
 
         cnt_out = 0
         cnt_q = 0
@@ -1210,12 +1317,32 @@ class NFLAvailabilityService:
             total_off_snaps_lost += p_off * p_abs
             total_def_snaps_lost += p_def * p_abs
 
-            # Detección de QB titular y ponderación de VORP
-            # Un mariscal titular juega >= 50% de snaps ofensivos o promedia >= 12.0 PPR
+            # Detección de QB titular y valor esperado frente a proxy de
+            # reemplazo de liga, calculado solo con estadísticas pregame.
             pos = (r.position or "").upper()
             if pos == "QB" and (p_off >= 0.50 or p_ppr >= 12.0):
                 qb_starter_injured = True
-                qb_lost_vorp += round(p_abs * max(0.5, min(1.0, p_off)) * 4.5, 2)
+                rate = prior.get("rolling_qb_epa_per_opportunity")
+                opps = prior.get("rolling_qb_opportunities")
+                replacement = prior.get("league_replacement_qb_epa_per_opportunity")
+                team_opps = prior.get("team_qb_opportunities_per_game")
+                qb_pregame_stats_through_utc = prior.get("qb_pregame_stats_through_utc") or qb_pregame_stats_through_utc
+                try:
+                    rate, opps, replacement, team_opps = map(float, (rate, opps, replacement, team_opps))
+                except (TypeError, ValueError):
+                    qb_estimate_missing = True
+                else:
+                    if not all(math.isfinite(v) for v in (rate, opps, replacement, team_opps)) or opps < 50 or team_opps <= 0:
+                        qb_estimate_missing = True
+                    else:
+                        # Empirical-Bayes shrinkage: 50 pseudo-opportunities at
+                        # the league replacement rate reduce volatility for QBs
+                        # with limited recent usage. The result is EPA points,
+                        # not a calibrated scoreboard-margin adjustment.
+                        prior_opportunities = 50.0
+                        shrunk_rate = (rate * opps + replacement * prior_opportunities) / (opps + prior_opportunities)
+                        qb_lost_expected_epa += p_abs * (shrunk_rate - replacement) * team_opps
+                        qb_estimates_available += 1
 
         # Si hay jugadores con pérdida pero sin historial previo, advertir en metadata
         state = CoverageState.COVERED_WITH_INJURIES.value
@@ -1251,7 +1378,7 @@ class NFLAvailabilityService:
                     "reason": "availability_or_required_market_coverage_unverified",
                 },
                 qb_starter_injured=False,
-                qb_lost_vorp=0.0,
+                qb_lost_expected_epa=None,
             )
 
         ppr_lost_pct = min(1.0, round(total_ppr_lost / team_potential_ppr, 4))
@@ -1262,7 +1389,15 @@ class NFLAvailabilityService:
             "missing_player_history_count": missing_player_history_cnt,
             "team_potential_ppr": round(team_potential_ppr, 2),
             "qb_starter_injured": qb_starter_injured,
-            "qb_lost_vorp": round(qb_lost_vorp, 2),
+            "qb_lost_expected_epa": round(qb_lost_expected_epa, 2) if qb_estimates_available else None,
+            "qb_estimates_available": qb_estimates_available,
+            "qb_estimate_status": (
+                "available" if qb_estimates_available else
+                "insufficient_pregame_qb_sample" if qb_estimate_missing else "no_injured_starting_qb"
+            ),
+            "qb_replacement_definition": "25th_percentile_of_qualified_trailing_five_game_league_qb_epa_per_opportunity",
+            "qb_estimator_version": QB_REPLACEMENT_ESTIMATOR_VERSION,
+            "qb_pregame_stats_through_utc": qb_pregame_stats_through_utc,
         }
         if allow_unresolved_market and unresolved_market_count > 0:
             meta["preliminary_market_pending"] = True
@@ -1286,7 +1421,7 @@ class NFLAvailabilityService:
             players=[r.to_dict() for r in records],
             metadata=meta,
             qb_starter_injured=qb_starter_injured,
-            qb_lost_vorp=round(qb_lost_vorp, 2),
+            qb_lost_expected_epa=round(qb_lost_expected_epa, 2) if qb_estimates_available else None,
         )
 
     def persist_team_availability(
@@ -1654,7 +1789,7 @@ class NFLAvailabilityService:
         espn_snapshot: Optional[Dict[str, Any]] = None,
         live_props: Optional[List[Dict[str, Any]]] = None,
         props_event_id: Optional[str] = None,
-        prior_roster_stats: Optional[Dict[str, Dict[str, float]]] = None,
+        prior_roster_stats: Optional[Dict[str, Dict[str, Any]]] = None,
         crosswalk: Optional[Dict[str, str]] = None,
         strict_unlisted_unknown: bool = True,
     ) -> Dict[str, Any]:

@@ -653,7 +653,7 @@ async def get_matchup_context(game_id: int, db: AsyncSession, as_of: Optional[da
                     "questionable_count": summary.questionable_count,
                     "affected_players": affected_players,
                     "qb_starter_injured": getattr(summary, "qb_starter_injured", False),
-                    "qb_lost_vorp": getattr(summary, "qb_lost_vorp", 0.0),
+                    "qb_lost_expected_epa": getattr(summary, "qb_lost_expected_epa", None),
                 }
                 _IMPACT_CACHE[cache_key] = (time.time(), res)
                 return res
@@ -666,7 +666,7 @@ async def get_matchup_context(game_id: int, db: AsyncSession, as_of: Optional[da
                     "def_snaps_lost_pct": None,
                     "affected_players": [],
                     "qb_starter_injured": False,
-                    "qb_lost_vorp": 0.0,
+                    "qb_lost_expected_epa": None,
                 }
 
         return {
@@ -676,7 +676,7 @@ async def get_matchup_context(game_id: int, db: AsyncSession, as_of: Optional[da
             "def_snaps_lost_pct": None,
             "affected_players": [],
             "qb_starter_injured": False,
-            "qb_lost_vorp": 0.0,
+            "qb_lost_expected_epa": None,
         }
 
     injuries_data = {

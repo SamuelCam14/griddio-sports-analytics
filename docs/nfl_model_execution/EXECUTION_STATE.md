@@ -413,3 +413,126 @@ También se eliminó el cálculo duplicado del estado de ingesta del calendario 
 - Pruebas de la vía externa y standings: identidad exacta acepta el pronóstico ESPN; kickoff distinto y partido iniciado se abstienen; loader de standings rechaza hashes corruptos y excluye juegos no completados. Suite backend completa: **284 passed**. Frontend lint y build pasan; aviso existente de chunk >500 kB. Smoke test API: pronóstico externo `available`, standings NFL `available` para 32/32 equipos y bajas con timestamps reales.
 - Las pruebas de ledger ahora capturan hash y saldo al inicio de pytest y comprueban que las pruebas no los muten; ya no codifican un saldo fijo de 275 después de una sincronización autorizada.
 - Producción sigue sin certificación: el lockbox histórico fue usado para selección de modelo, no existe calibrador temporal ajustado y evaluado de forma independiente ni trial prospectivo liquidado; faltan modelos validados de spread/totales. La respuesta honesta para SEA @ DEN hoy es referencia de mercado y **sin pick de apuesta aprobado**. No subir `production_enabled` ni derivar un pick por heurística.
+
+## Plan de Corrección — Punto 1: Reconciliación de Modelos, Datasets y Falsa Equivalencia (2026-10-25)
+
+En atención al plan de corrección metodológica, se formalizó la reconciliación completa entre el reporte de Fase 04 y el artefacto activo en `backend/ml/models/nfl/`:
+
+1. **Variante Base Macro (`nfl_team_only_temporal_v1`):**
+   - Dataset: `data/processed/nfl_team_only_training.csv` (SHA-256 `d19b9908b0e4dfae2bcd61a4b202110f60d71fa3f63038afd0fd72cfd1255375`).
+   - Muestra: 4,412 partidos (2010 a 2026); 26 features exclusivamente de equipo/EPA rodante; holdout bloqueado de **825 partidos** (`2023-10-29` a `2026-10-12`). *(En Fase 04 preliminar se reportaron 824 partidos hasta el `2026-10-05`)*.
+   - Modelo Seleccionado: `LogisticRegression` (Brier 0.2258 en holdout, superior a baseline 0.2477 en los 4 folds). HistGradientBoosting (0.2518) y Ensemble (0.2312) fueron formalmente rechazados por parsimonia. Artefacto en `backend/ml/models/nfl/team_only/` (`production_enabled: false`).
+
+2. **Variante Multimodal con Lesiones (`nfl_temporal_v1`):**
+   - Dataset: `data/processed/nfl_training.csv` (SHA-256 `94f7d8cc560237b76c2bc92d9932a279d7815560de0ae29882b499cfd7f2ba48`).
+   - Muestra: **672 partidos** (2013 a 2025); 32 features (26 de equipo + 6 de disponibilidad/PPR/snaps perdidos).
+   - Exclusión Fail-Closed: **3,740 partidos excluidos** por no disponer de snapshots de inactivos verificados para ambos equipos; no se imputaron ceros en datos faltantes.
+   - Holdout Bloqueado: **95 partidos** (`2022-11-20` a `2025-01-26`).
+   - Modelo en Artefacto: Ensamble de 3 modelos (Logistic acotado, HistGradientBoosting monótono, Random Forest).
+   - Hallazgo Crítico para Punto 4: En Fold 4 el ensamble obtuvo Brier **0.2659** vs Majority **0.2534** (`beats_majority_brier_in_all_folds: false`), habiendo sido seleccionado por regla dura en el script y no por consistencia en todos los folds.
+
+3. **Dictamen de Comparabilidad:**
+   - Queda documentado que **es un error metodológico comparar el holdout de 825 juegos con el de 95 juegos**. Pertenecen a periodos, tamaños y datasets distintos.
+   - Informe técnico de soporte persistido en `docs/nfl_model_execution/reports/model-and-dataset-reconciliation.md`.
+   - El lockbox histórico de 825 juegos ya fue observado durante la selección de Fase 04, por lo que no puede usarse como confirmación independiente. Queda habilitado el paso al **Punto 2** (definición del periodo de evaluación prospectivo independiente).
+
+## Plan de Corrección — Punto 2: Protocolo Prospectivo Confirmatorio (2026-10-25)
+
+**Estado: protocolo definido; periodo aún no iniciado.** La fecha inicial no se fija antes de congelar el candidato y sus hashes (Puntos 3–4): registrar una hora retrospectiva o incluir juegos ya iniciados contaminaría el periodo. El primer evento elegible será el primer partido NFL con kickoff posterior al timestamp UTC del registro final del candidato, tras el cierre de este protocolo. Ningún resultado de ese periodo se usará para elegir features, hiperparámetros, variante, umbral ni calibrador.
+
+### Contrato de evaluación
+
+1. **Unidad y población primaria:** todos los partidos de temporada regular con predicción válida generada antes del kickoff y con identidad/corte point-in-time verificables. Se conservarán también los partidos sin predicción con un motivo de exclusión; no se filtrará por favorito, confianza, cuota, equipo ni resultado. Playoffs se reportarán aparte y no se mezclarán en la métrica primaria.
+2. **Horizonte:** cerrar la evaluación confirmatoria al alcanzar **1,000 partidos liquidados y al menos tres temporadas regulares completas** desde el primer evento elegible. Si al terminar la tercera temporada hay menos de 1,000, continuar hasta alcanzar 1,000, con máximo de cinco temporadas completas; si no se alcanza, declarar muestra insuficiente. No mirar métricas acumuladas de desempeño para decidir cuándo parar; solo conteo de partidos y temporadas.
+3. **Candidato congelado:** antes de iniciar, registrar versión/variante, SHA-256 de cada modelo joblib, metadata, dataset de entrenamiento, manifest de fuentes, features ordenadas, código de entrenamiento/inferencia, dependencias, calibrador (si existe), umbrales y configuración. No reentrenar ni reemplazarlo durante la cohorte. Cualquier cambio abre una nueva hipótesis y necesita una cohorte confirmatoria nueva.
+4. **Predicciones y snapshots:** persistir por juego probabilidad pregame, `as_of`, kickoff, versión/hash, features efectivamente usadas y estado de availability; capturar el precio de moneyline de cada bookmaker configurado en el mismo corte y, cuando esté disponible, el closing line. Nunca reconstruir una cuota histórica con la línea actual. Guardar resultados/liquidación desde schedule verificado. Sin identidad, timestamp o precio verificables, excluir solo de la comparación que los requiera y contar explícitamente la exclusión.
+5. **Comparadores en el mismo juego/corte:** baseline de frecuencia local calculado solo con partidos anteriores; rating point-in-time preregistrado; mercado moneyline sin vig en el snapshot pregame. Las comparaciones se hacen sobre cohortes comunes por candidato y comparador. Sin mercado verificable, no se afirmará superioridad frente al mercado ni edge de apuestas.
+6. **Métricas primarias:** Brier y log loss de probabilidades de moneyline contra cada comparador en la cohorte común. Informar diferencias pareadas y sus intervalos de confianza del 95%, usando bootstrap agrupado por semana NFL (no remuestreo independiente de partidos de una misma semana). Informar también AUC, accuracy, intercepto/pendiente de calibración, curva de confiabilidad por bandas preregistradas, conteos por temporada y cobertura. ECE será descriptivo, no criterio único de aceptación.
+7. **Regla de éxito confirmatorio:** para afirmar mejora probabilística frente al mercado, las diferencias modelo−mercado en Brier **y** log loss deben tener límite superior del IC 95% menor que cero en la cohorte común; calibración y cobertura se reportan y no deben mostrar fallo material. Si no hay mercado suficiente, la conclusión se limita a los comparadores disponibles y no se declara ventaja de mercado. ROI/CLV son análisis secundarios y separados; no sustituyen los criterios probabilísticos.
+8. **Revisiones durante el periodo:** solo controles operativos y de calidad (faltantes, frescura, hashes, errores y conteos), sin inspeccionar ni publicar métricas de habilidad acumuladas. El informe confirmatorio se calcula una vez al cumplir la regla de parada. Si el modelo falla, se cierra esa hipótesis; no se ajusta contra esa misma cohorte.
+
+### Dependencias antes de iniciar
+
+- Completar los Puntos 3–4 para resolver selección del candidato, generar predicciones OOF comparables y verificar la procedencia de los artefactos.
+- Corregir las fechas/versiones inconsistentes de la metadata de predicciones para garantizar persistencia automática de todos los partidos, no solo picks.
+- Verificar que hay captura local de cuotas pregame y cierre con timestamps; si no hay cobertura, la prueba prospectiva de mercado empieza cuando exista captura demostrable y su conclusión puede quedar limitada.
+- El trial operativo existente de 100 selecciones es un hito distinto: no sustituye los 1,000 partidos de evaluación probabilística ni define este tamaño de muestra.
+
+**Decisión al registrar el protocolo:** no iniciar cohorte confirmatoria hasta seleccionar y congelar un candidato. La selección y el refit quedan documentados en la entrada posterior del Punto 3/4. Producción puede seguir `true` por decisión del usuario; este protocolo no la interpreta como evidencia de validez predictiva.
+
+## Plan de Corrección — Punto 3/4: Selección reproducible y candidato injury-aware (2026-10-25)
+
+- `backend/ml/training/train_temporal.py` ya no selecciona por el texto de `variant`. La selección usa únicamente folds OOF de desarrollo: el ensamble debe mejorar Brier frente a logística en cada fold, superar el baseline de mayoría en cada fold y mejorar el log loss promedio. Si no cumple todos, queda la regresión logística acotada por parsimonia. El lockbox no participa en la selección.
+- Corrida local Docker: `docker exec -w /app sports_api python -m ml.training.train_temporal --sport nfl --variant injury_aware` → 672 filas, `temporal_evaluation_complete_verified` (25-oct-2026 22:27:48 UTC).
+- Resultado: **BoundedLogisticRegression** seleccionada. El ensamble no supera a logística en Brier en todos los folds; tampoco supera al baseline en todos. Aunque su log loss medio sí es mejor, falla los dos criterios de consistencia. Fold 4: ensamble Brier 0.2659 vs mayoría 0.2534.
+- El evaluador de entrenamiento calcula probabilidades de ensamble como promedio simple; `backend/ml/inference.py` ahora usa ese mismo promedio solo cuando metadata selecciona `ensemble`. Si metadata selecciona un modelo individual, la probabilidad publicada proviene de ese modelo; la confluencia multi-modelo queda como diagnóstico. Se quitó el peso inverso al Brier que generaba una diferencia entre evaluación e inferencia.
+- Se añadieron hashes SHA-256 de los tres artefactos, y hash del candidato seleccionado en metadata. Los artefactos finales se ajustaron con las 672 filas (2013-09-15 a 2025-01-26), incluido el holdout histórico ya inspeccionado. Las métricas de ese holdout se marcan como diagnósticas del modelo previo al refit, no como confirmatorias. La futura cohorte prospectiva sigue siendo necesaria.
+- Identificadores: dataset `94f7d8cc560237b76c2bc92d9932a279d7815560de0ae29882b499cfd7f2ba48`; candidato `logistic.joblib` `c672f6a3cd5de9a23fa76a8351005a557c0e106cc008d4c22f09c34986fa28c0`; metadata `b4d5c816faa4fc11a4674953eb02192550fbc47585dc5b980c3b6a437d937441`; train script `10ad2ee330cd1c127c95be71007425630ee0f4fc1078907929ef722dc2a7a86f`; inferencia `f2420f052a680cc808d3c40e8c239026e2c5d723043eacf25b8dc82f2892bce1`.
+- `production_enabled` permanece `true`, conforme a instrucción del usuario; no se usa como señal de aceptación predictiva.
+- No se ejecutaron pruebas automatizadas. Pendiente antes de cerrar Punto 3: comparar y archivar rating/logística/HGB/ensamble en los mismos 188 partidos OOF usando el CSV ya generado, revisar la captura prospectiva de cuotas y hacer revisión del contrato de inferencia. El candidato está identificado por hash, pero el periodo confirmatorio no ha comenzado.
+
+## Plan de Corrección — Punto 5: Estimador QB con EPA pregame (2026-10-25)
+
+- Sustituido el valor estático de 4.5 por `qb_lost_expected_epa`, un diferencial esperado de EPA de la baja del titular frente a un proxy de reemplazo de liga. Se retiró la terminología VORP de los contratos/API/UI.
+- **Definición `qb_epa_replacement_p25_shrink50_v1`:** EPA QB = `passing_epa + rushing_epa`; oportunidades = `attempts + sacks_suffered + carries`. Se calcula tasa trailing de los últimos cinco partidos completados. El nivel de reemplazo es el percentil 25 de tasas trailing de QBs de la liga con al menos 50 oportunidades; se exige una población mínima de 20 QBs. La tasa del jugador se contrae hacia el nivel de reemplazo con 50 oportunidades previas. Se proyectan oportunidades del equipo usando sus últimos cinco partidos previos. Impacto = `p_absence × (tasa QB contraída − tasa reemplazo) × oportunidades equipo proyectadas`.
+- Las fuentes locales de `player_stats` sí incluyen EPA, intentos, sacks y acarreos; `schedules` permite comprobar kickoff. Los archivos no identifican confiablemente al suplente de profundidad, por lo que el nivel P25 es explícitamente un proxy de liga y no una estimación del QB2 real. Si falta muestra/volumen, el campo queda `null`/“No estimable”, nunca cero fabricado.
+- Endurecido `load_team_roster_stats_from_nflverse`: filtra los `game_id` por kickoff canónico estrictamente anterior a `as_of`; también usa semana target inferida del calendario como barrera para player stats, snaps y roster. El `evaluated_week` recibido solo puede restringir más; no es la autoridad temporal. Metadata del resumen registra versión del estimador, definición del reemplazo y último kickoff previo de estadísticas.
+- El nuevo valor se expone en el contexto de lesiones y frontend como EPA esperado frente a reemplazo de liga. No se agrega a la probabilidad moneyline ni al margen base; queda listo para estudiar ablación en Punto 6. El servicio analítico conserva el margen base derivado solo de la probabilidad principal.
+- **Limitación:** esto es una estimación descriptiva en unidades de EPA, no un valor causal ni una proyección de margen calibrada. No se afirma que el percentil 25 sea el suplente que jugaría. La validación prospectiva va aislada de `baseline_logistic_c672f6a3` bajo tag de variante separado; aún debe conectarse el registro de esa variante antes de acumular evidencia.
+- Se confirmó por inspección de esquema que los snapshots locales contienen las columnas necesarias. `python -m compileall` pasó para los módulos backend modificados y `git diff --check` quedó limpio. No se ejecutaron pruebas automatizadas ni build frontend tras esta modificación. Punto 5 queda implementado a nivel de estimación y exposición, sujeto a revisión y validación focalizada; Punto 6 sigue pendiente.
+
+## Plan de Corrección — Registro Inmutable de la Cohorte Prospectiva y Cierre de Validación (2026-10-25)
+
+1. **Validación de la Suite Automatizada:**
+   - Se ajustó la aserción de `test_ensemble_and_ev_verification.py` para aceptar `single_model_retained` conforme a la regla de parsimonia.
+   - Ejecutada la suite completa en Docker: **456 passed en 51.35s** (31 suites de prueba, 100% aprobadas).
+   - Frontend ESLint y build con Vite pasaron limpiamente en 625ms (0 errores de tipado).
+   - Ledger de cuotas The Odds API intacto (hash SHA-256 verificado, saldo inmutable).
+
+2. **Servicio y Estructura de la Cohorte Prospectiva (`NFLProspectiveCohortService`):**
+   - Implementado en `backend/app/services/nfl_prospective_cohort_service.py` con pruebas en `backend/tests/test_nfl_prospective_cohort.py` (5 passed).
+   - **Punto de Partida Prospectivo Estricto:** Se definió la regla `kickoff_utc > 2026-10-25T22:27:48+00:00`. Cualquier partido anterior a la congelación del candidato pertenece a la historia inspeccionada y es rechazado.
+   - **Registro de Intentos y Abstenciones:** Guarda cada intento en formato append-only (`data/prospective_cohort/nfl_cohort_registry.jsonl`) con `game_id`, `kickoff_utc`, timestamp de predicción, `as_of_cutoff_utc`, estado (`evaluated` vs `abstained`), motivo de abstención (`abstention_reason`), modelo, `artifact_sha256`, `dataset_sha256` y features.
+   - **Aislamiento por Variante (`variant_tag`):** Registrado bajo el tag `"baseline_logistic_c672f6a3"`. Cualquier cambio futuro en el cálculo de VORP (Punto 5) o spread (Punto 6) se registrará bajo su propio tag, impidiendo contaminación cruzada.
+   - **Segmentación Analítica:** `evaluate_cohort()` segrega automáticamente:
+     * *Segmento A:* `injury_aware_verified` (bajas verificadas en ambos equipos).
+     * *Segmento B:* `team_only_fallback` (fallbacks por no injuries listed).
+     * *Segmento C:* `market_benchmarkable` (compara Brier y Log Loss frente a cuotas pregame de mercado sin vig).
+     * *Segmento D:* `abstentions` (tasa de cobertura y desglose por motivo).
+   - Manifiesto persistido en `data/prospective_cohort/cohort_manifest.json` con SHA-256 y conteos.
+
+## Plan de Corrección — Punto 6: Estudio de Ablación de Margen y Spread (2026-10-25)
+
+1. **Protocolo y Variantes Comparadas:**
+   - Se evaluaron de forma reproducible las tres variantes sobre los 188 partidos out-of-fold de los 4 folds comunes de desarrollo (con 672 juegos en total, 180 juegos sin push):
+     * *Variante A (`spread_injury_aware_no_qb_adj`):* Clasificador `injury_aware` (con variables de bajas proporcionales `ppr_lost_pct`, `off_snaps_lost_pct`, etc.). Margen base derivado únicamente de la probabilidad calibrada ($\Phi^{-1}(p) \times 13.5$). Cero ajuste aditivo adicional de QB al margen.
+     * *Variante B (`spread_team_only_with_qb_adj`):* Clasificador `team_only` (sin variables de lesiones). Ajuste aditivo de EPA pregame de QB frente a reemplazo de liga restado al margen neto ($\Phi^{-1}(p_{\text{team\_only}}) \times 13.5 - \Delta\text{EPA}_{\text{QB}}$).
+     * *Variante C (`spread_dual_penalty`):* Clasificador `injury_aware` Y ajuste aditivo de EPA de QB al margen (doble penalización aditiva).
+     * *Comparador de Mercado:* Línea oficial de spread de Vegas ($S_i$).
+
+2. **Resultados Empíricos Fuera de Muestra (188 Partidos OOF):**
+   - **Evaluación Global (188 partidos):**
+     * *Variante A:* Margen MAE **9.901** | RMSE **12.825** | Bias +1.617 | Cover Brier **0.2574** | Cover LogLoss **0.7102** | Cover Acc 0.511.
+     * *Variante B:* Margen MAE 9.990 | RMSE 12.904 | Bias +1.680 | Cover Brier 0.2633 | Cover LogLoss 0.7241 | Cover Acc 0.528.
+     * *Variante C:* Margen MAE 10.044 | RMSE 12.910 | Bias +1.669 | Cover Brier 0.2627 | Cover LogLoss 0.7231 | Cover Acc 0.506.
+     * *Vegas Spread (Mercado):* Margen MAE 9.394 | RMSE 12.241 | Bias +1.271.
+   - **Subpoblación Sensible con Bajas de QB ($\Delta\text{EPA}_{\text{QB}} \ne 0$, $N = 33$ partidos):**
+     * *Variante A:* Margen MAE **10.701** | RMSE **13.732** | Cover Brier **0.2735** | Cover Acc **0.545** | Cover LogLoss **0.7489**.
+     * *Variante B:* Margen MAE 11.603 | RMSE 14.150 | Cover Brier 0.3035 | Cover Acc 0.515 | Cover LogLoss 0.8205.
+     * *Variante C:* Margen MAE 11.517 | RMSE 14.181 | Cover Brier 0.3026 | Cover Acc 0.515 | Cover LogLoss 0.8194.
+     * *Vegas Spread (Mercado):* Margen MAE 9.894 | RMSE 12.488.
+   - **Consistencia Temporal por Fold:**
+     * En 3 de los 4 folds (Folds 1, 2 y 3), Variante A supera a la doble penalización (Variante C) en Brier score de cover. En Folds 2 y 3, Variante A supera a Variante C en MAE por >0.33 pts. En ningún fold la doble penalización resulta ser la mejor alternativa.
+
+3. **Decisión Ejecutiva bajo el Protocolo del Punto 6:**
+   - La regla prerregistrada exigía: *"Mantendré el ajuste QB adicional solo si aporta mejora fuera de muestra sobre el modelo que ya usa features de lesiones; si no, quitaré esa segunda aplicación."*
+   - **Decisión:** Se elimina permanentemente el ajuste aditivo de QB al margen. El margen y los scores proyectados en `backend/app/services/sports_analytics_service.py` derivan únicamente de la probabilidad calibrada (`proj_margin_raw = proj_margin_base = norm.ppf(p) * 13.5`).
+   - El valor `qb_lost_expected_epa` se mantiene estrictamente como métrica descriptiva/diagnóstica en el contexto de disponibilidad y frontend, sin impacto aritmético en el margen proyectado.
+
+4. **Artefactos y Provenance:**
+   - Script evaluador: `backend/ml/training/evaluate_spread_ablation.py`.
+   - Predicciones OOF generadas: `data/predictions/evaluation/nfl_spread_ablation_predictions.csv` (SHA-256: `104790a876d53adab5fbf0149d60d9138ef4933f0662f5a4491f6c2bb1f397d7`).
+   - Manifiesto: `data/predictions/evaluation/nfl_spread_ablation_manifest.json`.
+   - Reporte detallado: `docs/nfl_model_execution/reports/spread-ablation-analysis.md`.
+   - Suite de pruebas: `backend/tests/test_nfl_spread_ablation.py` (5 passed). Suite completa backend: **461 passed en 101.78s** (100% aprobadas).
+   - Aislamiento en cohorte prospectiva: `DEFAULT_VARIANT_TAG = "baseline_logistic_c672f6a3"`, `SPREAD_TEAM_ONLY_QB_ADJ_TAG = "spread_team_only_with_qb_adj"`, `SPREAD_DUAL_PENALTY_TAG = "spread_dual_penalty"`.

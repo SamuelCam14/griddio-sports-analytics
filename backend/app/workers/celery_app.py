@@ -432,6 +432,69 @@ def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] 
 
                         filtered_pred_dict = {k: v for k, v in pred_dict.items() if k in valid_cols}
                         predictions_data.append(filtered_pred_dict)
+
+                        if sp == "NFL":
+                            try:
+                                from app.services.nfl_prospective_cohort_service import (
+                                    NFLProspectiveCohortService,
+                                    DEFAULT_VARIANT_TAG,
+                                    CANDIDATE_FREEZING_TIMESTAMP,
+                                )
+                                cohort_svc = NFLProspectiveCohortService()
+                                ko_dt = matched_game.game_date
+                                if ko_dt:
+                                    ko_utc_str = ko_dt.isoformat()
+                                    as_of_ts = pd.Timestamp(meta["as_of"])
+                                    as_of_iso = as_of_ts.isoformat()
+                                    freezing_dt = pd.to_datetime(CANDIDATE_FREEZING_TIMESTAMP, utc=True)
+                                    ko_utc_dt = pd.to_datetime(ko_utc_str, utc=True)
+                                    if ko_utc_dt > freezing_dt and pd.to_datetime(as_of_iso, utc=True) < ko_utc_dt:
+                                        m_odds = None
+                                        if (
+                                            best_home_ml
+                                            and best_away_ml
+                                            and odds_snap
+                                            and getattr(odds_snap, "captured_at", None)
+                                        ):
+                                            from app.services.math.odds_converter import american_to_implied_prob, remove_vig
+                                            ph_r = american_to_implied_prob(best_home_ml)
+                                            pa_r = american_to_implied_prob(best_away_ml)
+                                            ph_f, pa_f, _ = remove_vig(ph_r, pa_r)
+                                            cap_time = odds_snap.captured_at.isoformat()
+                                            cap_dt = pd.to_datetime(cap_time, utc=True)
+                                            as_of_dt = pd.to_datetime(as_of_iso, utc=True)
+                                            if cap_dt < ko_utc_dt and cap_dt <= as_of_dt:
+                                                m_odds = {
+                                                    "bookmaker": best_bm or "consensus",
+                                                    "home_ml": int(best_home_ml),
+                                                    "away_ml": int(best_away_ml),
+                                                    "home_fair_prob": round(ph_f, 4),
+                                                    "away_fair_prob": round(pa_f, 4),
+                                                    "captured_at_utc": cap_time,
+                                                    "is_stale": False,
+                                                }
+
+                                        var_applied = meta.get("model_variant", target_variant)
+                                        if var_applied == "team_only":
+                                            var_applied = "team_only_fallback"
+
+                                        cohort_svc.record_attempt(
+                                            game_id=canonical_game_id or str(matched_game.external_id),
+                                            kickoff_utc=ko_utc_str,
+                                            attempt_timestamp_utc=as_of_iso,
+                                            as_of_cutoff_utc=as_of_iso,
+                                            attempt_status="evaluated",
+                                            model_variant_applied=var_applied,
+                                            variant_tag=DEFAULT_VARIANT_TAG,
+                                            duplicate_policy="ignore",
+                                            home_win_probability=float(row["home_win_probability"]),
+                                            away_win_probability=float(row["away_win_probability"]),
+                                            market_odds=m_odds,
+                                            model_agreement=int(row["model_agreement"]) if "model_agreement" in row and pd.notna(row["model_agreement"]) else None,
+                                            confluence_tier=str(row["confluence_tier"]) if "confluence_tier" in row and pd.notna(row["confluence_tier"]) else None,
+                                        )
+                            except Exception as cohort_err:
+                                logger.debug("NFL prospective cohort recording skipped or failed", error=str(cohort_err))
                         
                     await append_predictions(session, predictions_data)
                     await session.commit()

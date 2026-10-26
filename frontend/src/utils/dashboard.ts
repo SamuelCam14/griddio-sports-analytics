@@ -41,21 +41,27 @@ export function buildMatchList(
   return { matches: matched, unmatchedOddsCount }
 }
 
-export function formatMatchDate(value: string, options?: Intl.DateTimeFormatOptions): string {
+export function formatMatchDate(value: string | null | undefined, options?: Intl.DateTimeFormatOptions): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
   return new Intl.DateTimeFormat('es-MX', {
     timeZone: chihuahuaTimeZone,
     day: '2-digit',
     month: 'short',
     ...options,
-  }).format(new Date(value))
+  }).format(date)
 }
 
-export function formatMatchTime(value: string): string {
+export function formatMatchTime(value: string | null | undefined): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
   return new Intl.DateTimeFormat('es-MX', {
     timeZone: chihuahuaTimeZone,
     hour: '2-digit',
     minute: '2-digit',
-  }).format(new Date(value))
+  }).format(date)
 }
 
 export function formatPercentage(value: number | null | undefined): string {

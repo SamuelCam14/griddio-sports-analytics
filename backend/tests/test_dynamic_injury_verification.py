@@ -50,7 +50,7 @@ from app.workers.celery_app import (
     schedule_nfl_gameday_captures_task,
 )
 
-EXPECTED_QUOTA_LEDGER_SHA256 = "929d8ad7c01c34211e7812d0f1d1e77010c0c149230d673eb8ec51df87c658f1"
+EXPECTED_QUOTA_LEDGER_SHA256 = "1639967d78f03967b00e00ba462f65210070ad41f734d95adb75c06dd294196a"
 
 
 @pytest.fixture

@@ -298,9 +298,11 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                       </div>
                       {context.injuries.away_impact.qb_starter_injured && (
                         <div className="flex justify-between text-amber-300 font-medium">
-                          <span>Apalancamiento QB (VORP)</span>
+                          <span>QB vs reemplazo de liga (EPA)</span>
                           <span className="font-mono">
-                            -{context.injuries.away_impact.qb_lost_vorp?.toFixed(1) ?? '0.0'} pts
+                            {context.injuries.away_impact.qb_lost_expected_epa == null
+                              ? 'No estimable'
+                              : `${context.injuries.away_impact.qb_lost_expected_epa >= 0 ? '−' : '+'}${Math.abs(context.injuries.away_impact.qb_lost_expected_epa).toFixed(1)} EPA`}
                           </span>
                         </div>
                       )}
@@ -330,9 +332,11 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                       </div>
                       {context.injuries.home_impact.qb_starter_injured && (
                         <div className="flex justify-between text-amber-300 font-medium">
-                          <span>Apalancamiento QB (VORP)</span>
+                          <span>QB vs reemplazo de liga (EPA)</span>
                           <span className="font-mono">
-                            -{context.injuries.home_impact.qb_lost_vorp?.toFixed(1) ?? '0.0'} pts
+                            {context.injuries.home_impact.qb_lost_expected_epa == null
+                              ? 'No estimable'
+                              : `${context.injuries.home_impact.qb_lost_expected_epa >= 0 ? '−' : '+'}${Math.abs(context.injuries.home_impact.qb_lost_expected_epa).toFixed(1)} EPA`}
                           </span>
                         </div>
                       )}
@@ -618,7 +622,7 @@ function PlayerProductionImpactRow({ player }: { player: AffectedPlayerProductio
           <div className="flex items-center justify-between text-slate-400">
             <span>Puntos Fantasy (PPR):</span>
             <span className="text-slate-200">
-              {player.rolling_ppr.toFixed(1)} habitual · <strong className="text-rose-400">-{player.lost_ppr.toFixed(1)} pts</strong>
+              {(player.rolling_ppr ?? 0).toFixed(1)} habitual · <strong className="text-rose-400">-{(player.lost_ppr ?? 0).toFixed(1)} pts</strong>
             </span>
           </div>
         ) : (
@@ -725,7 +729,7 @@ function InjuriesListCard({
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5 font-mono text-[9px] border-t border-white/5 pt-1">
                     {impact.lost_ppr > 0 && (
                       <span className="rounded bg-rose-500/15 px-1 py-0.5 text-rose-300 border border-rose-500/30">
-                        -{impact.lost_ppr.toFixed(1)} pts PPR ({impact.rolling_ppr.toFixed(1)} hab.)
+                        -{(impact.lost_ppr ?? 0).toFixed(1)} pts PPR ({(impact.rolling_ppr ?? 0).toFixed(1)} hab.)
                       </span>
                     )}
                     {impact.lost_off_snaps > 0 && (

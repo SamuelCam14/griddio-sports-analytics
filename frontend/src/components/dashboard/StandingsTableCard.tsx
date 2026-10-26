@@ -32,7 +32,7 @@ export function StandingsTableCard({ sport }: StandingsTableCardProps) {
       {standings.length > 0 && (
         <>
           <p className="mt-2 text-[10px] text-slate-500">
-            Temporada {query.data?.season} · corte {query.data?.as_of ? new Date(query.data.as_of).toLocaleDateString() : '—'} · {query.data?.teams_with_results}/{query.data?.teams_in_catalog} equipos con resultados.
+            Temporada {query.data?.season ?? '—'} · corte {query.data?.as_of ? new Date(query.data.as_of).toLocaleDateString() : '—'} · {query.data?.teams_with_results ?? 0}/{query.data?.teams_in_catalog ?? 0} equipos con resultados.
           </p>
           <div className="mt-2.5 grid grid-cols-[18px_1fr_36px_36px_42px_42px] gap-1 px-2 text-[10px] font-semibold uppercase text-slate-500">
             <span>#</span><span>Equipo</span><span className="text-center">G</span><span className="text-center">P</span><span className="text-center">%</span><span className="text-center">PF</span>

@@ -499,17 +499,30 @@ async def get_experimental_predictions(
             source_ids = [str(row["game_id"]) for row in results]
             canonical_by_source_id = {}
             if source_ids:
+                providers = ["nflverse"] if sport_lower == "nfl" else ["sportsdataverse", "espn"]
                 crosswalk_result = await db.execute(
                     select(ProviderGameCrosswalk.provider_event_id, Game.id, Game.external_id)
                     .join(Game, Game.id == ProviderGameCrosswalk.game_id)
-                    .where(ProviderGameCrosswalk.provider == "nflverse")
+                    .where(ProviderGameCrosswalk.provider.in_(providers))
                     .where(ProviderGameCrosswalk.provider_event_id.in_(source_ids))
                     .where(Game.sport == sport_lower.upper())
                 )
                 canonical_by_source_id = {
-                    source_id: {"canonical_game_id": game_id, "canonical_external_id": external_id}
+                    str(source_id): {"canonical_game_id": game_id, "canonical_external_id": external_id}
                     for source_id, game_id, external_id in crosswalk_result.all()
                 }
+                unmatched = [sid for sid in source_ids if sid not in canonical_by_source_id]
+                if unmatched:
+                    direct_res = await db.execute(
+                        select(Game.external_id, Game.id)
+                        .where(Game.external_id.in_(unmatched))
+                        .where(Game.sport == sport_lower.upper())
+                    )
+                    for ext_id, g_id in direct_res.all():
+                        canonical_by_source_id[str(ext_id)] = {
+                            "canonical_game_id": g_id,
+                            "canonical_external_id": str(ext_id),
+                        }
             linked_results = [
                 {**row, **canonical_by_source_id[str(row["game_id"])]}
                 for row in results
@@ -633,7 +646,7 @@ async def get_model_info():
     for sport in ("nba", "nfl"):
         model_root = backend_root / "ml" / "models" / sport
         metadata_path = model_root / "model_metadata.json"
-        if sport == "nfl":
+        if not metadata_path.is_file() and sport == "nfl":
             team_only_path = model_root / "team_only" / "model_metadata.json"
             if team_only_path.is_file():
                 metadata_path = team_only_path
@@ -674,3 +687,13 @@ async def simulate_matchup(req: SimulationRequest):
         status_code=503,
         detail="Predicción deshabilitada: faltan features observadas para este partido y validación temporal del modelo.",
     )
+
+
+@router.get("/prospective-cohort/nfl", summary="Informe y métricas de la cohorte prospectiva NFL")
+async def get_nfl_prospective_cohort(
+    variant_tag: str = Query("baseline_logistic_c672f6a3", description="Tag de variante del modelo")
+) -> Dict[str, Any]:
+    """Retorna la evaluación auditada de la cohorte prospectiva NFL segregada en 4 dimensiones."""
+    from app.services.nfl_prospective_cohort_service import NFLProspectiveCohortService
+    svc = NFLProspectiveCohortService()
+    return svc.evaluate_cohort(variant_tag=variant_tag)

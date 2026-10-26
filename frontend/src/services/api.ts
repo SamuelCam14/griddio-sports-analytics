@@ -229,6 +229,7 @@ export interface Pick {
   away_team?: TeamDetail
   home_team_id: number
   away_team_id: number
+  model_version?: string
   tier: 'CONFIANZA' | 'NO PICK' | 'PREMIUM' | 'VALUE' | 'SKIP' | 'NEUTRAL' | 'EXPERIMENTAL'
   tier_emoji: string
   model_agreement: number
@@ -388,7 +389,7 @@ export interface TeamProductionImpact {
   questionable_count?: number
   affected_players?: AffectedPlayerProduction[]
   qb_starter_injured?: boolean
-  qb_lost_vorp?: number
+  qb_lost_expected_epa?: number | null
 }
 
 export interface InjurySourceInfo {

@@ -123,8 +123,9 @@ def _apply_ensemble(
     """
     Aplica inferencia concurrente sobre el diccionario de modelos y genera probabilidades combinadas,
     acuerdo de modelos (1-3) y nivel de confluencia ('HIGH', 'MODERATE', 'NONE').
-    Si model_metadata contiene métricas de validación 'evaluation', aplica gating de calibración
-    (descalificando modelos con Brier > 0.255, peores que el azar) y ponderación por precisión inversa al Brier.
+    La probabilidad principal sigue model_selection.selected_model. Si ese campo
+    indica ensemble, combina los modelos válidos con promedio simple, igual que
+    el evaluador temporal. La confluencia se conserva como diagnóstico.
     """
     model_probs = {}
     for m_name, m_obj in models.items():
@@ -139,37 +140,18 @@ def _apply_ensemble(
     if not model_probs:
         raise DataQualityError("Ningún modelo produjo probabilidades válidas")
 
-    # Evaluación cruzada y ponderación por calibración (inverse-Brier weighting)
-    eval_dict = (model_metadata.get("evaluation") or {}) if isinstance(model_metadata, Mapping) else {}
-    brier_scores = {}
-    for m_name in model_probs:
-        m_eval = eval_dict.get(m_name, {})
-        brier = m_eval.get("mean_brier") or m_eval.get("holdout_evaluation", {}).get("brier")
-        if brier is not None and isinstance(brier, (int, float)) and brier > 0:
-            brier_scores[m_name] = float(brier)
-
-    valid_weights = {}
-    for m_name in model_probs:
-        if m_name in brier_scores:
-            b_val = brier_scores[m_name]
-            if b_val <= 0.255:
-                valid_weights[m_name] = 1.0 / (b_val ** 2)
-            else:
-                logger.warning(
-                    f"Modelo {m_name} excluido de ensamble por Brier {b_val:.4f} > 0.255 (inferior al baseline)"
-                )
-        else:
-            valid_weights[m_name] = 1.0
-
-    active_models = [m for m in model_probs if valid_weights.get(m, 0.0) > 0]
-    if not active_models:
-        active_models = list(model_probs.keys())
-        valid_weights = {m: 1.0 for m in active_models}
-
-    w_arr = np.array([valid_weights[m] for m in active_models], dtype=float)
-    w_arr = w_arr / np.sum(w_arr)
-    prob_arrays = [model_probs[m] for m in active_models]
-    probabilities = np.average(prob_arrays, weights=w_arr, axis=0)
+    # Inference must use the model/aggregation selected from OOF development
+    # folds. Ensemble evaluation and inference both use the same simple mean.
+    selection = (model_metadata.get("model_selection") or {}) if isinstance(model_metadata, Mapping) else {}
+    selected_model = selection.get("selected_model", "ensemble")
+    if selected_model == "ensemble":
+        probabilities = np.mean(list(model_probs.values()), axis=0)
+    elif selected_model in model_probs:
+        probabilities = model_probs[selected_model]
+    else:
+        raise DataQualityError(
+            f"Modelo seleccionado {selected_model!r} no produjo probabilidades válidas"
+        )
 
     if not np.isfinite(probabilities).all() or ((probabilities < 0) | (probabilities > 1)).any():
         raise DataQualityError("El ensamble produjo probabilidades inválidas")
@@ -421,6 +403,17 @@ def predict_matchups(
     if sport == "nfl":
         all_models = load_all_ensemble_models(sport, model_variant=model_variant)
         all_models[model_name] = model
+        expected_hashes = metadata.get("artifact_sha256", {})
+        if expected_hashes:
+            model_dir = backend_root() / "ml" / "models" / sport
+            if model_variant == "team_only":
+                model_dir = model_dir / "team_only"
+            for artifact_name, expected_hash in expected_hashes.items():
+                artifact_file = model_dir / f"{artifact_name}.joblib"
+                if artifact_name not in all_models or not artifact_file.is_file():
+                    raise DataQualityError(f"Falta artefacto requerido para selección: {artifact_name}")
+                if _digest(artifact_file) != expected_hash:
+                    raise DataQualityError(f"Hash del artefacto {artifact_name} no coincide con metadata")
         ensemble_df = _apply_ensemble(all_models, X, features, model_metadata=metadata)
         models_evaluated = list(all_models.keys())
     else:

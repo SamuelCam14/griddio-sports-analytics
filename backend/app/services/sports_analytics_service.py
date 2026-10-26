@@ -40,8 +40,8 @@ def generate_nfl_matchup_analytics(
     model_prob_away: Optional[float] = None,
     model_agreement: Optional[int] = None,
     confluence_tier: Optional[str] = None,
-    qb_vorp_home: float = 0.0,
-    qb_vorp_away: float = 0.0,
+    qb_expected_epa_lost_home: Optional[float] = None,
+    qb_expected_epa_lost_away: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Genera el análisis probabilístico, líneas de spread, totales y player props reales para un partido NFL.
@@ -69,9 +69,9 @@ def generate_nfl_matchup_analytics(
     # Modelo de margen y scores proyectados (distribución diferencial NFL sigma ~ 13.5)
     if model_valid:
         proj_margin_base = float(norm.ppf(min(0.999, max(0.001, model_prob_home))) * 13.5)
-        # Ajuste VORP: la baja del QB titular reduce el margen neto proyectado del equipo
-        vorp_diff = float(qb_vorp_home - qb_vorp_away)
-        proj_margin_raw = proj_margin_base - vorp_diff
+        # El margen base deriva solo de la probabilidad del modelo. El estimador
+        # QB se mantiene como diagnóstico hasta completar la ablación de Punto 6.
+        proj_margin_raw = proj_margin_base
         t_base = total_line if total_line is not None else 44.0
         proj_home_score = round((t_base + proj_margin_raw) / 2.0, 1)
         proj_away_score = round((t_base - proj_margin_raw) / 2.0, 1)
@@ -309,13 +309,13 @@ def generate_nfl_matchup_analytics(
     else:
         factors.append("No hay oportunidad calculable con los inputs disponibles; no se infiere eficiencia del mercado.")
 
-    if qb_vorp_home > 0:
+    if qb_expected_epa_lost_home is not None:
         factors.append(
-            f"Apalancamiento QB (VORP): Bajas en mariscal titular de {home_team} (-{qb_vorp_home:.1f} pts VORP estimados vs reemplazo)."
+            f"QB EPA vs reemplazo de liga ({home_team}, diagnóstico; sin ajuste al margen): {qb_expected_epa_lost_home:+.1f} EPA."
         )
-    if qb_vorp_away > 0:
+    if qb_expected_epa_lost_away is not None:
         factors.append(
-            f"Apalancamiento QB (VORP): Bajas en mariscal titular de {away_team} (-{qb_vorp_away:.1f} pts VORP estimados vs reemplazo)."
+            f"QB EPA vs reemplazo de liga ({away_team}, diagnóstico; sin ajuste al margen): {qb_expected_epa_lost_away:+.1f} EPA."
         )
 
     return {
@@ -329,8 +329,8 @@ def generate_nfl_matchup_analytics(
         "prob_away": p_away_model,
         "market_prob_home_no_vig": round(p_h_fair, 4),
         "market_prob_away_no_vig": round(p_a_fair, 4),
-        "qb_vorp_home": round(qb_vorp_home, 2),
-        "qb_vorp_away": round(qb_vorp_away, 2),
+        "qb_expected_epa_lost_home": qb_expected_epa_lost_home,
+        "qb_expected_epa_lost_away": qb_expected_epa_lost_away,
         "tier": ml_tier,
         "has_edge": ml_tier in ["PREMIUM", "VALUE"],
         "best_bet": best_bet,

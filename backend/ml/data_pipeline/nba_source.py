@@ -52,7 +52,10 @@ def load_nba_upcoming_games(
         raise FileNotFoundError(f"No existe {manifest_path}; ejecuta sync_nba_upcoming_schedules")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cutoff = pd.Timestamp(as_of or pd.Timestamp.now(tz="UTC"))
-    cutoff_date = cutoff.date()
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.tz_localize("UTC")
+    else:
+        cutoff = cutoff.tz_convert("UTC")
     records = []
     skipped_incomplete = []
     required = {
@@ -74,7 +77,7 @@ def load_nba_upcoming_games(
             if pd.isna(date) or pd.isna(start) or pd.isna(game["home_id"]) or pd.isna(game["away_id"]):
                 skipped_incomplete.append({"game_id": str(game.get("game_id")), "reason": "date_or_team_id_missing"})
                 continue
-            if date.date() <= cutoff_date:
+            if start <= cutoff:
                 continue
             if int(game["home_id"]) <= 0 or int(game["away_id"]) <= 0:
                 skipped_incomplete.append({"game_id": str(game["game_id"]), "reason": "teams_not_announced_by_source"})
@@ -100,7 +103,7 @@ def load_nba_upcoming_games(
         return result
     if result["game_id"].duplicated().any():
         raise DataQualityError("NBA upcoming schedule contiene game_id duplicados")
-    result = result.sort_values(["game_date", "game_id"]).reset_index(drop=True)
+    result = result.sort_values(["game_start_utc", "game_id"]).reset_index(drop=True)
     result.attrs["skipped_incomplete"] = skipped_incomplete
     result.attrs["schedule_retrieved_at"] = manifest.get("retrieved_at")
     return result

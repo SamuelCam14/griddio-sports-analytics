@@ -1,5 +1,10 @@
 {
-  "created_at": "2026-10-25T18:53:41.486851+00:00",
+  "artifact_sha256": {
+    "hist_gradient_boosting": "92a26ad94caafdd7de90c1e1f0f597a0fa1ee551633abe7f184b95a2e8554003",
+    "logistic": "c672f6a3cd5de9a23fa76a8351005a557c0e106cc008d4c22f09c34986fa28c0",
+    "random_forest": "a7920402790d7149495663674392fff357e69a49df42646c422efe27a2b8e665"
+  },
+  "created_at": "2026-10-25T22:27:48.726177+00:00",
   "dataset": "nfl_training",
   "dataset_sha256": "94f7d8cc560237b76c2bc92d9932a279d7815560de0ae29882b499cfd7f2ba48",
   "date_from": "2013-09-15",
@@ -289,6 +294,7 @@
       "mean_log_loss": 0.6730875103613414
     }
   },
+  "evaluation_scope": "OOF folds drive model selection. Historical holdout was previously inspected; reported holdout metrics are diagnostic for the pre-refit candidate only. Final artifacts are fit on all available historical rows and require prospective confirmation.",
   "features": [
     "home_win_rate",
     "home_avg_margin",
@@ -323,26 +329,75 @@
     "diff_avg_points_for",
     "diff_days_rest"
   ],
+  "final_artifact_fit": {
+    "date_from": "2013-09-15",
+    "date_through": "2025-01-26",
+    "holdout_metrics_are_confirmatory": false,
+    "includes_previously_inspected_holdout": true,
+    "rows": 672
+  },
   "limitations": [
     "Metrics describe chronological folds on the recorded source snapshots.",
     "Historical betting ROI is not measured without point-in-time historical sportsbook snapshots.",
-    "Production inference stays disabled until feature/source parity and calibration are reviewed."
+    "Production availability follows the configured project gate; it is not evidence of predictive validation."
   ],
   "model_selection": {
-    "decision": "ensemble_selected",
+    "checks": {
+      "ensemble_brier_better_than_logistic_all_folds": false,
+      "ensemble_brier_better_than_majority_all_folds": false,
+      "ensemble_mean_log_loss_better_than_logistic": true
+    },
+    "decision": "single_model_retained",
     "ensemble_evaluated": true,
+    "fold_comparison": [
+      {
+        "ensemble_brier": 0.2260220918642168,
+        "ensemble_log_loss": 0.6423478823281696,
+        "fold": 1,
+        "logistic_brier": 0.22440086643107676,
+        "logistic_log_loss": 0.6387121854029578,
+        "majority_brier": 0.2529593461878377
+      },
+      {
+        "ensemble_brier": 0.239681708437813,
+        "ensemble_log_loss": 0.6687681037258114,
+        "fold": 2,
+        "logistic_brier": 0.23990085059129984,
+        "logistic_log_loss": 0.66895460489505,
+        "majority_brier": 0.2548428236831314
+      },
+      {
+        "ensemble_brier": 0.20697666061113745,
+        "ensemble_log_loss": 0.6063662363295531,
+        "fold": 3,
+        "logistic_brier": 0.2050025454433442,
+        "logistic_log_loss": 0.6018844134803507,
+        "majority_brier": 0.2516140923918401
+      },
+      {
+        "ensemble_brier": 0.2658540347432157,
+        "ensemble_log_loss": 0.7289783864406046,
+        "fold": 4,
+        "logistic_brier": 0.27850425001795354,
+        "logistic_log_loss": 0.7577844621539725,
+        "majority_brier": 0.25342976377878973
+      }
+    ],
     "models": [
       "logistic",
       "hist_gradient_boosting",
-      "random_forest"
+      "random_forest",
+      "ensemble_blend"
     ],
-    "rationale": "Multi-model ensemble combining logistic, hist_gradient_boosting, random_forest with walk-forward validation and confluence agreement across chronological folds.",
-    "selected_model": "ensemble"
+    "rationale": "Retained bounded logistic by parsimony; ensemble did not pass every development-fold criterion.",
+    "selected_model": "logistic",
+    "selection_rule": "ensemble_must_dominate_logistic_by_brier_in_every_oof_fold_and_majority_in_every_fold_and_improve_mean_log_loss"
   },
   "model_variant": "injury_aware",
   "model_version": "nfl_temporal_v1",
   "production_enabled": true,
   "sample_count": 672,
+  "selected_artifact_sha256": "c672f6a3cd5de9a23fa76a8351005a557c0e106cc008d4c22f09c34986fa28c0",
   "source_manifest": "dd68beecef952ccd001ce0104380ed9ac9088c445fbedbacaef4a843498fb445",
   "sport": "NFL",
   "validation_status": "temporal_evaluation_complete_verified"

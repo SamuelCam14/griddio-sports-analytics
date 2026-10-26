@@ -53,7 +53,7 @@ export function PickCard({ pick, bankroll }: Props) {
   const { savePick, savedPicks, removePick } = useAppStore()
   const [expanded, setExpanded] = useState(false)
 
-  const style = TIER_STYLES[pick.tier]
+  const style = TIER_STYLES[pick.tier] ?? TIER_STYLES['NO PICK']
   const isSaved = savedPicks.some(p => p.game_id === pick.game_id)
 
   const kellyAmount = pick.kelly_fraccion
@@ -154,7 +154,7 @@ function ProbBar({ homeProb, awayProb: _awayProb, pickSide }: {
   awayProb: number
   pickSide: 'home' | 'away'
 }) {
-  const homeWidth = Math.round(homeProb * 100)
+  const homeWidth = Math.max(0, Math.min(100, Math.round((homeProb ?? 0.5) * 100)))
   return (
     <div className="relative h-2 rounded-full overflow-hidden bg-gray-800">
       <div
@@ -177,6 +177,7 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 }
 
 function impliedProb(ml: number): string {
+  if (!ml || ml === 0) return '—'
   const p = ml > 0 ? 100 / (ml + 100) : Math.abs(ml) / (Math.abs(ml) + 100)
   return `${(p * 100).toFixed(1)}%`
 }

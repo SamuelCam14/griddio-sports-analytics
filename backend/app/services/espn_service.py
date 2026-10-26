@@ -138,6 +138,16 @@ async def sync_espn_scores(sport: str, db: AsyncSession) -> dict[str, Any]:
                 game.away_score = int(float(away_score))
                 if game.status == "final":
                     game.home_win = game.home_score > game.away_score
+                    if sport.upper() == "NFL" and game.external_id:
+                        try:
+                            from app.services.nfl_prospective_cohort_service import NFLProspectiveCohortService
+                            NFLProspectiveCohortService().record_settlement(
+                                game_id=str(game.external_id),
+                                home_score=game.home_score,
+                                away_score=game.away_score,
+                            )
+                        except Exception as cohort_err:
+                            logger.debug("NFL prospective cohort settlement skipped or failed", error=str(cohort_err))
             updated += 1
         except (KeyError, IndexError, StopIteration, TypeError, ValueError) as exc:
             logger.warning("Skipping malformed ESPN scoreboard event", sport=sport, error=str(exc))
