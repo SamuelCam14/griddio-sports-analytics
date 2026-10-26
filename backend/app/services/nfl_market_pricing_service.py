@@ -39,6 +39,7 @@ class PriceRecord:
     decision_cutoff_utc: str
     market_status: str = "open"
     mapping_confidence: float = 1.0
+    line: Optional[float] = None
     home_odds_decimal: float = field(init=False)
     away_odds_decimal: float = field(init=False)
 
@@ -153,9 +154,24 @@ class NFLMarketPricingService:
             }
 
         # 4. Reject stale odds exceeding freshness window relative to as_of or cutoff
-        anchor_dt = as_of if as_of is not None else cutoff_dt
+        if as_of is not None:
+            anchor_dt = as_of if as_of.tzinfo else as_of.replace(tzinfo=timezone.utc)
+            if fetched_dt > anchor_dt or source_dt > anchor_dt:
+                return {
+                    "status": "rejected",
+                    "reason": "odds_post_as_of",
+                    "fetched_utc": price_record.fetched_timestamp_utc,
+                    "source_utc": price_record.source_timestamp_utc,
+                    "as_of_utc": anchor_dt.isoformat(),
+                    "picks": [],
+                    "historical_roi_status": "not_evaluable",
+                    "evaluation_note": "ROI historical backtest not measured without complete historical odds snapshots.",
+                }
+        else:
+            anchor_dt = cutoff_dt
+
         odds_age_seconds = (anchor_dt - fetched_dt).total_seconds()
-        if odds_age_seconds > self.max_odds_age_seconds:
+        if odds_age_seconds < 0 or odds_age_seconds > self.max_odds_age_seconds:
             return {
                 "status": "rejected",
                 "reason": "stale_odds",
@@ -167,7 +183,7 @@ class NFLMarketPricingService:
             }
 
         # 5. Reject if mapping confidence is low
-        if price_record.mapping_confidence < 0.90:
+        if not math.isfinite(price_record.mapping_confidence) or price_record.mapping_confidence < 0.90:
             return {
                 "status": "rejected",
                 "reason": "low_mapping_confidence",
@@ -176,8 +192,15 @@ class NFLMarketPricingService:
                 "evaluation_note": "ROI historical backtest not measured without complete historical odds snapshots.",
             }
 
-        # 6. Reject invalid odds values (must be > 1.0 decimal)
-        if price_record.home_odds_decimal <= 1.0 or price_record.away_odds_decimal <= 1.0:
+        # 6. Reject invalid odds values (must be > 1.0 decimal and valid American odds)
+        if (
+            not math.isfinite(price_record.home_odds_decimal)
+            or not math.isfinite(price_record.away_odds_decimal)
+            or price_record.home_odds_decimal <= 1.0
+            or price_record.away_odds_decimal <= 1.0
+            or (-100 < price_record.home_odds_american < 100)
+            or (-100 < price_record.away_odds_american < 100)
+        ):
             return {
                 "status": "rejected",
                 "reason": "invalid_odds_decimal",
@@ -185,6 +208,27 @@ class NFLMarketPricingService:
                 "historical_roi_status": "not_evaluable",
                 "evaluation_note": "ROI historical backtest not measured without complete historical odds snapshots.",
             }
+
+        # 7. Reject missing or invalid line for spread and total markets
+        market_lower = (price_record.market_key or "").lower()
+        if market_lower in ("spread", "spreads"):
+            if price_record.line is None or not math.isfinite(price_record.line):
+                return {
+                    "status": "rejected",
+                    "reason": "invalid_spread_line",
+                    "picks": [],
+                    "historical_roi_status": "not_evaluable",
+                    "evaluation_note": "ROI historical backtest not measured without complete historical odds snapshots.",
+                }
+        elif market_lower in ("total", "totals"):
+            if price_record.line is None or not math.isfinite(price_record.line) or price_record.line <= 0:
+                return {
+                    "status": "rejected",
+                    "reason": "invalid_total_line",
+                    "picks": [],
+                    "historical_roi_status": "not_evaluable",
+                    "evaluation_note": "ROI historical backtest not measured without complete historical odds snapshots.",
+                }
 
         # Calculate implied probabilities and de-vig
         p_home_raw = 1.0 / price_record.home_odds_decimal
@@ -255,6 +299,8 @@ class NFLMarketPricingService:
             "status": "evaluated",
             "event_id": price_record.event_id,
             "sportsbook": price_record.sportsbook,
+            "market_key": price_record.market_key,
+            "line": price_record.line,
             "vig_pct": round(vig * 100, 2),
             "home": home_pick.__dict__,
             "away": away_pick.__dict__,

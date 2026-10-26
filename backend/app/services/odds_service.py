@@ -7,7 +7,8 @@ Estrategia: Cache de 15min para no desperdiciar requests.
 """
 from datetime import datetime, timezone
 from time import monotonic
-from typing import Optional, Any
+from typing import Optional, Any, Tuple
+import math
 import re
 import httpx
 import structlog
@@ -127,28 +128,40 @@ api_key_manager = OddsApiKeyManager()
 
 
 def _american_to_decimal(american: int) -> float:
-    """Convierte momio americano a decimal."""
+    """Convierte momio americano a decimal de forma segura."""
+    if american is None or american == 0 or not math.isfinite(american) or (-100 < american < 100):
+        return 1.0
     if american > 0:
-        return (american / 100) + 1
-    return (100 / abs(american)) + 1
+        return (american / 100.0) + 1.0
+    return (100.0 / abs(american)) + 1.0
 
 
-def _implied_probability(american: int) -> float:
+def _implied_probability(american: int) -> Optional[float]:
     """
     Calcula probabilidad implícita (con vig incluido).
     Para remover el vig: normalizar por la suma de probabilidades implícitas.
     """
+    if american is None or american == 0 or not math.isfinite(american) or (-100 < american < 100):
+        return None
     if american > 0:
-        return 100 / (american + 100)
-    return abs(american) / (abs(american) + 100)
+        return 100.0 / (american + 100.0)
+    return abs(american) / (abs(american) + 100.0)
 
 
-def _remove_vig(prob_home: float, prob_away: float) -> tuple[float, float]:
+def _remove_vig(prob_home: float, prob_away: float) -> Tuple[Optional[float], Optional[float]]:
     """
-    Elimina el jugo (vig) de las probabilidades implícitas.
+    Elimina el jugo (vig) de las probabilidades implícitas de forma segura.
     La suma bruta suele ser ~1.05 (5% vig).
     """
+    if prob_home is None or prob_away is None:
+        return None, None
+    if not (math.isfinite(prob_home) and math.isfinite(prob_away)):
+        return None, None
+    if not (0.0 < prob_home < 1.0) or not (0.0 < prob_away < 1.0):
+        return None, None
     total = prob_home + prob_away
+    if total <= 0:
+        return None, None
     return prob_home / total, prob_away / total
 
 
@@ -194,9 +207,21 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
                 continue
             # Consolidar snapshots por mercado para no perder momios de h2h o spreads
             # cuando el último snapshot registrado corresponde a totales
-            h2h_snaps = [s for s in g.odds_snapshots if s.home_ml is not None or s.market == "h2h"]
-            spread_snaps = [s for s in g.odds_snapshots if s.home_spread is not None or s.market == "spreads"]
-            total_snaps = [s for s in g.odds_snapshots if s.total_line is not None or s.market == "totals"]
+            h2h_snaps = [
+                s for s in g.odds_snapshots
+                if getattr(s, "market", None) == "h2h"
+                or (getattr(s, "market", None) not in ("spreads", "totals") and getattr(s, "home_ml", None) is not None)
+            ]
+            spread_snaps = [
+                s for s in g.odds_snapshots
+                if getattr(s, "market", None) == "spreads"
+                or (getattr(s, "market", None) not in ("h2h", "totals") and getattr(s, "home_spread", None) is not None)
+            ]
+            total_snaps = [
+                s for s in g.odds_snapshots
+                if getattr(s, "market", None) == "totals"
+                or (getattr(s, "market", None) not in ("h2h", "spreads") and getattr(s, "total_line", None) is not None)
+            ]
 
             latest_h2h = max(h2h_snaps, key=lambda s: s.observed_at) if h2h_snaps else None
             latest_spread = max(spread_snaps, key=lambda s: s.observed_at) if spread_snaps else None
@@ -210,13 +235,77 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
                     return None, True, "Sin cuota observada para este mercado"
                 s_dt = snap.observed_at if snap.observed_at.tzinfo else snap.observed_at.replace(tzinfo=timezone.utc)
                 age = (now_utc - s_dt).total_seconds() / 3600.0
+                if s_dt > now_utc:
+                    return round(age, 2), True, "Cuota observada en el futuro"
                 stale = age > freshness_limit or s_dt >= g_kickoff
                 reason = f"Cuota observada hace {round(age, 1)}h (límite {freshness_limit}h)" if age > freshness_limit else ("Cuota observada post-kickoff" if s_dt >= g_kickoff else None)
                 return round(age, 2), stale, reason
 
-            h2h_age, h2h_stale, h2h_reason = compute_market_freshness(latest_h2h)
-            spread_age, spread_stale, spread_reason = compute_market_freshness(latest_spread)
-            total_age, total_stale, total_reason = compute_market_freshness(latest_total)
+            h2h_stale = False
+            h2h_reason = None
+            spread_stale = False
+            spread_reason = None
+            total_stale = False
+            total_reason = None
+
+            # Validar integridad estructural de snapshots de DB
+            if latest_spread:
+                try:
+                    h_spr = float(latest_spread.home_spread) if latest_spread.home_spread is not None else None
+                    a_spr = float(latest_spread.away_spread) if latest_spread.away_spread is not None else None
+                    if (
+                        h_spr is None
+                        or not math.isfinite(h_spr)
+                        or (a_spr is not None and (not math.isfinite(a_spr) or not math.isclose(h_spr + a_spr, 0.0, abs_tol=1e-3)))
+                    ):
+                        spread_stale = True
+                        spread_reason = "Línea de spread asimétrica o no finita en base de datos"
+                        latest_spread = None
+                except (TypeError, ValueError):
+                    spread_stale = True
+                    spread_reason = "Línea de spread no numérica en base de datos"
+                    latest_spread = None
+
+            if latest_total:
+                try:
+                    tot_line = float(latest_total.total_line) if latest_total.total_line is not None else None
+                    if tot_line is None or not math.isfinite(tot_line) or tot_line <= 0:
+                        total_stale = True
+                        total_reason = "Línea de totales no positiva o no finita en base de datos"
+                        latest_total = None
+                except (TypeError, ValueError):
+                    total_stale = True
+                    total_reason = "Línea de totales no numérica en base de datos"
+                    latest_total = None
+
+            if latest_h2h:
+                try:
+                    h_ml_val = float(latest_h2h.home_ml) if latest_h2h.home_ml is not None else None
+                    a_ml_val = float(latest_h2h.away_ml) if latest_h2h.away_ml is not None else None
+                    if (
+                        h_ml_val is None or a_ml_val is None
+                        or not math.isfinite(h_ml_val) or not math.isfinite(a_ml_val)
+                        or h_ml_val == 0 or a_ml_val == 0
+                        or (-100 < h_ml_val < 100) or (-100 < a_ml_val < 100)
+                    ):
+                        h2h_stale = True
+                        h2h_reason = "Momios moneyline fuera de rango o inválidos en base de datos"
+                        latest_h2h = None
+                except (TypeError, ValueError):
+                    h2h_stale = True
+                    h2h_reason = "Momios moneyline no numéricos en base de datos"
+                    latest_h2h = None
+
+            h2h_age, h2h_stale_calc, h2h_reason_calc = compute_market_freshness(latest_h2h)
+            spread_age, spread_stale_calc, spread_reason_calc = compute_market_freshness(latest_spread)
+            total_age, total_stale_calc, total_reason_calc = compute_market_freshness(latest_total)
+
+            h2h_stale = h2h_stale or h2h_stale_calc
+            h2h_reason = h2h_reason or h2h_reason_calc
+            spread_stale = spread_stale or spread_stale_calc
+            spread_reason = spread_reason or spread_reason_calc
+            total_stale = total_stale or total_stale_calc
+            total_reason = total_reason or total_reason_calc
 
             # La frescura del partido para apuestas principales se evalúa contra moneyline (h2h)
             if latest_h2h:
@@ -226,7 +315,44 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
             else:
                 is_stale = True
                 staleness_hours = None
-                staleness_reason = "Sin cuota moneyline registrada"
+                staleness_reason = h2h_reason or "Sin cuota moneyline válida registrada"
+
+            # Extracción rigurosa de procedencia por lado
+            latest_any_bm = latest_any.bookmaker if latest_any else None
+
+            # H2H / Moneyline
+            if latest_h2h:
+                h_ml_bm = getattr(latest_h2h, "home_bookmaker", None) or latest_h2h.bookmaker
+                a_ml_bm = getattr(latest_h2h, "away_bookmaker", None) or latest_h2h.bookmaker
+                h2h_bench_bm = getattr(latest_h2h, "h2h_benchmark_bookmaker", None) or getattr(latest_h2h, "benchmark_bookmaker", None) or h_ml_bm
+                bench_obs_dt = getattr(latest_h2h, "benchmark_observed_at", None) or (latest_h2h.observed_at if latest_h2h else None)
+                h2h_bookmaker = h_ml_bm if h_ml_bm == a_ml_bm else (f"{h_ml_bm}/{a_ml_bm}" if (h_ml_bm and a_ml_bm) else latest_h2h.bookmaker)
+            else:
+                h_ml_bm = None
+                a_ml_bm = None
+                h2h_bench_bm = None
+                bench_obs_dt = None
+                h2h_bookmaker = None
+
+            # Spreads
+            if latest_spread:
+                h_spr_bm = getattr(latest_spread, "home_bookmaker", None) or latest_spread.bookmaker
+                a_spr_bm = getattr(latest_spread, "away_bookmaker", None) or latest_spread.bookmaker
+                spr_bookmaker = h_spr_bm if h_spr_bm == a_spr_bm else (f"{h_spr_bm}/{a_spr_bm}" if (h_spr_bm and a_spr_bm) else latest_spread.bookmaker)
+            else:
+                h_spr_bm = None
+                a_spr_bm = None
+                spr_bookmaker = None
+
+            # Totals
+            if latest_total:
+                o_tot_bm = getattr(latest_total, "over_bookmaker", None) or getattr(latest_total, "home_bookmaker", None) or latest_total.bookmaker
+                u_tot_bm = getattr(latest_total, "under_bookmaker", None) or getattr(latest_total, "away_bookmaker", None) or latest_total.bookmaker
+                tot_bookmaker = o_tot_bm if o_tot_bm == u_tot_bm else (f"{o_tot_bm}/{u_tot_bm}" if (o_tot_bm and u_tot_bm) else latest_total.bookmaker)
+            else:
+                o_tot_bm = None
+                u_tot_bm = None
+                tot_bookmaker = None
 
             result.append({
                 "external_id": g.external_id,
@@ -236,16 +362,31 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
                 "is_stale": is_stale,
                 "staleness_hours": staleness_hours,
                 "staleness_reason": staleness_reason,
-                "best_bookmaker": latest_h2h.bookmaker if latest_h2h else latest_any.bookmaker,
-                "spread_bookmaker": latest_spread.bookmaker if latest_spread else None,
-                "total_bookmaker": latest_total.bookmaker if latest_total else None,
-                "h2h_bookmaker": latest_h2h.bookmaker if latest_h2h else None,
+                "best_bookmaker": h2h_bookmaker or latest_any_bm,
+                "ml_home_bookmaker": h_ml_bm,
+                "ml_away_bookmaker": a_ml_bm,
+                "h2h_benchmark_bookmaker": h2h_bench_bm,
+                "benchmark_bookmaker": h2h_bench_bm,
+                "benchmark_observed_at": bench_obs_dt.isoformat() if bench_obs_dt else None,
+                "h2h_benchmark_observed_at": bench_obs_dt.isoformat() if bench_obs_dt else None,
+                "spread_bookmaker": spr_bookmaker,
+                "spread_home_bookmaker": h_spr_bm,
+                "spread_away_bookmaker": a_spr_bm,
+                "total_bookmaker": tot_bookmaker,
+                "total_over_bookmaker": o_tot_bm,
+                "total_under_bookmaker": u_tot_bm,
+                "h2h_bookmaker": h2h_bookmaker,
                 "h2h_observed_at": latest_h2h.observed_at.isoformat() if latest_h2h and latest_h2h.observed_at else None,
                 "spread_observed_at": latest_spread.observed_at.isoformat() if latest_spread and latest_spread.observed_at else None,
                 "total_observed_at": latest_total.observed_at.isoformat() if latest_total and latest_total.observed_at else None,
                 "markets_provenance": {
                     "moneyline": {
-                        "bookmaker": latest_h2h.bookmaker if latest_h2h else None,
+                        "bookmaker": h2h_bookmaker,
+                        "home_bookmaker": h_ml_bm,
+                        "away_bookmaker": a_ml_bm,
+                        "h2h_benchmark_bookmaker": h2h_bench_bm,
+                        "benchmark_bookmaker": h2h_bench_bm,
+                        "benchmark_observed_at": bench_obs_dt.isoformat() if bench_obs_dt else None,
                         "observed_at": latest_h2h.observed_at.isoformat() if latest_h2h and latest_h2h.observed_at else None,
                         "captured_at": latest_h2h.captured_at.isoformat() if latest_h2h and latest_h2h.captured_at else None,
                         "is_stale": h2h_stale,
@@ -253,7 +394,9 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
                         "staleness_reason": h2h_reason,
                     },
                     "spread": {
-                        "bookmaker": latest_spread.bookmaker if latest_spread else None,
+                        "bookmaker": spr_bookmaker,
+                        "home_bookmaker": h_spr_bm,
+                        "away_bookmaker": a_spr_bm,
                         "observed_at": latest_spread.observed_at.isoformat() if latest_spread and latest_spread.observed_at else None,
                         "captured_at": latest_spread.captured_at.isoformat() if latest_spread and latest_spread.captured_at else None,
                         "is_stale": spread_stale,
@@ -261,7 +404,9 @@ async def fetch_odds_from_db(sport: str, session: Optional[Any] = None) -> list[
                         "staleness_reason": spread_reason,
                     },
                     "total": {
-                        "bookmaker": latest_total.bookmaker if latest_total else None,
+                        "bookmaker": tot_bookmaker,
+                        "over_bookmaker": o_tot_bm,
+                        "under_bookmaker": u_tot_bm,
                         "observed_at": latest_total.observed_at.isoformat() if latest_total and latest_total.observed_at else None,
                         "captured_at": latest_total.captured_at.isoformat() if latest_total and latest_total.captured_at else None,
                         "is_stale": total_stale,
@@ -509,10 +654,22 @@ async def fetch_odds(
     return []
 
 
+def _is_valid_american_odds(val: Any) -> bool:
+    """Verifica si un momio americano es finito, no nulo, y fuera del intervalo imposible (-100, 100)."""
+    if val is None:
+        return False
+    try:
+        f_val = float(val)
+        return math.isfinite(f_val) and f_val != 0 and (-100 >= f_val or f_val >= 100)
+    except (TypeError, ValueError):
+        return False
+
+
 def _parse_odds_response(raw_games: list[dict]) -> list[dict]:
     """
     Parsea la respuesta cruda de The Odds API a formato estandarizado.
-    Selecciona el mejor momio disponible (best line shopping).
+    Selecciona el mejor momio disponible (best line shopping) condicionado
+    estrictamente a la línea de consenso calculada de forma independiente del orden de los feeds.
     """
     parsed = []
 
@@ -522,25 +679,10 @@ def _parse_odds_response(raw_games: list[dict]) -> list[dict]:
         away_team  = game.get("away_team")
         commence   = game.get("commence_time")
 
-        # Inicializar best lines (line shopping)
-        best_home_ml = None
-        best_away_ml = None
-        best_home_spread = None
-        best_home_spread_ml = None
-        best_away_spread = None
-        total_line  = None
-        over_ml     = None
-        under_ml    = None
-        best_book   = None
-        best_home_spread_price = None
-        best_away_spread_price = None
-        spread_book = None
-        total_book = None
-        
-        # Track last_update per market
-        ml_last_update = None
-        spread_last_update = None
-        totals_last_update = None
+        # 1. Recolección de cuotas válidas por mercado y casa
+        valid_h2h_offerings = []
+        valid_spread_offerings = []
+        valid_total_offerings = []
 
         for bookmaker in game.get("bookmakers", []):
             book_key = bookmaker.get("key")
@@ -548,80 +690,247 @@ def _parse_odds_response(raw_games: list[dict]) -> list[dict]:
                 continue
                 
             book_last_update = bookmaker.get("last_update")
+            priority_idx = PRIORITY_BOOKMAKERS.index(book_key)
 
             for market in bookmaker.get("markets", []):
                 market_key = market.get("key")
-                outcomes = {o["name"]: o for o in market.get("outcomes", [])}
+                outcomes = {o.get("name"): o for o in market.get("outcomes", [])}
+                outcomes_lower = {str(o.get("name", "")).strip().lower(): o for o in market.get("outcomes", [])}
 
                 if market_key == "h2h":
                     h_ml = outcomes.get(home_team, {}).get("price")
                     a_ml = outcomes.get(away_team, {}).get("price")
-                    if h_ml is not None and a_ml is not None:
-                        if best_home_ml is None or h_ml > best_home_ml:
-                            best_home_ml = h_ml
-                            best_away_ml = a_ml
-                            best_book = book_key
-                            ml_last_update = book_last_update
+                    if _is_valid_american_odds(h_ml) and _is_valid_american_odds(a_ml):
+                        valid_h2h_offerings.append({
+                            "book_key": book_key,
+                            "last_update": book_last_update,
+                            "priority_idx": priority_idx,
+                            "home_ml": int(h_ml),
+                            "away_ml": int(a_ml),
+                            "home_dec": _american_to_decimal(int(h_ml)),
+                            "away_dec": _american_to_decimal(int(a_ml)),
+                        })
 
                 elif market_key == "spreads":
                     home_out = outcomes.get(home_team, {})
                     away_out = outcomes.get(away_team, {})
                     h_price = home_out.get("price")
                     a_price = away_out.get("price")
-                    if h_price is not None and a_price is not None:
-                        if best_home_spread_price is None or h_price > best_home_spread_price:
-                            best_home_spread_price = h_price
-                            best_home_spread = home_out.get("point")
-                            best_home_spread_ml = h_price
-                            best_away_spread = away_out.get("point")
-                            best_away_spread_price = a_price
-                            spread_book = book_key
-                            spread_last_update = book_last_update
+                    h_point = home_out.get("point")
+                    a_point = away_out.get("point")
+                    if (
+                        _is_valid_american_odds(h_price) and _is_valid_american_odds(a_price)
+                        and h_point is not None and a_point is not None
+                        and math.isfinite(h_point) and math.isfinite(a_point)
+                        and math.isclose(h_point + a_point, 0.0, abs_tol=1e-3)
+                    ):
+                        valid_spread_offerings.append({
+                            "book_key": book_key,
+                            "last_update": book_last_update,
+                            "priority_idx": priority_idx,
+                            "h_point": float(h_point),
+                            "a_point": float(a_point),
+                            "h_price": int(h_price),
+                            "a_price": int(a_price),
+                            "h_dec": _american_to_decimal(int(h_price)),
+                            "a_dec": _american_to_decimal(int(a_price)),
+                        })
 
                 elif market_key == "totals":
-                    over_out = outcomes.get("Over", {})
-                    under_out = outcomes.get("Under", {})
+                    over_out = outcomes_lower.get("over") or outcomes_lower.get("o") or outcomes.get("Over", {})
+                    under_out = outcomes_lower.get("under") or outcomes_lower.get("u") or outcomes.get("Under", {})
                     o_price = over_out.get("price")
                     u_price = under_out.get("price")
-                    if o_price is not None and u_price is not None:
-                        # Grab the first valid line or highest over
-                        if total_line is None or o_price > (over_ml or -9999):
-                            total_line = over_out.get("point")
-                            over_ml = o_price
-                            under_ml = u_price
-                            total_book = book_key
-                            totals_last_update = book_last_update
+                    o_point = over_out.get("point")
+                    u_point = under_out.get("point")
+                    if (
+                        _is_valid_american_odds(o_price) and _is_valid_american_odds(u_price)
+                        and o_point is not None and u_point is not None
+                        and math.isfinite(o_point) and math.isfinite(u_point)
+                        and o_point > 0 and math.isclose(o_point, u_point, abs_tol=1e-3)
+                    ):
+                        valid_total_offerings.append({
+                            "book_key": book_key,
+                            "last_update": book_last_update,
+                            "priority_idx": priority_idx,
+                            "point": float(o_point),
+                            "over_ml": int(o_price),
+                            "under_ml": int(u_price),
+                            "over_dec": _american_to_decimal(int(o_price)),
+                            "under_dec": _american_to_decimal(int(u_price)),
+                        })
 
-        # Calcular probabilidades implícitas sin vig
-        home_prob_raw = _implied_probability(best_home_ml) if best_home_ml else None
-        away_prob_raw = _implied_probability(best_away_ml) if best_away_ml else None
-        home_prob, away_prob = (None, None)
-        if home_prob_raw and away_prob_raw:
-            home_prob, away_prob = _remove_vig(home_prob_raw, away_prob_raw)
+        # 2. Resolución de H2H (Moneyline Shopping por lado)
+        best_home_ml = None
+        best_away_ml = None
+        best_book = None
+        ml_home_book = None
+        ml_away_book = None
+        ml_last_update = None
+        h2h_benchmark_book = None
+        h2h_benchmark_last_update = None
+        home_prob = None
+        away_prob = None
+
+        if valid_h2h_offerings:
+            # Line shopping por lado para obtener los mejores momios comprables
+            best_home_offering = max(valid_h2h_offerings, key=lambda x: (x["home_dec"], -x["priority_idx"]))
+            best_away_offering = max(valid_h2h_offerings, key=lambda x: (x["away_dec"], -x["priority_idx"]))
+            best_home_ml = best_home_offering["home_ml"]
+            best_away_ml = best_away_offering["away_ml"]
+            ml_home_book = best_home_offering["book_key"]
+            ml_away_book = best_away_offering["book_key"]
+            best_book = ml_home_book if ml_home_book == ml_away_book else f"{ml_home_book}/{ml_away_book}"
+            valid_updates = [u for u in [best_home_offering.get("last_update"), best_away_offering.get("last_update")] if u]
+            ml_last_update = max(valid_updates) if valid_updates else None
+
+            # 2b. Cálculo de probabilidades no-vig coherentes:
+            # Queda estrictamente prohibido normalizar un par sintético mezclado de distintas casas.
+            # Se selecciona una única oferta H2H coherente de una sola casa como benchmark de referencia.
+            # Regla de desempate documentada:
+            #   1) Prioridad según PRIORITY_BOOKMAKERS (menor priority_idx: DraftKings > FanDuel > ...)
+            #   2) Menor sobremargen/vig (mercado más ajustado y eficiente)
+            #   3) Timestamp de actualización más reciente
+            candidates = []
+            for o in valid_h2h_offerings:
+                p_h_cand = _implied_probability(o["home_ml"])
+                p_a_cand = _implied_probability(o["away_ml"])
+                if p_h_cand is not None and p_a_cand is not None and 0.0 < p_h_cand < 1.0 and 0.0 < p_a_cand < 1.0:
+                    cand_vig = (p_h_cand + p_a_cand) - 1.0
+                    ts_val = 0.0
+                    if o.get("last_update"):
+                        try:
+                            ts_val = datetime.fromisoformat(o["last_update"].replace("Z", "+00:00")).timestamp()
+                        except Exception:
+                            ts_val = 0.0
+                    candidates.append({
+                        "offering": o,
+                        "priority_idx": o["priority_idx"],
+                        "vig": cand_vig,
+                        "ts": ts_val,
+                        "p_h": p_h_cand,
+                        "p_a": p_a_cand,
+                    })
+
+            if candidates:
+                benchmark_candidate = min(
+                    candidates,
+                    key=lambda c: (c["priority_idx"], c["vig"], -c["ts"])
+                )
+                h2h_benchmark_book = benchmark_candidate["offering"]["book_key"]
+                h2h_benchmark_last_update = benchmark_candidate["offering"].get("last_update")
+                h_fair, a_fair = _remove_vig(benchmark_candidate["p_h"], benchmark_candidate["p_a"])
+                if h_fair is not None and a_fair is not None:
+                    home_prob, away_prob = round(h_fair, 4), round(a_fair, 4)
+
+        # 3. Resolución de Spread Consensus y Line Shopping por lado
+        best_home_spread = None
+        best_home_spread_ml = None
+        best_away_spread = None
+        best_away_spread_price = None
+        spread_book = None
+        spread_home_book = None
+        spread_away_book = None
+        spread_last_update = None
+        if valid_spread_offerings:
+            # Determinar el punto de hándicap consenso por moda (frecuencia)
+            from collections import Counter
+            point_counts = Counter(round(o["h_point"], 2) for o in valid_spread_offerings)
+            # Desempatar por menor prioridad de bookmaker
+            consensus_point = max(
+                point_counts.keys(),
+                key=lambda p: (
+                    point_counts[p],
+                    -min(o["priority_idx"] for o in valid_spread_offerings if math.isclose(o["h_point"], p, abs_tol=1e-2))
+                )
+            )
+
+            # Filtrar ofertas sobre el punto consenso y buscar el mejor precio por lado
+            offerings_at_consensus = [
+                o for o in valid_spread_offerings
+                if math.isclose(o["h_point"], consensus_point, abs_tol=1e-2)
+            ]
+            best_h_spread_offering = max(offerings_at_consensus, key=lambda x: (x["h_dec"], -x["priority_idx"]))
+            best_a_spread_offering = max(offerings_at_consensus, key=lambda x: (x["a_dec"], -x["priority_idx"]))
+
+            best_home_spread = best_h_spread_offering["h_point"]
+            best_home_spread_ml = best_h_spread_offering["h_price"]
+            best_away_spread = best_a_spread_offering["a_point"]
+            best_away_spread_price = best_a_spread_offering["a_price"]
+            spread_home_book = best_h_spread_offering["book_key"]
+            spread_away_book = best_a_spread_offering["book_key"]
+            spread_book = spread_home_book if spread_home_book == spread_away_book else f"{spread_home_book}/{spread_away_book}"
+            valid_updates = [u for u in [best_h_spread_offering.get("last_update"), best_a_spread_offering.get("last_update")] if u]
+            spread_last_update = max(valid_updates) if valid_updates else None
+
+        # 4. Resolución de Totales Consensus y Line Shopping por lado
+        total_line = None
+        over_ml = None
+        under_ml = None
+        total_book = None
+        total_over_book = None
+        total_under_book = None
+        totals_last_update = None
+        if valid_total_offerings:
+            from collections import Counter
+            point_counts = Counter(round(o["point"], 2) for o in valid_total_offerings)
+            consensus_total = max(
+                point_counts.keys(),
+                key=lambda p: (
+                    point_counts[p],
+                    -min(o["priority_idx"] for o in valid_total_offerings if math.isclose(o["point"], p, abs_tol=1e-2))
+                )
+            )
+
+            offerings_at_consensus = [
+                o for o in valid_total_offerings
+                if math.isclose(o["point"], consensus_total, abs_tol=1e-2)
+            ]
+            best_over_offering = max(offerings_at_consensus, key=lambda x: (x["over_dec"], -x["priority_idx"]))
+            best_under_offering = max(offerings_at_consensus, key=lambda x: (x["under_dec"], -x["priority_idx"]))
+
+            total_line = consensus_total
+            over_ml = best_over_offering["over_ml"]
+            under_ml = best_under_offering["under_ml"]
+            total_over_book = best_over_offering["book_key"]
+            total_under_book = best_under_offering["book_key"]
+            total_book = total_over_book if total_over_book == total_under_book else f"{total_over_book}/{total_under_book}"
+            valid_updates = [u for u in [best_over_offering.get("last_update"), best_under_offering.get("last_update")] if u]
+            totals_last_update = max(valid_updates) if valid_updates else None
 
         parsed.append({
-            "external_id":        game_id,
-            "home_team":          home_team,
-            "away_team":          away_team,
-            "commence_time":      commence,
-            "best_bookmaker":     best_book,
-            "spread_bookmaker":   spread_book,
-            "total_bookmaker":    total_book,
-            "home_ml":            best_home_ml,
-            "away_ml":            best_away_ml,
-            "home_spread":        best_home_spread,
-            "home_spread_ml":     best_home_spread_ml,
-            "away_spread":        best_away_spread,
-            "away_spread_ml":     best_away_spread_price,
-            "total_line":         total_line,
-            "over_ml":            over_ml,
-            "under_ml":           under_ml,
-            "home_implied_prob":  round(home_prob, 4) if home_prob else None,
-            "away_implied_prob":  round(away_prob, 4) if away_prob else None,
-            "captured_at":        datetime.now(timezone.utc).isoformat(),
-            "ml_last_update":     ml_last_update,
-            "spread_last_update": spread_last_update,
-            "totals_last_update": totals_last_update,
+            "external_id":            game_id,
+            "home_team":              home_team,
+            "away_team":              away_team,
+            "commence_time":          commence,
+            "best_bookmaker":         best_book,
+            "ml_home_bookmaker":      ml_home_book,
+            "ml_away_bookmaker":      ml_away_book,
+            "h2h_benchmark_bookmaker": h2h_benchmark_book,
+            "benchmark_bookmaker":     h2h_benchmark_book,
+            "h2h_benchmark_last_update": h2h_benchmark_last_update,
+            "benchmark_last_update":   h2h_benchmark_last_update,
+            "spread_bookmaker":       spread_book,
+            "spread_home_bookmaker":  spread_home_book,
+            "spread_away_bookmaker":  spread_away_book,
+            "total_bookmaker":        total_book,
+            "total_over_bookmaker":   total_over_book,
+            "total_under_bookmaker":  total_under_book,
+            "home_ml":                best_home_ml,
+            "away_ml":                best_away_ml,
+            "home_spread":            best_home_spread,
+            "home_spread_ml":         best_home_spread_ml,
+            "away_spread":            best_away_spread,
+            "away_spread_ml":         best_away_spread_price,
+            "total_line":             total_line,
+            "over_ml":                over_ml,
+            "under_ml":               under_ml,
+            "home_implied_prob":      home_prob,
+            "away_implied_prob":      away_prob,
+            "captured_at":            datetime.now(timezone.utc).isoformat(),
+            "ml_last_update":         ml_last_update,
+            "spread_last_update":     spread_last_update,
+            "totals_last_update":     totals_last_update,
         })
 
     logger.info("Odds parsed", total_games=len(parsed))

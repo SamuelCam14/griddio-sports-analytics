@@ -1,6 +1,7 @@
 """Ingesta cuotas publicadas por The Odds API sin fabricar valores ausentes."""
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
+import math
 import re
 import unicodedata
 import httpx
@@ -472,12 +473,35 @@ async def sync_real_games(sport: str, db: AsyncSession) -> Dict[str, Any]:
             return stmt
 
         # ML
-        if h_ml is not None and a_ml is not None and item.get("best_bookmaker"):
+        h_bm = item.get("ml_home_bookmaker") or item.get("best_bookmaker")
+        a_bm = item.get("ml_away_bookmaker") or item.get("best_bookmaker")
+        h2h_bm = item.get("best_bookmaker") or (h_bm if h_bm == a_bm else (f"{h_bm}/{a_bm}" if h_bm and a_bm else None))
+        h2h_bench_bm = (
+            item.get("h2h_benchmark_bookmaker")
+            or item.get("benchmark_bookmaker")
+            or h_bm
+        )
+        bench_update_str = item.get("h2h_benchmark_last_update") or item.get("benchmark_last_update")
+        bench_observed_at = parse_ts(bench_update_str) or ml_last_update
+        if (
+            h_ml is not None and a_ml is not None
+            and math.isfinite(h_ml) and math.isfinite(a_ml)
+            and h_ml != 0 and a_ml != 0
+            and (-100 >= h_ml or h_ml >= 100)
+            and (-100 >= a_ml or a_ml >= 100)
+            and h2h_bm
+        ):
             try:
                 is_fresh(ml_last_update, commence_dt, sport_upper, "odds")
+                if bench_observed_at and bench_observed_at != ml_last_update:
+                    is_fresh(bench_observed_at, commence_dt, sport_upper, "odds")
                 stmt = add_snapshot_idempotent(
-                    "h2h", item["best_bookmaker"], ml_last_update,
-                    home_ml=h_ml, away_ml=a_ml, home_implied_prob=p_h_fair, away_implied_prob=p_a_fair
+                    "h2h", h2h_bm, ml_last_update,
+                    home_ml=h_ml, away_ml=a_ml, home_implied_prob=p_h_fair, away_implied_prob=p_a_fair,
+                    home_bookmaker=h_bm, away_bookmaker=a_bm,
+                    benchmark_bookmaker=h2h_bench_bm,
+                    h2h_benchmark_bookmaker=h2h_bench_bm,
+                    benchmark_observed_at=bench_observed_at,
                 )
                 res = await db.execute(stmt)
                 if res.rowcount > 0:
@@ -486,12 +510,36 @@ async def sync_real_games(sport: str, db: AsyncSession) -> Dict[str, Any]:
                 stale_discarded += 1
 
         # Spread
-        if h_spread is not None and a_spread is not None and item.get("spread_bookmaker"):
+        h_spr_bm = item.get("spread_home_bookmaker") or item.get("spread_bookmaker")
+        a_spr_bm = item.get("spread_away_bookmaker") or item.get("spread_bookmaker")
+        spr_bm = item.get("spread_bookmaker") or (h_spr_bm if h_spr_bm == a_spr_bm else (f"{h_spr_bm}/{a_spr_bm}" if h_spr_bm and a_spr_bm else None))
+
+        h_spr_odds_valid = (
+            h_spread_ml is None
+            or (math.isfinite(h_spread_ml) and h_spread_ml != 0 and (-100 >= h_spread_ml or h_spread_ml >= 100))
+        )
+        a_spr_odds_valid = (
+            a_spread_ml is None
+            or (math.isfinite(a_spread_ml) and a_spread_ml != 0 and (-100 >= a_spread_ml or a_spread_ml >= 100))
+        )
+        spread_odds_intact = h_spr_odds_valid and a_spr_odds_valid and not (
+            (h_spread_ml is not None and a_spread_ml is None) or (h_spread_ml is None and a_spread_ml is not None)
+        )
+
+        if (
+            h_spread is not None and a_spread is not None
+            and math.isfinite(h_spread) and math.isfinite(a_spread)
+            and math.isclose(h_spread + a_spread, 0.0, abs_tol=1e-3)
+            and spread_odds_intact
+            and spr_bm
+        ):
             try:
                 is_fresh(spread_last_update, commence_dt, sport_upper, "odds")
                 stmt = add_snapshot_idempotent(
-                    "spreads", item["spread_bookmaker"], spread_last_update,
-                    home_spread=h_spread, home_spread_ml=h_spread_ml, away_spread=a_spread, away_spread_ml=a_spread_ml
+                    "spreads", spr_bm, spread_last_update,
+                    home_spread=h_spread, home_spread_ml=int(h_spread_ml) if h_spread_ml is not None else None,
+                    away_spread=a_spread, away_spread_ml=int(a_spread_ml) if a_spread_ml is not None else None,
+                    home_bookmaker=h_spr_bm, away_bookmaker=a_spr_bm
                 )
                 res = await db.execute(stmt)
                 if res.rowcount > 0:
@@ -500,12 +548,36 @@ async def sync_real_games(sport: str, db: AsyncSession) -> Dict[str, Any]:
                 stale_discarded += 1
 
         # Totals
-        if tot_line is not None and item.get("total_bookmaker"):
+        o_tot_bm = item.get("total_over_bookmaker") or item.get("total_bookmaker")
+        u_tot_bm = item.get("total_under_bookmaker") or item.get("total_bookmaker")
+        tot_bm = item.get("total_bookmaker") or (o_tot_bm if o_tot_bm == u_tot_bm else (f"{o_tot_bm}/{u_tot_bm}" if o_tot_bm and u_tot_bm else None))
+
+        over_odds_valid = (
+            over_ml is None
+            or (math.isfinite(over_ml) and over_ml != 0 and (-100 >= over_ml or over_ml >= 100))
+        )
+        under_odds_valid = (
+            under_ml is None
+            or (math.isfinite(under_ml) and under_ml != 0 and (-100 >= under_ml or under_ml >= 100))
+        )
+        totals_odds_intact = over_odds_valid and under_odds_valid and not (
+            (over_ml is not None and under_ml is None) or (over_ml is None and under_ml is not None)
+        )
+
+        if (
+            tot_line is not None and math.isfinite(tot_line) and tot_line > 0
+            and totals_odds_intact
+            and tot_bm
+        ):
             try:
                 is_fresh(totals_last_update, commence_dt, sport_upper, "odds")
                 stmt = add_snapshot_idempotent(
-                    "totals", item["total_bookmaker"], totals_last_update,
-                    total_line=tot_line, over_ml=over_ml, under_ml=under_ml
+                    "totals", tot_bm, totals_last_update,
+                    total_line=tot_line,
+                    over_ml=int(over_ml) if over_ml is not None else None,
+                    under_ml=int(under_ml) if under_ml is not None else None,
+                    over_bookmaker=o_tot_bm, under_bookmaker=u_tot_bm,
+                    home_bookmaker=o_tot_bm, away_bookmaker=u_tot_bm
                 )
                 res = await db.execute(stmt)
                 if res.rowcount > 0:

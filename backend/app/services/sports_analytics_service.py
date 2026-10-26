@@ -33,7 +33,22 @@ def generate_nfl_matchup_analytics(
     away_ml: int,
     spread_line: Optional[float] = None,
     total_line: Optional[float] = None,
+    home_spread_ml: Optional[int] = None,
+    away_spread_ml: Optional[int] = None,
+    over_ml: Optional[int] = None,
+    under_ml: Optional[int] = None,
     bookmaker: Optional[str] = None,
+    home_bookmaker: Optional[str] = None,
+    away_bookmaker: Optional[str] = None,
+    spread_home_bookmaker: Optional[str] = None,
+    spread_away_bookmaker: Optional[str] = None,
+    total_over_bookmaker: Optional[str] = None,
+    total_under_bookmaker: Optional[str] = None,
+    h2h_benchmark_bookmaker: Optional[str] = None,
+    benchmark_bookmaker: Optional[str] = None,
+    benchmark_observed_at: Optional[Any] = None,
+    market_prob_home_no_vig: Optional[float] = None,
+    market_prob_away_no_vig: Optional[float] = None,
     bankroll: Optional[float] = None,
     live_player_props: Optional[List[Dict[str, Any]]] = None,
     model_prob_home: Optional[float] = None,
@@ -48,10 +63,51 @@ def generate_nfl_matchup_analytics(
     Calcula de forma explícita el EV y la asignación Kelly en CADA uno de los mercados, seleccionando
     el Best Bet (#1 Pick) para indicar con total transparencia dónde se encuentra la ventaja matemática.
     """
+    # 0. Sanitización de líneas de spread, total y momios observados (fail-closed)
+    if total_line is not None and (not math.isfinite(total_line) or total_line <= 0):
+        total_line = None
+    if spread_line is not None and not math.isfinite(spread_line):
+        spread_line = None
+    def _is_valid_american(val: Any) -> bool:
+        if val is None:
+            return False
+        try:
+            f = float(val)
+            return math.isfinite(f) and f != 0 and (-100 >= f or f >= 100)
+        except (TypeError, ValueError):
+            return False
+
+    home_spread_explicit_invalid = home_spread_ml is not None and not _is_valid_american(home_spread_ml)
+    away_spread_explicit_invalid = away_spread_ml is not None and not _is_valid_american(away_spread_ml)
+    spread_odds_corrupt = home_spread_explicit_invalid or away_spread_explicit_invalid
+
+    over_explicit_invalid = over_ml is not None and not _is_valid_american(over_ml)
+    under_explicit_invalid = under_ml is not None and not _is_valid_american(under_ml)
+    totals_odds_corrupt = over_explicit_invalid or under_explicit_invalid
+
     # 1. Probabilidades implícitas de mercado (sin vig)
-    p_h_raw = american_to_implied_prob(home_ml)
-    p_a_raw = american_to_implied_prob(away_ml)
-    p_h_fair, p_a_fair, vig = remove_vig(p_h_raw, p_a_raw)
+    valid_ml = (
+        home_ml is not None and away_ml is not None
+        and home_ml != 0 and away_ml != 0
+        and math.isfinite(home_ml) and math.isfinite(away_ml)
+        and (-100 >= home_ml or home_ml >= 100)
+        and (-100 >= away_ml or away_ml >= 100)
+    )
+    if market_prob_home_no_vig is not None and market_prob_away_no_vig is not None:
+        p_h_fair = market_prob_home_no_vig
+        p_a_fair = market_prob_away_no_vig
+        if valid_ml:
+            p_h_raw = american_to_implied_prob(home_ml)
+            p_a_raw = american_to_implied_prob(away_ml)
+            vig = round((p_h_raw + p_a_raw) - 1.0, 4)
+        else:
+            vig = 0.0
+    elif valid_ml:
+        p_h_raw = american_to_implied_prob(home_ml)
+        p_a_raw = american_to_implied_prob(away_ml)
+        p_h_fair, p_a_fair, vig = remove_vig(p_h_raw, p_a_raw)
+    else:
+        p_h_fair, p_a_fair, vig = None, None, 0.0
 
     # 2. Probabilidades del Modelo (SSOT: Respeta la probabilidad generada por el motor de inferencia)
     model_valid = (
@@ -85,27 +141,34 @@ def generate_nfl_matchup_analytics(
         proj_total = None
 
     # 3. Cálculo de EV y Kelly en Moneyline (confluencia y cuota >= 1.40)
-    dec_h = american_to_decimal(home_ml)
-    dec_a = american_to_decimal(away_ml)
+    if model_valid and valid_ml:
+        dec_h = american_to_decimal(home_ml)
+        dec_a = american_to_decimal(away_ml)
 
-    ev_h = (p_home_model * (dec_h - 1.0) * 100.0) - ((1.0 - p_home_model) * 100.0) if model_valid else None
-    ev_a = (p_away_model * (dec_a - 1.0) * 100.0) - ((1.0 - p_away_model) * 100.0) if model_valid else None
+        ev_h = (p_home_model * (dec_h - 1.0) * 100.0) - ((1.0 - p_home_model) * 100.0)
+        ev_a = (p_away_model * (dec_a - 1.0) * 100.0) - ((1.0 - p_away_model) * 100.0)
 
-    edge_h = p_home_model - p_h_fair if model_valid else None
-    edge_a = p_away_model - p_a_fair if model_valid else None
+        edge_h = p_home_model - p_h_fair if p_h_fair is not None else None
+        edge_a = p_away_model - p_a_fair if p_a_fair is not None else None
 
-    confluence_ok = (model_agreement is None or model_agreement >= 2) and (
-        confluence_tier is None or confluence_tier.upper() != "NONE"
-    )
+        confluence_ok = (model_agreement is None or model_agreement >= 2) and (
+            confluence_tier is None or confluence_tier.upper() != "NONE"
+        )
 
-    home_eligible = model_valid and confluence_ok and (dec_h >= 1.40) and (ev_h is not None and ev_h > 0)
-    away_eligible = model_valid and confluence_ok and (dec_a >= 1.40) and (ev_a is not None and ev_a > 0)
+        home_eligible = confluence_ok and (dec_h >= 1.40) and (ev_h is not None and ev_h > 0)
+        away_eligible = confluence_ok and (dec_a >= 1.40) and (ev_a is not None and ev_a > 0)
 
-    # Confianza estricta: prob > 0.55, unánime (agreement >= 3 o None), edge >= 0.03, ev > 0, odds >= 1.40
-    home_is_confianza = home_eligible and (p_home_model > 0.55) and (edge_h >= 0.03) and (model_agreement is None or model_agreement >= 3)
-    away_is_confianza = away_eligible and (p_away_model > 0.55) and (edge_a >= 0.03) and (model_agreement is None or model_agreement >= 3)
+        home_is_confianza = home_eligible and (p_home_model > 0.55) and (edge_h is not None and edge_h >= 0.03) and (model_agreement is None or model_agreement >= 3)
+        away_is_confianza = away_eligible and (p_away_model > 0.55) and (edge_a is not None and edge_a >= 0.03) and (model_agreement is None or model_agreement >= 3)
+    else:
+        dec_h, dec_a = None, None
+        ev_h, ev_a = None, None
+        edge_h, edge_a = None, None
+        confluence_ok = False
+        home_eligible, away_eligible = False, False
+        home_is_confianza, away_is_confianza = False, False
 
-    if not model_valid:
+    if not model_valid or not valid_ml:
         ml_tier, ml_side, ml_pick_team, ml_ev, ml_prob, ml_odds, kelly_frac = (
             "UNAVAILABLE", None, None, None, None, None, 0.0
         )
@@ -138,33 +201,49 @@ def generate_nfl_matchup_analytics(
     kelly_stake_ml = calculate_kelly_amount(bankroll, kelly_frac) if valid_bankroll else None
 
     # 4. Análisis Cuantitativo del Spread (Modelado de margen y probabilidad de cubrir)
-    if model_valid and spread_line is not None:
+    # Si los momios de spread son explícitamente inválidos, no se sintetiza -110 ni se produce EV/Kelly.
+    if model_valid and spread_line is not None and not spread_odds_corrupt:
         z_cover = (proj_margin_raw + spread_line) / 13.5
         p_home_cover = float(norm.cdf(z_cover))
         p_away_cover = 1.0 - p_home_cover
 
-        # Cuota estándar de spread -110 (1.909 decimal)
-        dec_spread = 1.9091
-        ev_home_spread = (p_home_cover * (dec_spread - 1.0) * 100.0) - ((1.0 - p_home_cover) * 100.0)
-        ev_away_spread = (p_away_cover * (dec_spread - 1.0) * 100.0) - ((1.0 - p_away_cover) * 100.0)
+        # Preservar precio observado o fallback estándar -110 ÚNICAMENTE si está ausente (None)
+        h_spr_odds = home_spread_ml if home_spread_ml is not None else -110
+        a_spr_odds = away_spread_ml if away_spread_ml is not None else -110
+        dec_home_spread = american_to_decimal(h_spr_odds)
+        dec_away_spread = american_to_decimal(a_spr_odds)
 
-        edge_home_spread = p_home_cover - 0.50
-        edge_away_spread = p_away_cover - 0.50
+        ev_home_spread = (p_home_cover * (dec_home_spread - 1.0) * 100.0) - ((1.0 - p_home_cover) * 100.0)
+        ev_away_spread = (p_away_cover * (dec_away_spread - 1.0) * 100.0) - ((1.0 - p_away_cover) * 100.0)
 
-        if ev_home_spread > 0 and p_home_cover > p_away_cover and dec_spread >= 1.40 and confluence_ok and p_home_cover > 0.55 and edge_home_spread >= 0.03:
+        # De-vigging riguroso de la línea de spread observada
+        p_h_spr_raw = american_to_implied_prob(h_spr_odds)
+        p_a_spr_raw = american_to_implied_prob(a_spr_odds)
+        fair_h_spr, fair_a_spr, spr_vig = remove_vig(p_h_spr_raw, p_a_spr_raw)
+
+        edge_home_spread = p_home_cover - fair_h_spr
+        edge_away_spread = p_away_cover - fair_a_spr
+
+        spread_confluence_ok = (model_agreement is None or model_agreement >= 2) and (
+            confluence_tier is None or confluence_tier.upper() != "NONE"
+        )
+
+        if ev_home_spread > 0 and p_home_cover > p_away_cover and dec_home_spread >= 1.40 and spread_confluence_ok and p_home_cover > 0.55 and edge_home_spread >= 0.03:
             spread_pick = f"{home_team} {spread_line:+0.1f}"
             spread_cover_prob = round(p_home_cover, 4)
             ev_spread = round(ev_home_spread, 2)
             spread_edge = round(edge_home_spread * 100.0, 1)
             spread_tier = TierStr("CONFIANZA")
-            spread_kelly_frac = calculate_kelly_fraction(p_home_cover, dec_spread, fraction_multiplier=0.15, max_cap=0.03)
-        elif ev_away_spread > 0 and p_away_cover > p_home_cover and dec_spread >= 1.40 and confluence_ok and p_away_cover > 0.55 and edge_away_spread >= 0.03:
+            spread_kelly_frac = calculate_kelly_fraction(p_home_cover, dec_home_spread, fraction_multiplier=0.15, max_cap=0.03)
+            spread_odds_american = h_spr_odds
+        elif ev_away_spread > 0 and p_away_cover > p_home_cover and dec_away_spread >= 1.40 and spread_confluence_ok and p_away_cover > 0.55 and edge_away_spread >= 0.03:
             spread_pick = f"{away_team} {-spread_line:+0.1f}"
             spread_cover_prob = round(p_away_cover, 4)
             ev_spread = round(ev_away_spread, 2)
             spread_edge = round(edge_away_spread * 100.0, 1)
             spread_tier = TierStr("CONFIANZA")
-            spread_kelly_frac = calculate_kelly_fraction(p_away_cover, dec_spread, fraction_multiplier=0.15, max_cap=0.03)
+            spread_kelly_frac = calculate_kelly_fraction(p_away_cover, dec_away_spread, fraction_multiplier=0.15, max_cap=0.03)
+            spread_odds_american = a_spr_odds
         else:
             spread_pick = None
             spread_cover_prob = round(max(p_home_cover, p_away_cover), 4)
@@ -172,6 +251,7 @@ def generate_nfl_matchup_analytics(
             spread_edge = round(max(edge_home_spread, edge_away_spread) * 100.0, 1)
             spread_tier = TierStr("NO PICK")
             spread_kelly_frac = 0.0
+            spread_odds_american = None
 
         spread_kelly_stake = calculate_kelly_amount(bankroll, spread_kelly_frac) if valid_bankroll else None
         spread_has_edge = (ev_spread is not None and ev_spread > 0 and spread_kelly_frac > 0)
@@ -184,6 +264,8 @@ def generate_nfl_matchup_analytics(
         spread_kelly_frac = None
         spread_kelly_stake = None
         spread_has_edge = False
+        spread_odds_american = None
+        fair_h_spr, fair_a_spr, spr_vig = None, None, None
 
     # 5. Análisis Cuantitativo de Totales
     # Hasta contar con modelo validado específicamente para totales,
@@ -200,6 +282,13 @@ def generate_nfl_matchup_analytics(
     ev_totals = None
     totals_kelly_frac = None
     totals_kelly_stake = None
+
+    if over_ml is not None and under_ml is not None and not totals_odds_corrupt:
+        p_o_raw = american_to_implied_prob(over_ml)
+        p_u_raw = american_to_implied_prob(under_ml)
+        fair_o, fair_u, totals_vig = remove_vig(p_o_raw, p_u_raw)
+    else:
+        fair_o, fair_u, totals_vig = None, None, None
 
     # 6. Player Props Reales Enriquecidos con EV y Kelly Individual
     enriched_props: List[Dict[str, Any]] = []
@@ -227,7 +316,7 @@ def generate_nfl_matchup_analytics(
         })
 
     # 7. Determinación de la Mejor Apuesta Recomendada del Enfrentamiento (#1 BEST BET)
-    # Compara objetivamente la rentabilidad y ventaja entre Moneyline y Props con cuotas reales
+    # Compara objetivamente la rentabilidad y ventaja entre Moneyline, Spread y Props con cuotas reales
     candidates: List[Dict[str, Any]] = []
 
     if ml_ev is not None and ml_ev > 0 and kelly_frac > 0:
@@ -239,17 +328,18 @@ def generate_nfl_matchup_analytics(
             "win_probability": ml_prob,
             "ev_dollars": round(ml_ev, 2),
             "kelly_stake": kelly_stake_ml,
-            "edge_pct": round(max(edge_h, edge_a) * 100, 1),
+            "edge_pct": round(max(edge_h, edge_a) * 100, 1) if (edge_h is not None and edge_a is not None) else 0.0,
             "tier": ml_tier,
             "reason": f"Probabilidad modelo de {max(p_home_model, p_away_model)*100:.1f}% supera la cuota de la casa.",
         })
 
-    if spread_tier in ("PREMIUM", "VALUE") and spread_pick is not None and ev_spread is not None and ev_spread > 0:
+    if spread_tier in ("CONFIANZA", "PREMIUM", "VALUE") and spread_pick is not None and ev_spread is not None and ev_spread > 0:
+        spr_odds_str = f" ({spread_odds_american:+d})" if spread_odds_american is not None else " (-110)"
         candidates.append({
             "market": "spread",
             "market_label": "Hándicap / Spread",
-            "selection": f"{spread_pick} (-110)",
-            "odds_american": -110,
+            "selection": f"{spread_pick}{spr_odds_str}",
+            "odds_american": spread_odds_american or -110,
             "win_probability": spread_cover_prob,
             "ev_dollars": ev_spread,
             "kelly_stake": spread_kelly_stake,
@@ -273,8 +363,8 @@ def generate_nfl_matchup_analytics(
                 "reason": ep.get("reasoning", f"Línea de casa en {ep['market_line']} vs proyección en {ep['projected_value']}."),
             })
 
-    # Priorizar por Tier PREMIUM y mayor EV
-    candidates.sort(key=lambda c: ("PREMIUM" in c["tier"], c["ev_dollars"]), reverse=True)
+    # Priorizar por Tier CONFIANZA / PREMIUM y mayor EV
+    candidates.sort(key=lambda c: (c["tier"] in ("CONFIANZA", "PREMIUM", "VALUE"), c["ev_dollars"]), reverse=True)
     best_bet = candidates[0] if candidates else None
 
     # 8. Factores Clave Explicados para Humanos (SSOT con recomendación clara de Kelly)
@@ -284,9 +374,13 @@ def generate_nfl_matchup_analytics(
         factors = [f"Probabilidad del modelo: {favorite_team} {fav_prob:.1%}."]
     else:
         factors = ["Probabilidad del modelo no disponible; no se deriva de la cuota de mercado."]
-    if spread_line is not None and model_valid:
+    if spread_line is not None and model_valid and not spread_odds_corrupt:
         factors.append(
             f"Línea de Hándicap en {spread_line:+0.1f}: Margen proyectado {proj_margin:+0.1f} pts ({proj_home_score:.1f} vs {proj_away_score:.1f}); prob de cubrir {spread_cover_prob:.1%}."
+        )
+    elif spread_line is not None and spread_odds_corrupt:
+        factors.append(
+            f"Línea de Hándicap en {spread_line:+0.1f}: Momio observado explícitamente inválido; se abstiene de inferir precios sintéticos o calcular EV/Kelly."
         )
     elif spread_line is not None:
         factors.append(
@@ -303,6 +397,10 @@ def generate_nfl_matchup_analytics(
         factors.append("Línea de Puntos Totales: No disponible en cuotas observadas.")
 
     if best_bet:
+        if best_bet.get("market") == "moneyline":
+            best_bet["bookmaker"] = (home_bookmaker if ml_side == "home" else away_bookmaker) or bookmaker
+        elif best_bet.get("market") == "spread":
+            best_bet["bookmaker"] = (spread_home_bookmaker if spread_pick and home_team in spread_pick else (spread_away_bookmaker if spread_pick and away_team in spread_pick else (spread_home_bookmaker or bookmaker)))
         factors.append(
             f"Oportunidad calculada con precio observado: {best_bet['market_label']} ({best_bet['selection']}); EV +${best_bet['ev_dollars']} por cada $100 apostados."
         )
@@ -318,6 +416,9 @@ def generate_nfl_matchup_analytics(
             f"QB EPA vs reemplazo de liga ({away_team}, diagnóstico; sin ajuste al margen): {qb_expected_epa_lost_away:+.1f} EPA."
         )
 
+    bench_bm = h2h_benchmark_bookmaker or benchmark_bookmaker or home_bookmaker or bookmaker
+    bench_obs_str = benchmark_observed_at.isoformat() if hasattr(benchmark_observed_at, "isoformat") else (str(benchmark_observed_at) if benchmark_observed_at else None)
+
     return {
         "home_team": home_team,
         "away_team": away_team,
@@ -327,18 +428,27 @@ def generate_nfl_matchup_analytics(
         "status": "available" if model_valid and bookmaker else "unavailable",
         "prob_home": p_home_model,
         "prob_away": p_away_model,
-        "market_prob_home_no_vig": round(p_h_fair, 4),
-        "market_prob_away_no_vig": round(p_a_fair, 4),
+        "h2h_benchmark_bookmaker": bench_bm,
+        "benchmark_bookmaker": bench_bm,
+        "benchmark_observed_at": bench_obs_str,
+        "market_prob_home_no_vig": round(p_h_fair, 4) if p_h_fair is not None else None,
+        "market_prob_away_no_vig": round(p_a_fair, 4) if p_a_fair is not None else None,
         "qb_expected_epa_lost_home": qb_expected_epa_lost_home,
         "qb_expected_epa_lost_away": qb_expected_epa_lost_away,
         "tier": ml_tier,
-        "has_edge": ml_tier in ["PREMIUM", "VALUE"],
+        "has_edge": ml_tier in ["CONFIANZA", "PREMIUM", "VALUE"],
         "best_bet": best_bet,
         "moneyline": {
-            "status": "available" if model_valid and bookmaker else "unavailable",
+            "status": "available" if model_valid and (bookmaker or home_bookmaker) else "unavailable",
             "pick_team": ml_pick_team,
             "pick_side": ml_side,
             "odds_american": ml_odds,
+            "home_bookmaker": home_bookmaker or bookmaker,
+            "away_bookmaker": away_bookmaker or bookmaker,
+            "h2h_benchmark_bookmaker": bench_bm,
+            "benchmark_bookmaker": bench_bm,
+            "benchmark_observed_at": bench_obs_str,
+            "bookmaker": (home_bookmaker if ml_side == "home" else away_bookmaker) or bookmaker,
             "prob_modelo": round(ml_prob, 4) if ml_prob is not None else None,
             "ev_dollars": round(ml_ev, 2) if ml_ev is not None else None,
             "kelly_stake": kelly_stake_ml,
@@ -346,12 +456,20 @@ def generate_nfl_matchup_analytics(
             "tier": ml_tier,
         },
         "spread": {
-            "status": "available" if spread_line is not None else "unavailable",
+            "status": "available" if (spread_line is not None and not spread_odds_corrupt) else "unavailable",
             "market_line": spread_line,
-            "odds_american": None,
-            "projected_margin": round(proj_margin, 1) if proj_margin is not None else None,
-            "projected_home_score": round(proj_home_score, 1) if proj_home_score is not None else None,
-            "projected_away_score": round(proj_away_score, 1) if proj_away_score is not None else None,
+            "odds_american": spread_odds_american,
+            "home_spread_ml": home_spread_ml if not home_spread_explicit_invalid else None,
+            "away_spread_ml": away_spread_ml if not away_spread_explicit_invalid else None,
+            "home_bookmaker": spread_home_bookmaker or bookmaker,
+            "away_bookmaker": spread_away_bookmaker or bookmaker,
+            "bookmaker": (spread_home_bookmaker if spread_pick and home_team in spread_pick else (spread_away_bookmaker if spread_pick and away_team in spread_pick else (spread_home_bookmaker or bookmaker))),
+            "market_prob_home_cover_no_vig": round(fair_h_spr, 4) if fair_h_spr is not None else None,
+            "market_prob_away_cover_no_vig": round(fair_a_spr, 4) if fair_a_spr is not None else None,
+            "market_vig": round(spr_vig, 4) if spr_vig is not None else None,
+            "projected_margin": round(proj_margin, 1) if (proj_margin is not None and not spread_odds_corrupt) else None,
+            "projected_home_score": round(proj_home_score, 1) if (proj_home_score is not None and not spread_odds_corrupt) else None,
+            "projected_away_score": round(proj_away_score, 1) if (proj_away_score is not None and not spread_odds_corrupt) else None,
             "pick": spread_pick,
             "cover_probability": spread_cover_prob,
             "edge_pct": spread_edge,
@@ -361,9 +479,17 @@ def generate_nfl_matchup_analytics(
             "tier": spread_tier,
         },
         "totals": {
-            "status": "available" if total_line is not None else "unavailable",
+            "status": "available" if (total_line is not None and not totals_odds_corrupt) else "unavailable",
             "market_line": total_line,
             "odds_american": None,
+            "over_ml": over_ml if not over_explicit_invalid else None,
+            "under_ml": under_ml if not under_explicit_invalid else None,
+            "over_bookmaker": total_over_bookmaker or bookmaker,
+            "under_bookmaker": total_under_bookmaker or bookmaker,
+            "bookmaker": total_over_bookmaker if total_over_bookmaker == total_under_bookmaker else (f"{total_over_bookmaker}/{total_under_bookmaker}" if total_over_bookmaker and total_under_bookmaker else bookmaker),
+            "market_prob_over_no_vig": round(fair_o, 4) if fair_o is not None else None,
+            "market_prob_under_no_vig": round(fair_u, 4) if fair_u is not None else None,
+            "market_vig": round(totals_vig, 4) if totals_vig is not None else None,
             "projected_total": round(proj_total, 1) if proj_total is not None else None,
             "pick": totals_pick,
             "recommendation": totals_recommendation,

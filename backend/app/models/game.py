@@ -125,10 +125,21 @@ class OddsSnapshot(Base):
 
     id              = Column(Integer, primary_key=True)
     game_id         = Column(Integer, ForeignKey("games.id"), nullable=False, index=True)
-    bookmaker       = Column(String(50), nullable=False)  # "draftkings", "fanduel"...
+    bookmaker       = Column(String(50), nullable=False)  # "draftkings", "fanduel", o composite "dk/fd"
     market          = Column(String(20), nullable=False)  # "h2h" | "spreads" | "totals"
     captured_at     = Column(DateTime(timezone=True), nullable=False)
     observed_at     = Column(DateTime(timezone=True), nullable=False, index=True)
+
+    # Procedencia por lado / mercado
+    home_bookmaker  = Column(String(50), nullable=True)  # Casa de home_ml / home_spread
+    away_bookmaker  = Column(String(50), nullable=True)  # Casa de away_ml / away_spread
+    over_bookmaker  = Column(String(50), nullable=True)  # Casa de over_ml
+    under_bookmaker = Column(String(50), nullable=True)  # Casa de under_ml
+
+    # Procedencia del benchmark no-vig
+    benchmark_bookmaker     = Column(String(50), nullable=True)  # Casa del benchmark no-vig
+    benchmark_observed_at   = Column(DateTime(timezone=True), nullable=True)  # Timestamp efectivo del benchmark
+    h2h_benchmark_bookmaker = Column(String(50), nullable=True)  # Alias explícito de procedencia benchmark
 
     # Moneyline
     home_ml         = Column(Integer)   # Momio americano (ej: -130)

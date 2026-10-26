@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.models.game import Game, Prediction, OddsSnapshot, Team
 from app.services.ev_engine import (
     BetEvent,
@@ -314,7 +315,14 @@ def evaluate_custom_parlay(
         odds_am = leg.get("odds_american")
         market = leg.get("market", "h2h")
 
-        if odds_am is not None:
+        valid_odds = (
+            odds_am is not None
+            and math.isfinite(odds_am)
+            and odds_am != 0
+            and (-100 >= odds_am or odds_am >= 100)
+        )
+
+        if valid_odds:
             p_dec = american_to_decimal(int(odds_am))
             odds_decimal *= p_dec
         else:
@@ -327,12 +335,12 @@ def evaluate_custom_parlay(
                 "team_name": leg.get("team_name", "Desconocido"),
                 "market": market,
                 "prob_model": None,
-                "odds_american": odds_am,
+                "odds_american": odds_am if valid_odds else None,
                 "odds_decimal": round(p_dec, 3) if p_dec > 0 else None,
                 "edge_pct": None,
                 "has_individual_edge": False,
                 "tier": "NO_MODEL_PROB",
-                "missing_reason": leg.get("missing_reason") or "Probabilidad del modelo no disponible para este mercado.",
+                "missing_reason": leg.get("missing_reason") or ("Momio americano inválido o ausente." if not valid_odds else "Probabilidad del modelo no disponible para este mercado."),
                 "bookmaker": leg.get("bookmaker"),
                 "observed_at": leg.get("observed_at"),
                 "source": leg.get("source", "real"),
@@ -345,7 +353,7 @@ def evaluate_custom_parlay(
         p_float = float(p)
         prob_combined *= p_float
 
-        if odds_am is not None:
+        if valid_odds:
             leg_ev = calculate_ev(p_float, int(odds_am), bankroll=bankroll)
             edge_pct = round(leg_ev.edge_pct, 4)
             has_edge = leg_ev.has_edge
@@ -353,17 +361,18 @@ def evaluate_custom_parlay(
         else:
             edge_pct = None
             has_edge = False
-            tier = "UNKNOWN"
+            tier = "INVALID_ODDS"
 
         evaluated_legs.append({
             "team_name": leg.get("team_name", "Desconocido"),
             "market": market,
             "prob_model": round(p_float, 4),
-            "odds_american": odds_am,
+            "odds_american": odds_am if valid_odds else None,
             "odds_decimal": round(p_dec, 3) if p_dec > 0 else None,
             "edge_pct": edge_pct,
             "has_individual_edge": has_edge,
             "tier": tier,
+            "missing_reason": leg.get("missing_reason") or ("Momio americano inválido o ausente." if not valid_odds else None),
             "bookmaker": leg.get("bookmaker"),
             "observed_at": leg.get("observed_at"),
             "source": leg.get("source", "real"),
@@ -547,6 +556,8 @@ async def resolve_and_evaluate_parlay(
         odds_am = None
         bookmaker = None
         observed_at = None
+        missing_reason: Optional[str] = None
+        point = leg.get("point") or leg.get("line")
 
         if db is not None and resolved_game:
             snap_stmt = (
@@ -557,31 +568,82 @@ async def resolve_and_evaluate_parlay(
             snaps_res = await db.execute(snap_stmt)
             snaps = snaps_res.scalars().all()
 
+            freshness_limit = (
+                settings.FRESHNESS_HOURS_NFL_ODDS
+                if (resolved_game.sport and resolved_game.sport.upper() == "NFL")
+                else settings.FRESHNESS_HOURS_NBA_ODDS
+            )
+            now_utc = datetime.now(timezone.utc)
+            g_kickoff = (
+                resolved_game.game_date
+                if resolved_game.game_date.tzinfo
+                else resolved_game.game_date.replace(tzinfo=timezone.utc)
+            )
+
+            def is_snapshot_usable(s: OddsSnapshot) -> bool:
+                if not s or not s.observed_at:
+                    return False
+                obs = s.observed_at if s.observed_at.tzinfo else s.observed_at.replace(tzinfo=timezone.utc)
+                age = (now_utc - obs).total_seconds() / 3600.0
+                return 0 <= age <= freshness_limit and obs < g_kickoff
+
             if market == "totals":
                 tot_snaps = [s for s in snaps if s.total_line is not None or s.market == "totals"]
                 if tot_snaps:
                     latest_tot = tot_snaps[0]
-                    odds_am = latest_tot.over_ml if side == "over" else latest_tot.under_ml
-                    bookmaker = latest_tot.bookmaker
-                    observed_at = latest_tot.observed_at.isoformat() if latest_tot.observed_at else None
+                    if is_snapshot_usable(latest_tot):
+                        tot_l = latest_tot.total_line
+                        raw_odds = latest_tot.over_ml if side == "over" else latest_tot.under_ml
+                        if tot_l is None or not math.isfinite(tot_l) or tot_l <= 0:
+                            missing_reason = "Línea de totales no positiva o no finita en base de datos."
+                        elif raw_odds is None or raw_odds == 0 or (-100 < raw_odds < 100):
+                            missing_reason = "Momios de totales inválidos o fuera de rango en base de datos."
+                        else:
+                            odds_am = raw_odds
+                            bookmaker = (latest_tot.over_bookmaker if side == "over" else latest_tot.under_bookmaker) or (latest_tot.home_bookmaker if side == "over" else latest_tot.away_bookmaker) or latest_tot.bookmaker
+                            observed_at = latest_tot.observed_at.isoformat() if latest_tot.observed_at else None
+                            point = tot_l
+                    else:
+                        missing_reason = "Momios de totales obsoletos o post-kickoff en base de datos."
             elif market == "spreads":
                 spr_snaps = [s for s in snaps if s.home_spread is not None or s.market == "spreads"]
                 if spr_snaps:
                     latest_spr = spr_snaps[0]
-                    odds_am = latest_spr.home_spread_ml if side == "home" else latest_spr.away_spread_ml
-                    bookmaker = latest_spr.bookmaker
-                    observed_at = latest_spr.observed_at.isoformat() if latest_spr.observed_at else None
+                    if is_snapshot_usable(latest_spr):
+                        h_spr = latest_spr.home_spread
+                        a_spr = latest_spr.away_spread if latest_spr.away_spread is not None else (-h_spr if h_spr is not None else None)
+                        raw_odds = latest_spr.home_spread_ml if side == "home" else latest_spr.away_spread_ml
+                        if (
+                            h_spr is None or not math.isfinite(h_spr)
+                            or (latest_spr.away_spread is not None and not math.isclose(h_spr + latest_spr.away_spread, 0.0, abs_tol=1e-3))
+                        ):
+                            missing_reason = "Línea de spread asimétrica o no finita en base de datos."
+                        elif raw_odds is None or raw_odds == 0 or (-100 < raw_odds < 100):
+                            missing_reason = "Momios de spread inválidos o fuera de rango en base de datos."
+                        else:
+                            odds_am = raw_odds
+                            bookmaker = (latest_spr.home_bookmaker if side == "home" else latest_spr.away_bookmaker) or latest_spr.bookmaker
+                            observed_at = latest_spr.observed_at.isoformat() if latest_spr.observed_at else None
+                            point = h_spr if side == "home" else a_spr
+                    else:
+                        missing_reason = "Momios de spread obsoletos o post-kickoff en base de datos."
             else:  # h2h
                 h2h_snaps = [s for s in snaps if s.home_ml is not None or s.market == "h2h"]
                 if h2h_snaps:
                     latest_h2h = h2h_snaps[0]
-                    odds_am = latest_h2h.home_ml if side == "home" else latest_h2h.away_ml
-                    bookmaker = latest_h2h.bookmaker
-                    observed_at = latest_h2h.observed_at.isoformat() if latest_h2h and latest_h2h.observed_at else None
+                    if is_snapshot_usable(latest_h2h):
+                        raw_odds = latest_h2h.home_ml if side == "home" else latest_h2h.away_ml
+                        if raw_odds is None or raw_odds == 0 or (-100 < raw_odds < 100):
+                            missing_reason = "Momios moneyline fuera de rango o inválidos en base de datos."
+                        else:
+                            odds_am = raw_odds
+                            bookmaker = (latest_h2h.home_bookmaker if side == "home" else latest_h2h.away_bookmaker) or latest_h2h.bookmaker
+                            observed_at = latest_h2h.observed_at.isoformat() if latest_h2h and latest_h2h.observed_at else None
+                    else:
+                        missing_reason = "Momios moneyline obsoletos o post-kickoff en base de datos."
 
         # Resolver Probabilidad del Modelo
         prob_model = None
-        missing_reason = None
 
         if market == "totals" or side in ("over", "under"):
             # Regla estricta: No calcular EV de modelo para totales hasta que exista una probabilidad del modelo para Over/Under.
@@ -638,6 +700,7 @@ async def resolve_and_evaluate_parlay(
             "matchup": f"{away_team_name} @ {home_team_name}" if home_team_name and away_team_name else str(event_id),
             "side": side,
             "market": market,
+            "point": point,
             "prob_model": prob_model,
             "odds_american": odds_am,
             "bookmaker": bookmaker,

@@ -256,7 +256,7 @@ async def get_today_picks(
         total_res = await db.execute(total_stmt)
         total_snap = total_res.scalar_one_or_none()
 
-        def usable_market_snapshot(snapshot):
+        def usable_market_snapshot(snapshot, market_type: str = "any"):
             if snapshot is None or snapshot.observed_at is None:
                 return False
             observed = (
@@ -265,22 +265,58 @@ async def get_today_picks(
                 else snapshot.observed_at.replace(tzinfo=timezone.utc)
             )
             age = (now_utc - observed).total_seconds() / 3600.0
-            return 0 <= age <= freshness_limit and observed < g_kickoff
+            if age < 0 or age > freshness_limit or observed >= g_kickoff:
+                return False
+            if market_type == "spread":
+                h_spr = snapshot.home_spread
+                a_spr = snapshot.away_spread
+                if h_spr is None or not math.isfinite(h_spr):
+                    return False
+                if a_spr is not None and not math.isclose(h_spr + a_spr, 0.0, abs_tol=1e-3):
+                    return False
+                h_spr_ml = snapshot.home_spread_ml
+                a_spr_ml = snapshot.away_spread_ml
+                if h_spr_ml is not None and (not math.isfinite(h_spr_ml) or (-100 < h_spr_ml < 100) or h_spr_ml == 0):
+                    return False
+                if a_spr_ml is not None and (not math.isfinite(a_spr_ml) or (-100 < a_spr_ml < 100) or a_spr_ml == 0):
+                    return False
+            elif market_type == "total":
+                tot = snapshot.total_line
+                if tot is None or not math.isfinite(tot) or tot <= 0:
+                    return False
+                o_ml = snapshot.over_ml
+                u_ml = snapshot.under_ml
+                if o_ml is not None and (not math.isfinite(o_ml) or (-100 < o_ml < 100) or o_ml == 0):
+                    return False
+                if u_ml is not None and (not math.isfinite(u_ml) or (-100 < u_ml < 100) or u_ml == 0):
+                    return False
+            return True
 
-        if not usable_market_snapshot(spread_snap):
+        if not usable_market_snapshot(spread_snap, "spread"):
             spread_snap = None
-        if not usable_market_snapshot(total_snap):
+        if not usable_market_snapshot(total_snap, "total"):
             total_snap = None
 
         spread_line = spread_snap.home_spread if spread_snap else None
         total_line = total_snap.total_line if total_snap else None
         # EV debe usar el mismo precio H2H fresco cuya vigencia acabamos de validar.
+        h2h_home_bm = getattr(h2h_snap, "home_bookmaker", None) or h2h_snap.bookmaker
+        h2h_away_bm = getattr(h2h_snap, "away_bookmaker", None) or h2h_snap.bookmaker
+        h2h_bench_bm = getattr(h2h_snap, "h2h_benchmark_bookmaker", None) or getattr(h2h_snap, "benchmark_bookmaker", None) or h2h_home_bm
+        bench_obs = getattr(h2h_snap, "benchmark_observed_at", None) or h2h_snap.observed_at
+        spread_home_bm = getattr(spread_snap, "home_bookmaker", None) or (spread_snap.bookmaker if spread_snap else None)
+        spread_away_bm = getattr(spread_snap, "away_bookmaker", None) or (spread_snap.bookmaker if spread_snap else None)
+        total_over_bm = getattr(total_snap, "over_bookmaker", None) or getattr(total_snap, "home_bookmaker", None) or (total_snap.bookmaker if total_snap else None)
+        total_under_bm = getattr(total_snap, "under_bookmaker", None) or getattr(total_snap, "away_bookmaker", None) or (total_snap.bookmaker if total_snap else None)
+
         bookmaker = h2h_snap.bookmaker
         home_ml = h2h_snap.home_ml
         away_ml = h2h_snap.away_ml
 
         if (
             home_ml is None or away_ml is None or home_ml == 0 or away_ml == 0 or not bookmaker
+            or not math.isfinite(home_ml) or not math.isfinite(away_ml)
+            or (-100 < home_ml < 100) or (-100 < away_ml < 100)
             or pred.home_win_prob is None or pred.away_win_prob is None
         ):
             excluded_missing_market_data += 1
@@ -307,6 +343,7 @@ async def get_today_picks(
         fav_bet = home_bet if side == "home" else away_bet
         ml = home_ml if side == "home" else away_ml
         prob = pred.home_win_prob if side == "home" else pred.away_win_prob
+        pick_bm = h2h_home_bm if side == "home" else h2h_away_bm
 
         # Confianza requiere estrictamente:
         # 1. Probabilidad del modelo > 55%
@@ -334,7 +371,22 @@ async def get_today_picks(
             away_ml=away_ml,
             spread_line=spread_line,
             total_line=total_line,
-            bookmaker=bookmaker,
+            home_spread_ml=spread_snap.home_spread_ml if spread_snap else None,
+            away_spread_ml=spread_snap.away_spread_ml if spread_snap else None,
+            over_ml=total_snap.over_ml if total_snap else None,
+            under_ml=total_snap.under_ml if total_snap else None,
+            bookmaker=pick_bm,
+            home_bookmaker=h2h_home_bm,
+            away_bookmaker=h2h_away_bm,
+            spread_home_bookmaker=spread_home_bm,
+            spread_away_bookmaker=spread_away_bm,
+            total_over_bookmaker=total_over_bm,
+            total_under_bookmaker=total_under_bm,
+            h2h_benchmark_bookmaker=h2h_bench_bm,
+            benchmark_bookmaker=h2h_bench_bm,
+            benchmark_observed_at=bench_obs,
+            market_prob_home_no_vig=h2h_snap.home_implied_prob,
+            market_prob_away_no_vig=h2h_snap.away_implied_prob,
             live_player_props=real_props,
             model_prob_home=pred.home_win_prob,
             model_prob_away=pred.away_win_prob,
@@ -396,7 +448,16 @@ async def get_today_picks(
             "home_win_prob":    round(pred.home_win_prob, 4),
             "away_win_prob":    round(pred.away_win_prob, 4),
             "tiene_ventaja":    home_bet.has_edge or away_bet.has_edge,
-            "bookmaker":        bookmaker,
+            "bookmaker":        pick_bm,
+            "ml_home_bookmaker": h2h_home_bm,
+            "ml_away_bookmaker": h2h_away_bm,
+            "h2h_benchmark_bookmaker": h2h_bench_bm,
+            "benchmark_bookmaker": h2h_bench_bm,
+            "benchmark_observed_at": bench_obs.isoformat() if bench_obs else None,
+            "spread_home_bookmaker": spread_home_bm,
+            "spread_away_bookmaker": spread_away_bm,
+            "total_over_bookmaker": total_over_bm,
+            "total_under_bookmaker": total_under_bm,
             "observed_at":      h2h_obs.isoformat() if h2h_obs else None,
             "predicted_at":     p_pred_at.isoformat() if p_pred_at else None,
             "as_of":            p_as_of_dt.isoformat() if p_as_of_dt else None,

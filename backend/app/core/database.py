@@ -43,10 +43,37 @@ class Base(DeclarativeBase):
 
 # ─── Inicialización de tablas ────────────────────────────────────────────────
 async def init_db() -> None:
-    """Crea todas las tablas si no existen (usa Alembic para producción)."""
+    """Crea todas las tablas si no existen y asegura columnas de procedencia por lado."""
+    from sqlalchemy import text
     async with engine.begin() as conn:
         from app.models import Team, Game, OddsSnapshot, Prediction, BankrollEntry, SportsCard, ProviderGameCrosswalk  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='odds_snapshots' AND column_name='home_bookmaker') THEN
+                    ALTER TABLE odds_snapshots ADD COLUMN home_bookmaker VARCHAR(50);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='odds_snapshots' AND column_name='away_bookmaker') THEN
+                    ALTER TABLE odds_snapshots ADD COLUMN away_bookmaker VARCHAR(50);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='odds_snapshots' AND column_name='over_bookmaker') THEN
+                    ALTER TABLE odds_snapshots ADD COLUMN over_bookmaker VARCHAR(50);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='odds_snapshots' AND column_name='under_bookmaker') THEN
+                    ALTER TABLE odds_snapshots ADD COLUMN under_bookmaker VARCHAR(50);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='odds_snapshots' AND column_name='benchmark_bookmaker') THEN
+                    ALTER TABLE odds_snapshots ADD COLUMN benchmark_bookmaker VARCHAR(50);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='odds_snapshots' AND column_name='benchmark_observed_at') THEN
+                    ALTER TABLE odds_snapshots ADD COLUMN benchmark_observed_at TIMESTAMP WITH TIME ZONE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='odds_snapshots' AND column_name='h2h_benchmark_bookmaker') THEN
+                    ALTER TABLE odds_snapshots ADD COLUMN h2h_benchmark_bookmaker VARCHAR(50);
+                END IF;
+            END $$;
+        """))
 
 
 # ─── Dependency para FastAPI ─────────────────────────────────────────────────

@@ -70,6 +70,13 @@ export interface StandingsResponse {
 
 export interface MarketProvenanceInfo {
   bookmaker: string | null
+  home_bookmaker?: string | null
+  away_bookmaker?: string | null
+  h2h_benchmark_bookmaker?: string | null
+  benchmark_bookmaker?: string | null
+  benchmark_observed_at?: string | null
+  over_bookmaker?: string | null
+  under_bookmaker?: string | null
   observed_at: string | null
   captured_at: string | null
   is_stale?: boolean
@@ -83,8 +90,17 @@ export interface OddsData {
   away_team: string
   commence_time: string
   best_bookmaker: string | null
+  ml_home_bookmaker?: string | null
+  ml_away_bookmaker?: string | null
+  h2h_benchmark_bookmaker?: string | null
+  benchmark_bookmaker?: string | null
+  benchmark_observed_at?: string | null
   spread_bookmaker?: string | null
+  spread_home_bookmaker?: string | null
+  spread_away_bookmaker?: string | null
   total_bookmaker?: string | null
+  total_over_bookmaker?: string | null
+  total_under_bookmaker?: string | null
   h2h_bookmaker?: string | null
   h2h_observed_at?: string | null
   spread_observed_at?: string | null
@@ -168,6 +184,9 @@ export interface MatchupSpread {
   status?: string
   market_line: number
   odds_american: number
+  home_bookmaker?: string | null
+  away_bookmaker?: string | null
+  bookmaker?: string | null
   projected_margin?: number
   projected_home_score?: number
   projected_away_score?: number
@@ -184,6 +203,9 @@ export interface MatchupSpread {
 export interface MatchupTotals {
   market_line: number
   odds_american: number
+  over_bookmaker?: string | null
+  under_bookmaker?: string | null
+  bookmaker?: string | null
   projected_total: number
   pick: 'OVER' | 'UNDER'
   recommendation: string
@@ -244,6 +266,15 @@ export interface Pick {
   away_win_prob: number
   tiene_ventaja: boolean
   bookmaker: string | null
+  ml_home_bookmaker?: string | null
+  ml_away_bookmaker?: string | null
+  h2h_benchmark_bookmaker?: string | null
+  benchmark_bookmaker?: string | null
+  benchmark_observed_at?: string | null
+  spread_home_bookmaker?: string | null
+  spread_away_bookmaker?: string | null
+  total_over_bookmaker?: string | null
+  total_under_bookmaker?: string | null
   observed_at?: string
   predicted_at?: string
   as_of?: string
