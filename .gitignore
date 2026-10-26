@@ -34,3 +34,10 @@ data/raw/
 data/processed/
 data/predictions/
 data/cache/
+
+# AI Factory & Temp Artifacts
+.agents/
+backend/catboost_info/
+scratch/
+data/*.lock
+.ai-factory/panes.env
