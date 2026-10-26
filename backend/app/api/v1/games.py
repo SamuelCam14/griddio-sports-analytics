@@ -26,7 +26,8 @@ async def get_standings(
     db: AsyncSession = Depends(get_db),
 ):
     """Return observed W/L records; do not claim official ranking or tie-breakers."""
-    sport_upper = sport.strip().upper() if isinstance(sport, str) else ""
+    sport_val = sport.default if hasattr(sport, "default") else sport
+    sport_upper = (sport_val.strip().upper() if isinstance(sport_val, str) else "")
     if sport_upper not in {"NFL", "NBA"}:
         raise HTTPException(status_code=400, detail="Deporte no soportado")
 
@@ -367,14 +368,20 @@ async def get_upcoming_games(
     db: AsyncSession = Depends(get_db),
 ):
     """Obtiene partidos de los próximos N días."""
+    days_val = days.default if hasattr(days, "default") else days
+    clean_days = int(days_val) if isinstance(days_val, int) or (isinstance(days_val, str) and str(days_val).isdigit()) else 7
+    clean_days = max(1, min(clean_days, 30))
+    sport_val = sport.default if hasattr(sport, "default") else sport
+    sport_upper = (sport_val.strip().upper() if isinstance(sport_val, str) else "NBA")
+
     now = datetime.now(timezone.utc)
     start = now
-    end = now + timedelta(days=days)
+    end = now + timedelta(days=clean_days)
 
     stmt = (
         select(Game)
         .options(joinedload(Game.home_team), joinedload(Game.away_team))
-        .where(Game.sport == sport.upper())
+        .where(Game.sport == sport_upper)
         .where(Game.game_date >= start)
         .where(Game.game_date <= end)
         .where(Game.status == "scheduled")
@@ -384,8 +391,8 @@ async def get_upcoming_games(
     games = result.scalars().unique().all()
 
     return {
-        "sport": sport.upper(),
-        "range_days": days,
+        "sport": sport_upper,
+        "range_days": clean_days,
         "total": len(games),
         "games": [_serialize_game(g) for g in games],
     }

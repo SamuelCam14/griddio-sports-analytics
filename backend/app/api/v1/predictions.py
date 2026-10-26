@@ -103,11 +103,19 @@ async def get_today_picks(
     from app.models.game import Team, OddsSnapshot
     from app.services.sports_analytics_service import generate_nfl_matchup_analytics
 
-    approved_version = get_approved_model_version(sport)
-    if not approved_version or not _production_model_enabled(sport):
+    sport_val = sport.default if hasattr(sport, "default") else sport
+    sport_str = (sport_val if isinstance(sport_val, str) else "NBA").strip()
+    tier_val = tier.default if hasattr(tier, "default") else tier
+    tier_str = (tier_val if isinstance(tier_val, str) else "all").strip()
+    period_val = period.default if hasattr(period, "default") else period
+    period_str = (period_val if isinstance(period_val, str) else "auto").strip()
+
+    approved_version = get_approved_model_version(sport_str)
+    if not approved_version or not _production_model_enabled(sport_str):
         return {
-            "sport": sport.upper(), "period": period, "total_picks": 0,
+            "sport": sport_str.upper(), "period": period_str, "total_picks": 0,
             "as_of": datetime.now(timezone.utc).isoformat(),
+            "confianza": 0, "no_pick": 0,
             "premium": 0, "value": 0, "skip": 0, "picks": [],
             "predictions_enabled": False,
             "reason": "No hay un modelo aprobado para producción con features en paridad temporal.",
@@ -115,8 +123,9 @@ async def get_today_picks(
 
     if db is None:
         return {
-            "sport": sport.upper(), "period": period, "total_picks": 0,
+            "sport": sport_str.upper(), "period": period_str, "total_picks": 0,
             "as_of": datetime.now(timezone.utc).isoformat(),
+            "confianza": 0, "no_pick": 0,
             "premium": 0, "value": 0, "skip": 0, "picks": [],
             "predictions_enabled": True,
             "reason": "Sin sesión de base de datos provista.",
@@ -129,8 +138,8 @@ async def get_today_picks(
     today_us_end   = datetime.combine(now_us.date(), datetime.max.time()).replace(tzinfo=us_tz)
 
     # Determinar rango temporal según período
-    sport_upper = sport.upper()
-    effective_period = period
+    sport_upper = sport_str.upper()
+    effective_period = period_str
     if effective_period == "auto":
         effective_period = "week" if sport_upper == "NFL" else "today"
 
@@ -394,8 +403,8 @@ async def get_today_picks(
             confluence_tier=pred.confluence_tier,
         )
 
-        if tier != "all":
-            t_req = tier.upper()
+        if tier_str != "all":
+            t_req = tier_str.upper()
             if t_req in ("CONFIANZA", "PREMIUM", "VALUE") and normalized_tier != "CONFIANZA":
                 continue
             elif t_req in ("NO PICK", "NO_PICK", "SKIP") and normalized_tier != "NO PICK":
@@ -610,21 +619,29 @@ async def get_experimental_predictions(
 async def get_top_picks(
     sport: str = Query(default="NBA"),
     limit: int = Query(default=5, ge=1, le=20),
+    period: str = Query(default="all"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Retorna los N mejores picks por EV, solo PREMIUM y VALUE."""
-    all_picks = await get_today_picks(sport=sport, tier="all", db=db)
+    """Retorna los N mejores picks por EV, solo picks con ventaja matemática demostrada."""
+    sport_val = sport.default if hasattr(sport, "default") else sport
+    sport_str = (sport_val if isinstance(sport_val, str) else "NBA").strip()
+    limit_val = limit.default if hasattr(limit, "default") else limit
+    clean_limit = int(limit_val) if isinstance(limit_val, int) or (isinstance(limit_val, str) and str(limit_val).isdigit()) else 5
+    period_val = period.default if hasattr(period, "default") else period
+    period_str = (period_val if isinstance(period_val, str) else "all").strip()
+
+    all_picks = await get_today_picks(sport=sport_str, tier="all", period=period_str, db=db)
 
     top = [
-        p for p in all_picks["picks"]
-        if p["tier"] in ("PREMIUM", "VALUE") and p["tiene_ventaja"]
+        p for p in all_picks.get("picks", [])
+        if p.get("tiene_ventaja") and p.get("tier") in ("CONFIANZA", "PREMIUM", "VALUE")
     ]
     top.sort(key=lambda x: x.get("ev_dolares") or -999, reverse=True)
 
     return {
-        "sport": sport.upper(),
-        "top_picks": top[:limit],
-        "mensaje": f"Mostrando {min(limit, len(top))} de {len(top)} picks con ventaja matemática"
+        "sport": sport_str.upper(),
+        "top_picks": top[:clean_limit],
+        "mensaje": f"Mostrando {min(clean_limit, len(top))} de {len(top)} picks con ventaja matemática"
     }
 
 
@@ -656,7 +673,7 @@ async def get_game_prediction(
     return {
         "game_id":          pred.game_id,
         "model_version":    pred.model_version,
-        "predicted_at":     pred.predicted_at.isoformat(),
+        "predicted_at":     pred.predicted_at.isoformat() if pred.predicted_at else None,
         "probabilidades": {
             "home_win":     round(pred.home_win_prob, 4),
             "away_win":     round(pred.away_win_prob, 4),

@@ -54,9 +54,14 @@ async def get_recommended_parlays(
     - Criterio de Kelly fraccional para gestión de riesgo
     Opera exclusivamente sobre NFL en esta fase de ejecución.
     """
-    target_sport = (sport if isinstance(sport, str) else "NFL").upper()
-    clean_bankroll = bankroll if isinstance(bankroll, (int, float)) else 1000.0
-    clean_limit = limit if isinstance(limit, int) else 4
+    sport_val = sport.default if hasattr(sport, "default") else sport
+    target_sport = (sport_val if isinstance(sport_val, str) else "NFL").strip().upper()
+    bankroll_val = bankroll.default if hasattr(bankroll, "default") else bankroll
+    clean_bankroll = float(bankroll_val) if isinstance(bankroll_val, (int, float)) or (isinstance(bankroll_val, str) and bankroll_val.replace(".", "", 1).isdigit()) else 1000.0
+    clean_bankroll = max(10.0, min(clean_bankroll, 100000.0))
+    limit_val = limit.default if hasattr(limit, "default") else limit
+    clean_limit = int(limit_val) if isinstance(limit_val, int) or (isinstance(limit_val, str) and str(limit_val).isdigit()) else 4
+    clean_limit = max(1, min(clean_limit, 20))
 
     now_utc = datetime.now(timezone.utc)
     if target_sport != "NFL":

@@ -341,6 +341,7 @@ def evaluate_custom_parlay(
                 "has_individual_edge": False,
                 "tier": "NO_MODEL_PROB",
                 "missing_reason": leg.get("missing_reason") or ("Momio americano inválido o ausente." if not valid_odds else "Probabilidad del modelo no disponible para este mercado."),
+                "game_id": leg.get("game_id"),
                 "bookmaker": leg.get("bookmaker"),
                 "observed_at": leg.get("observed_at"),
                 "source": leg.get("source", "real"),
@@ -373,6 +374,7 @@ def evaluate_custom_parlay(
             "has_individual_edge": has_edge,
             "tier": tier,
             "missing_reason": leg.get("missing_reason") or ("Momio americano inválido o ausente." if not valid_odds else None),
+            "game_id": leg.get("game_id"),
             "bookmaker": leg.get("bookmaker"),
             "observed_at": leg.get("observed_at"),
             "source": leg.get("source", "real"),
@@ -509,12 +511,13 @@ async def resolve_and_evaluate_parlay(
         # 1. Caso Entrada Manual (Calculadora manual separada y etiquetada)
         if source == "manual" or (not leg.get("game_id") and leg.get("prob_model") is not None):
             resolved_legs.append({
+                "game_id": leg.get("game_id"),
+                "event_id": leg.get("event_id") or leg.get("game_id"),
                 "team_name": leg.get("team_name") or "Entrada manual",
                 "market": leg.get("market") or "manual",
                 "prob_model": leg.get("prob_model"),
                 "odds_american": leg.get("odds_american"),
                 "source": "manual",
-                "event_id": leg.get("event_id"),
                 "matchup": leg.get("matchup") or "Entrada manual",
             })
             continue
@@ -576,14 +579,23 @@ async def resolve_and_evaluate_parlay(
             now_utc = datetime.now(timezone.utc)
             g_kickoff = (
                 resolved_game.game_date
-                if resolved_game.game_date.tzinfo
-                else resolved_game.game_date.replace(tzinfo=timezone.utc)
+                if resolved_game.game_date and resolved_game.game_date.tzinfo and resolved_game.game_date.utcoffset() is not None
+                else None
             )
 
             def is_snapshot_usable(s: OddsSnapshot) -> bool:
-                if not s or not s.observed_at:
+                if not s or not s.observed_at or g_kickoff is None:
                     return False
-                obs = s.observed_at if s.observed_at.tzinfo else s.observed_at.replace(tzinfo=timezone.utc)
+                obs = s.observed_at
+                if isinstance(obs, str):
+                    try:
+                        obs = datetime.fromisoformat(obs)
+                    except Exception:
+                        return False
+                elif not isinstance(obs, datetime):
+                    return False
+                if obs.tzinfo is None or obs.utcoffset() is None:
+                    return False
                 age = (now_utc - obs).total_seconds() / 3600.0
                 return 0 <= age <= freshness_limit and obs < g_kickoff
 
@@ -717,6 +729,71 @@ async def resolve_and_evaluate_parlay(
 
 
 
+def _is_valid_american_odds(odds: Any) -> bool:
+    """Verifica que un momio americano sea un número finito distinto de cero y fuera de (-100, 100)."""
+    if odds is None or isinstance(odds, bool):
+        return False
+    try:
+        val = float(odds)
+        return math.isfinite(val) and val != 0 and (-100 >= val or val >= 100)
+    except (ValueError, TypeError):
+        return False
+
+
+def _is_snapshot_usable(
+    s: Any,
+    kickoff_dt: Optional[Any],
+    freshness_hours: float,
+    now_utc: datetime,
+) -> bool:
+    """
+    Verifica que el snapshot de cuotas cuente con observed_at timezone-aware válido,
+    no esté obsoleto y sea estrictamente anterior al kickoff.
+    Rechaza fail-closed si observed_at o kickoff_dt son naive (tzinfo is None o utcoffset() is None).
+    """
+    if not s or not getattr(s, "observed_at", None):
+        return False
+    obs_val = s.observed_at
+    if isinstance(obs_val, str):
+        try:
+            obs_dt = datetime.fromisoformat(obs_val)
+        except Exception:
+            return False
+    elif isinstance(obs_val, datetime):
+        obs_dt = obs_val
+    else:
+        return False
+
+    # Exigir explícitamente que observed_at sea timezone-aware; rechazar naive fail-closed
+    if obs_dt.tzinfo is None or obs_dt.utcoffset() is None:
+        return False
+
+    if now_utc.tzinfo is None or now_utc.utcoffset() is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+
+    age = (now_utc - obs_dt).total_seconds() / 3600.0
+    if age < 0 or age > freshness_hours:
+        return False
+
+    if kickoff_dt is not None:
+        if isinstance(kickoff_dt, str):
+            try:
+                k_dt = datetime.fromisoformat(kickoff_dt)
+            except Exception:
+                return False
+        elif isinstance(kickoff_dt, datetime):
+            k_dt = kickoff_dt
+        else:
+            return False
+
+        if k_dt.tzinfo is None or k_dt.utcoffset() is None:
+            return False
+        if obs_dt >= k_dt:
+            return False
+
+    return True
+
+
 async def generate_recommended_parlays(
     db: AsyncSession,
     bankroll: float = 1000.0,
@@ -765,76 +842,125 @@ async def generate_recommended_parlays(
         if getattr(game, "sport", None) != target_sport or pred.model_version != approved_version:
             continue
 
-        # Determinar si el favorito tiene ventaja
-        h_prob = pred.home_win_prob
-        a_prob = pred.away_win_prob
-        h_ml = pred.best_home_ml
-        a_ml = pred.best_away_ml
-
-        if not h_ml or not a_ml:
+        # Determinar probabilidades del modelo aprobado
+        h_prob = getattr(pred, "home_win_prob", None)
+        a_prob = getattr(pred, "away_win_prob", None)
+        if h_prob is None or a_prob is None:
             continue
 
-        # Resolver bookmaker y observed_at del snapshot de odds o predicción
-        odds_snap = None
-        if db is not None and getattr(game, "id", None) is not None:
-            try:
-                odds_stmt = (
-                    select(OddsSnapshot)
-                    .where(OddsSnapshot.game_id == game.id)
-                    .where(OddsSnapshot.home_ml.isnot(None), OddsSnapshot.away_ml.isnot(None))
-                    .order_by(OddsSnapshot.observed_at.desc())
-                    .limit(1)
-                )
-                odds_res = await db.execute(odds_stmt)
-                odds_snap = odds_res.scalar_one_or_none()
-            except Exception:
-                odds_snap = None
+        # Resolver snapshot exacto y vigente en PostgreSQL
+        if db is None or getattr(game, "id", None) is None:
+            continue
 
-        leg_bookmaker = (odds_snap.bookmaker if odds_snap and odds_snap.bookmaker else None) or getattr(pred, "best_bookmaker", None) or "betmgm"
-        if odds_snap and getattr(odds_snap, "observed_at", None):
-            obs_dt = odds_snap.observed_at if odds_snap.observed_at.tzinfo else odds_snap.observed_at.replace(tzinfo=timezone.utc)
+        odds_snap = None
+        try:
+            odds_stmt = (
+                select(OddsSnapshot)
+                .where(OddsSnapshot.game_id == game.id)
+                .where(OddsSnapshot.home_ml.isnot(None), OddsSnapshot.away_ml.isnot(None))
+                .order_by(OddsSnapshot.observed_at.desc())
+                .limit(1)
+            )
+            odds_res = await db.execute(odds_stmt)
+            odds_snap = odds_res.scalar_one_or_none()
+        except Exception:
+            odds_snap = None
+
+        # INVARIANTE: Cero cuotas ni procedencias sintéticas.
+        # Si no existe snapshot usable o verificado, omitir fail-closed.
+        # PROHIBIDO usar pred.as_of, pred.predicted_at o pred.best_bookmaker ante ausencia de snapshot.
+        if odds_snap is None:
+            continue
+
+        now_utc = datetime.now(timezone.utc)
+        freshness_limit = settings.FRESHNESS_HOURS_NFL_ODDS
+        g_kickoff = getattr(game, "game_date", None)
+        if not _is_snapshot_usable(odds_snap, g_kickoff, freshness_limit, now_utc):
+            continue
+
+        snap_h_ml = getattr(odds_snap, "home_ml", None)
+        snap_a_ml = getattr(odds_snap, "away_ml", None)
+
+        h_bm_cand = getattr(odds_snap, "home_bookmaker", None)
+        if not h_bm_cand or not str(h_bm_cand).strip():
+            bm_common = getattr(odds_snap, "bookmaker", None)
+            if bm_common and "/" not in str(bm_common):
+                h_bm_cand = bm_common
+            else:
+                h_bm_cand = None
+        h_bm = str(h_bm_cand).strip() if h_bm_cand and str(h_bm_cand).strip() else None
+
+        a_bm_cand = getattr(odds_snap, "away_bookmaker", None)
+        if not a_bm_cand or not str(a_bm_cand).strip():
+            bm_common = getattr(odds_snap, "bookmaker", None)
+            if bm_common and "/" not in str(bm_common):
+                a_bm_cand = bm_common
+            else:
+                a_bm_cand = None
+        a_bm = str(a_bm_cand).strip() if a_bm_cand and str(a_bm_cand).strip() else None
+
+        obs_dt = getattr(odds_snap, "observed_at", None)
+        if isinstance(obs_dt, datetime):
+            if obs_dt.tzinfo is None or obs_dt.utcoffset() is None:
+                continue
             leg_observed_at = obs_dt.isoformat()
-        elif getattr(pred, "as_of", None) or getattr(pred, "predicted_at", None):
-            p_dt = getattr(pred, "as_of", None) or getattr(pred, "predicted_at", None)
-            p_dt_utc = p_dt if p_dt.tzinfo else p_dt.replace(tzinfo=timezone.utc)
-            leg_observed_at = p_dt_utc.isoformat()
+        elif isinstance(obs_dt, str):
+            try:
+                parsed_dt = datetime.fromisoformat(obs_dt)
+                if parsed_dt.tzinfo is None or parsed_dt.utcoffset() is None:
+                    continue
+                leg_observed_at = parsed_dt.isoformat()
+            except Exception:
+                continue
         else:
-            leg_observed_at = datetime.now(timezone.utc).isoformat()
+            continue
 
         # Si el local tiene probabilidad atractiva (> 62%)
-        if h_prob >= 0.62:
-            ev = calculate_ev(h_prob, h_ml, bankroll=bankroll)
+        if (
+            h_prob >= 0.62
+            and _is_valid_american_odds(snap_h_ml)
+            and h_bm
+            and leg_observed_at
+        ):
+            h_ml_int = int(snap_h_ml)
+            ev = calculate_ev(h_prob, h_ml_int, bankroll=bankroll)
             if ev.edge_pct >= 0.01:  # Al menos leve ventaja o paridad
                 candidates.append({
                     "game_id": game.id,
-                    "team_name": home_team.name,
+                    "team_name": getattr(home_team, "name", f"Team {game.id}") if home_team else f"Team {game.id}",
                     "opponent": away_team.name if away_team and hasattr(away_team, "name") else "Visitante",
                     "side": "home",
                     "market": "h2h",
                     "prob_model": h_prob,
-                    "odds_american": h_ml,
+                    "odds_american": h_ml_int,
                     "edge_pct": ev.edge_pct,
                     "tier": pred.confluence_tier,
-                    "bookmaker": leg_bookmaker,
+                    "bookmaker": h_bm,
                     "observed_at": leg_observed_at,
                 })
 
         # Si el visitante tiene probabilidad atractiva (> 62%)
-        if a_prob >= 0.62:
-            ev = calculate_ev(a_prob, a_ml, bankroll=bankroll)
+        if (
+            a_prob >= 0.62
+            and _is_valid_american_odds(snap_a_ml)
+            and a_bm
+            and leg_observed_at
+        ):
+            a_ml_int = int(snap_a_ml)
+            ev = calculate_ev(a_prob, a_ml_int, bankroll=bankroll)
             if ev.edge_pct >= 0.01:
                 away_name = away_team.name if away_team and hasattr(away_team, "name") else f"Visita vs {getattr(home_team, 'abbreviation', '')}"
                 candidates.append({
                     "game_id": game.id,
                     "team_name": away_name,
-                    "opponent": home_team.name if home_team and hasattr(home_team, "name") else "Local",
+                    "opponent": getattr(home_team, "name", "Local") if home_team else "Local",
                     "side": "away",
                     "market": "h2h",
                     "prob_model": a_prob,
-                    "odds_american": a_ml,
+                    "odds_american": a_ml_int,
                     "edge_pct": ev.edge_pct,
                     "tier": pred.confluence_tier,
-                    "bookmaker": leg_bookmaker,
+                    "bookmaker": a_bm,
                     "observed_at": leg_observed_at,
                 })
 

@@ -167,7 +167,28 @@ async def test_generate_recommended_parlays_rejects_legacy_versions_even_if_gate
     parlays = await generate_recommended_parlays(db=mock_db, sport="NFL")
     assert parlays == []
 
-    # Now verify that when predictions match 'nfl_temporal_v1', they ARE accepted
+    # Now verify that when predictions match 'nfl_temporal_v1' AND valid snapshots exist, they ARE accepted
+    from datetime import datetime, timezone, timedelta
+    from app.models.game import OddsSnapshot
+
+    now = datetime.now(timezone.utc)
+    game1.game_date = now + timedelta(days=2)
+    game2.game_date = now + timedelta(days=2)
+
+    snap1 = MagicMock(spec=OddsSnapshot)
+    snap1.home_ml = -140
+    snap1.away_ml = 120
+    snap1.home_bookmaker = "draftkings"
+    snap1.bookmaker = "draftkings"
+    snap1.observed_at = now - timedelta(hours=1)
+
+    snap2 = MagicMock(spec=OddsSnapshot)
+    snap2.home_ml = -130
+    snap2.away_ml = 110
+    snap2.home_bookmaker = "fanduel"
+    snap2.bookmaker = "fanduel"
+    snap2.observed_at = now - timedelta(hours=1)
+
     pred_valid1 = MagicMock(spec=Prediction)
     pred_valid1.home_win_prob = 0.75
     pred_valid1.away_win_prob = 0.25
@@ -184,7 +205,20 @@ async def test_generate_recommended_parlays_rejects_legacy_versions_even_if_gate
     pred_valid2.confluence_tier = "PREMIUM"
     pred_valid2.model_version = "nfl_temporal_v1"  # Exact approved version
 
-    mock_result.all.return_value = [(pred_valid1, game1, team1), (pred_valid2, game2, team2)]
+    call_count = 0
+    async def mock_execute_valid(stmt):
+        nonlocal call_count
+        call_count += 1
+        m = MagicMock()
+        if call_count == 1:
+            m.all.return_value = [(pred_valid1, game1, team1), (pred_valid2, game2, team2)]
+        elif call_count == 2:
+            m.scalar_one_or_none.return_value = snap1
+        else:
+            m.scalar_one_or_none.return_value = snap2
+        return m
+
+    mock_db.execute.side_effect = mock_execute_valid
     parlays_valid = await generate_recommended_parlays(db=mock_db, sport="NFL")
     assert len(parlays_valid) > 0
     assert parlays_valid[0]["viable"] is True

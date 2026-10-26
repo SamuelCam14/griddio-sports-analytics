@@ -68,12 +68,14 @@ async def sync_live_data(
     Sincroniza la cartelera completa de partidos reales y momios desde The Odds API.
     En Fase 01, la ingesta externa está restringida exclusivamente a NFL.
     """
-    if sport.upper() != "NFL":
+    sport_val = sport.default if hasattr(sport, "default") else sport
+    sport_clean = (sport_val if isinstance(sport_val, str) else "NFL").strip().upper()
+    if sport_clean != "NFL":
         raise HTTPException(
             status_code=400,
             detail=f"Deporte '{sport}' no permitido. Durante Fase 01, la sincronización de Odds API está restringida exclusivamente a NFL.",
         )
     from app.services.live_ingestion_service import sync_real_games
-    result = await sync_real_games(sport=sport, db=db)
+    result = await sync_real_games(sport=sport_clean, db=db)
     return result
 

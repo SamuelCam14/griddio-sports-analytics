@@ -410,11 +410,17 @@ def predict_matchups(
                 model_dir = model_dir / "team_only"
             for artifact_name, expected_hash in expected_hashes.items():
                 artifact_file = model_dir / f"{artifact_name}.joblib"
-                if artifact_name not in all_models or not artifact_file.is_file():
-                    raise DataQualityError(f"Falta artefacto requerido para selección: {artifact_name}")
+                if not artifact_file.is_file():
+                    raise DataQualityError(f"Falta archivo físico de artefacto: {artifact_name}")
                 if _digest(artifact_file) != expected_hash:
                     raise DataQualityError(f"Hash del artefacto {artifact_name} no coincide con metadata")
+                if artifact_name not in all_models:
+                    raise DataQualityError(f"Artefacto {artifact_name} no pudo cargarse o está corrupto")
         ensemble_df = _apply_ensemble(all_models, X, features, model_metadata=metadata)
+        if expected_hashes:
+            for m_name in expected_hashes:
+                if m_name not in ensemble_df["individual_models"].iloc[0]:
+                    raise DataQualityError(f"El modelo requerido {m_name} no produjo probabilidades válidas en inferencia")
         models_evaluated = list(all_models.keys())
     else:
         ensemble_df = _apply_ensemble({model_name: model}, X, features, model_metadata=metadata)

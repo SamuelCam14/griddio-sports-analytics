@@ -125,6 +125,35 @@ class TestNFLMetricsAndCalibrationAudit:
         ece_worst = compute_ece(y_zero, probas_bad, n_bins=10)
         assert ece_worst > 0.90
 
+    def test_nfl_team_only_metadata_consistency_and_limitations(self):
+        """Audita que la metadata de team_only declare formalmente producción deshabilitada y limitaciones."""
+        meta_path = backend_root() / "ml" / "models" / "nfl" / "team_only" / "model_metadata.json"
+        assert meta_path.is_file()
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+        assert meta["sport"] == "NFL"
+        assert meta["model_variant"] == "team_only"
+        assert meta["sample_count"] == 4412
+        assert meta["production_enabled"] is False
+        assert meta["model_selection"]["selected_model"] == "logistic"
+        assert meta["model_selection"]["decision"] == "single_model_retained"
+        assert len(meta["features"]) == 26
+
+        limitations = meta.get("limitations", [])
+        assert any("Historical betting ROI is not measured" in lim for lim in limitations)
+        assert any("Production inference stays disabled" in lim for lim in limitations)
+
+    def test_compute_ece_edge_cases(self):
+        """Audita casos borde en compute_ece (array vacío, predicciones idénticas a targets)."""
+        # Array vacío
+        assert compute_ece(np.array([]), np.array([])) == 0.0
+
+        # Exactamente 1 muestra acertada con p=1.0
+        assert compute_ece(np.array([1]), np.array([1.0]), n_bins=5) == 0.0
+
+        # Exactamente 1 muestra fallada con p=1.0
+        assert abs(compute_ece(np.array([0]), np.array([1.0]), n_bins=5) - 1.0) < 1e-6
+
 
 # ==============================================================================
 # 3. Auditoría de Inferencia Multi-Modelo y Calibración en NBA
@@ -217,6 +246,62 @@ class TestNBAMultiModelInferenceAndCalibrationAudit:
             assert m["mean_ece"] < 0.08
             assert m["mean_auc"] > 0.68
             assert m["mean_accuracy"] > 0.62
+
+    def test_nba_corrupted_artifact_fails_closed(self):
+        """Si un artefacto requerido no puede cargarse (corrupto/truncado), predict_matchups falla cerrado."""
+        as_of = pd.Timestamp("2026-10-20T20:00:00Z")
+        past_games = load_nba_games()
+        target_games = load_nba_upcoming_games(as_of=as_of).iloc[:2].copy()
+
+        # Simular que random_forest no pudo cargarse en load_all_ensemble_models
+        with pytest.MonkeyPatch.context() as mp:
+            from ml.inference import load_all_ensemble_models as orig_load_all
+            def mock_load_all(sport, **kwargs):
+                loaded = orig_load_all(sport, **kwargs)
+                loaded.pop("random_forest", None)  # Omitido por fallo en joblib.load
+                return loaded
+
+            mp.setattr("ml.inference.load_all_ensemble_models", mock_load_all)
+
+            with pytest.raises(DataQualityError) as exc_info:
+                predict_matchups(
+                    "nba",
+                    past_games,
+                    target_games,
+                    as_of=as_of,
+                    allow_experimental=True,
+                )
+            assert "Artefacto random_forest no pudo cargarse o está corrupto" in str(exc_info.value)
+
+    def test_nba_predict_proba_failure_fails_closed(self):
+        """Si un modelo en el ensamble produce NaNs o falla en predict_proba, predict_matchups falla cerrado."""
+        as_of = pd.Timestamp("2026-10-20T20:00:00Z")
+        past_games = load_nba_games()
+        target_games = load_nba_upcoming_games(as_of=as_of).iloc[:2].copy()
+
+        # Inyectar un modelo roto que devuelve NaNs en predict_proba
+        with pytest.MonkeyPatch.context() as mp:
+            from ml.inference import load_all_ensemble_models as orig_load_all
+            def mock_load_all(sport, **kwargs):
+                loaded = orig_load_all(sport, **kwargs)
+                class BrokenModel:
+                    def predict_proba(self, X):
+                        return np.full((len(X), 2), np.nan)
+                if "random_forest" in loaded:
+                    loaded["random_forest"] = BrokenModel()
+                return loaded
+
+            mp.setattr("ml.inference.load_all_ensemble_models", mock_load_all)
+
+            with pytest.raises(DataQualityError) as exc_info:
+                predict_matchups(
+                    "nba",
+                    past_games,
+                    target_games,
+                    as_of=as_of,
+                    allow_experimental=True,
+                )
+            assert "El modelo requerido random_forest no produjo probabilidades válidas en inferencia" in str(exc_info.value)
 
 
 # ==============================================================================
