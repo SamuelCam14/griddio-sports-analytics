@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
 import pandas as pd
@@ -235,6 +235,8 @@ def build_matchup_features(
     targets["game_date"] = pd.to_datetime(targets["game_date"], errors="coerce").dt.date
     if past[["game_date", "home_team_id", "away_team_id", "home_score", "away_score"]].isna().any().any():
         raise DataQualityError("Historial incompleto para inferencia; no se imputan valores")
+    if past["game_id"].duplicated().any():
+        raise DataQualityError("Historial de partidos completados contiene game_id duplicados")
     if targets[["game_date", "home_team_id", "away_team_id"]].isna().any().any():
         raise DataQualityError("Schedule futuro incompleto para inferencia")
     if targets["game_id"].duplicated().any():
@@ -263,7 +265,90 @@ def build_matchup_features(
     # eligible for all targets. Aggregate once instead of rescanning the season
     # for each scheduled game.
     history: dict[str, list[dict]] = defaultdict(list)
-    observed = past[past["game_date"] <= as_of_date]
+    # Determine if as_of represents an intraday timestamp with a specific time.
+    # Datetime and Timestamp instances represent exact points in time (even at midnight).
+    # Date-only semantics are preserved only for datetime.date or date-only strings ("YYYY-MM-DD").
+    if as_of is None:
+        as_of_has_intraday_time = True
+    elif isinstance(as_of, (datetime, pd.Timestamp)):
+        as_of_has_intraday_time = True
+    elif isinstance(as_of, str):
+        as_of_has_intraday_time = any(sep in as_of for sep in ("T", ":", " "))
+    elif isinstance(as_of, date):
+        as_of_has_intraday_time = False
+    else:
+        as_of_has_intraday_time = False
+
+    observed = past[past["game_date"] <= as_of_date].copy()
+
+    # Reject future kickoffs fail-closed
+    if "game_start_utc" in observed.columns:
+        past_kickoffs = pd.to_datetime(observed["game_start_utc"], errors="coerce", utc=True)
+        is_future_kickoff = (past_kickoffs > as_of_ts) if as_of_has_intraday_time else (past_kickoffs.dt.date > as_of_date)
+        if is_future_kickoff.any():
+            raise DataQualityError("completed_games contiene partidos con kickoff posterior al cutoff as_of")
+
+    # In intraday cutoffs, a kickoff prior to the cutoff does NOT guarantee that the final score
+    # was available at decision time (a match can take 2.5-3.5h and still be in progress).
+    # Furthermore, games that concluded after the cutoff, cross-midnight games, or games with
+    # corrupted timestamps (end preceding kickoff) must never be incorporated into observed history.
+    def _is_game_validly_observed(row) -> bool:
+        # 1. Parse completion timestamp if present in any canonical column
+        end_ts = None
+        for col in ("game_end_utc", "end_utc", "completed_at_utc", "finalized_at_utc"):
+            if col in row and pd.notna(row[col]):
+                cand = pd.to_datetime(row[col], errors="coerce", utc=True)
+                if pd.notna(cand):
+                    end_ts = cand
+                    break
+                else:
+                    return False
+
+        # 2. Parse kickoff timestamp if present
+        k_ts = None
+        if "game_start_utc" in row and pd.notna(row["game_start_utc"]):
+            cand_k = pd.to_datetime(row["game_start_utc"], errors="coerce", utc=True)
+            if pd.notna(cand_k):
+                k_ts = cand_k
+            else:
+                return False
+
+        # 3. If both timestamps are present, check internal temporal consistency
+        if k_ts is not None and end_ts is not None:
+            if end_ts < k_ts:
+                return False
+
+        # 4. If end timestamp is present, it must NEVER be in the future relative to cutoff
+        if end_ts is not None:
+            if as_of_has_intraday_time:
+                if end_ts > as_of_ts:
+                    return False
+            else:
+                if end_ts.date() > as_of_date:
+                    return False
+
+        # 5. For intraday cutoffs, games on the cutoff date or near the cutoff
+        # (kickoff on cutoff date in UTC or local date, or kickoff within 6 hours before cutoff)
+        # MUST demonstrate both a verified kickoff and verified completion <= as_of_ts.
+        if as_of_has_intraday_time:
+            is_cutoff_day_game = (
+                row["game_date"] == as_of_date
+                or (k_ts is not None and k_ts.date() == as_of_date)
+                or (k_ts is not None and k_ts > as_of_ts - timedelta(hours=6))
+            )
+            if is_cutoff_day_game:
+                if k_ts is None or k_ts > as_of_ts:
+                    return False
+                if end_ts is None or end_ts > as_of_ts:
+                    return False
+                if end_ts < k_ts:
+                    return False
+
+        return True
+
+    if not observed.empty:
+        keep_mask = observed.apply(_is_game_validly_observed, axis=1)
+        observed = observed[keep_mask]
     for game in observed.sort_values(["game_date", "game_id"]).to_dict("records"):
         home_id, away_id = str(game["home_team_id"]), str(game["away_team_id"])
         hs, aw = int(game["home_score"]), int(game["away_score"])
@@ -284,8 +369,8 @@ def build_matchup_features(
 
     for target in targets.sort_values(["game_date", "game_id"]).to_dict("records"):
         target_date = target["game_date"]
-        home_prior = history[str(target["home_team_id"])][-window:]
-        away_prior = history[str(target["away_team_id"])][-window:]
+        home_prior = [item for item in history[str(target["home_team_id"])] if item["game_date"] < target_date][-window:]
+        away_prior = [item for item in history[str(target["away_team_id"])] if item["game_date"] < target_date][-window:]
         if min(len(home_prior), len(away_prior)) < minimum_history:
             skipped_games.append({
                 "game_id": str(target["game_id"]), "reason": "insufficient_observed_history",
@@ -321,6 +406,8 @@ def build_matchup_features(
     if not rows:
         raise DataQualityError(f"Ningún partido tiene historial prepartido suficiente: {skipped_games[:5]}")
     result = pd.DataFrame(rows)
+    if not (pd.to_datetime(result["feature_max_observed_game_date"]) < pd.to_datetime(result["game_date"])).all():
+        raise DataQualityError("Inferencia: feature_max_observed_game_date no es estrictamente anterior a game_date")
     numeric = result[features].apply(pd.to_numeric, errors="coerce")
     checked_numeric = numeric.drop(columns=[
         "home_ppr_lost_pct", "home_off_snaps_lost_pct", "home_def_snaps_lost_pct",

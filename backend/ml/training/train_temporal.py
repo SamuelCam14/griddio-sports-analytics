@@ -44,7 +44,22 @@ def load_training_dataset(
     return df, manifest
 
 
+FORBIDDEN_FEATURE_COLUMNS = frozenset({
+    "target_home_win", "home_win", "home_score", "away_score", "is_tie",
+    "margin", "actual_margin", "total_points", "total_score", "did_play",
+    "game_id", "source", "source_ref", "schedule_source_ref", "feature_source_refs",
+    "season", "week", "game_date", "game_start_utc", "home_team_id", "away_team_id",
+    "home_team_name", "away_team_name", "home_team_abbreviation", "away_team_abbreviation",
+    "feature_cutoff_exclusive", "feature_max_observed_game_date",
+})
+
+
 def validate_dataset(df: pd.DataFrame, features: list[str]) -> None:
+    forbidden = FORBIDDEN_FEATURE_COLUMNS.intersection(features)
+    if forbidden:
+        raise DataQualityError(
+            f"Features contienen columnas prohibidas (data leakage/metadatos/targets): {sorted(forbidden)}"
+        )
     required = {"game_id", "game_date", "feature_max_observed_game_date", "target_home_win", "source", "source_ref"}
     absent = required.union(features).difference(df.columns)
     if absent:
@@ -116,7 +131,18 @@ def _models(features: list[str] | None = None):
 
 
 def chronological_folds(df: pd.DataFrame, folds: int = 4, holdout_frac: float = 0.20):
-    dates = np.array(sorted(pd.to_datetime(df["game_date"]).dt.date.unique()))
+    if folds < 1:
+        raise ValueError("folds must be >= 1")
+    if not (0.0 < holdout_frac < 1.0):
+        raise ValueError("holdout_frac must be in (0.0, 1.0)")
+    if "game_id" in df.columns and df["game_id"].duplicated().any():
+        raise DataQualityError("Dataset contiene game_id duplicados")
+
+    parsed_dates = pd.to_datetime(df["game_date"], errors="coerce")
+    if parsed_dates.isna().any():
+        raise DataQualityError("game_date contiene valores nulos o inválidos")
+
+    dates = np.array(sorted(parsed_dates.dt.date.unique()))
     if len(dates) < folds + 2:
         raise DataQualityError(f"Se requieren más fechas únicas para {folds} validaciones temporales")
     holdout_start = int(len(dates) * (1 - holdout_frac))
@@ -124,7 +150,7 @@ def chronological_folds(df: pd.DataFrame, folds: int = 4, holdout_frac: float = 
     first_test = max(2, int(len(cv_dates) * 0.60))
     boundaries = np.linspace(first_test, len(cv_dates), folds + 1, dtype=int)
     result = []
-    all_dates = pd.to_datetime(df["game_date"]).dt.date.to_numpy()
+    all_dates = parsed_dates.dt.date.to_numpy()
     for start, end in zip(boundaries[:-1], boundaries[1:]):
         if end <= start:
             continue
@@ -139,14 +165,23 @@ def chronological_folds(df: pd.DataFrame, folds: int = 4, holdout_frac: float = 
     holdout_indices = np.flatnonzero(all_dates >= dates[holdout_start])
 
     # Assertions de separación temporal estricta y sin solapamiento
+    test_indices_all = []
     for fold_no, (train_idx, test_idx) in enumerate(result, 1):
         if len(np.intersect1d(train_idx, test_idx)) > 0:
             raise DataQualityError(f"Fold {fold_no}: solapamiento entre train y test")
         if len(np.intersect1d(test_idx, holdout_indices)) > 0:
             raise DataQualityError(f"Fold {fold_no}: test se solapa con holdout/lockbox")
+        if len(np.intersect1d(train_idx, holdout_indices)) > 0:
+            raise DataQualityError(f"Fold {fold_no}: train se solapa con holdout/lockbox")
         if not (all_dates[train_idx].max() < all_dates[test_idx].min()):
             raise DataQualityError(f"Fold {fold_no}: observación de train posterior o igual a test")
-    if not (all_dates[np.concatenate([f[1] for f in result])].max() < all_dates[holdout_indices].min()):
+        test_indices_all.extend(test_idx)
+
+    # Validar que los folds de test no se solapen entre sí
+    if len(test_indices_all) != len(np.unique(test_indices_all)):
+        raise DataQualityError("Los folds de test no son mutuamente excluyentes entre sí")
+
+    if not (all_dates[test_indices_all].max() < all_dates[holdout_indices].min()):
         raise DataQualityError("Test de folds de validación posterior o igual al holdout")
 
     return result, holdout_indices
