@@ -82,7 +82,8 @@ export function formatEvDollars(
   if (value == null || !Number.isFinite(value)) {
     return options?.fallback ?? '—'
   }
-  const absStr = Math.abs(value).toFixed(digits)
+  const safeDigits = Number.isFinite(digits) ? Math.max(0, Math.min(20, Math.floor(digits))) : 1
+  const absStr = Math.abs(value).toFixed(safeDigits)
   const isZero = Number(absStr) === 0
   const sign = isZero || value >= 0 ? '+' : '-'
   const formatted = `${sign}$${absStr}`

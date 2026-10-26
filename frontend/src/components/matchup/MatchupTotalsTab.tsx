@@ -22,7 +22,7 @@ export const MatchupTotalsTab: React.FC<MatchupTotalsTabProps> = ({ totals }) =>
 
   const projectedTotalLabel =
     totals.projected_total != null && Number.isFinite(totals.projected_total)
-      ? `${totals.projected_total} Puntos`
+      ? `${totals.projected_total.toFixed(1)} Puntos`
       : '—'
 
   const probDisplay =

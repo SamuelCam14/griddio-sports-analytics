@@ -294,7 +294,7 @@ function CardItem({ card, onInspectTrajectory }: { card: SportsCardItem; onInspe
         {isArbitrage && (
           <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800 px-2 py-0.5 rounded">
             <AlertTriangle className="h-3 w-3" />
-            <span>ARBITRAJE EV+ ({Number.isFinite(card.ev_percentage) && card.ev_percentage > 0 ? `+${card.ev_percentage.toFixed(0)}%` : ''})</span>
+            <span>ARBITRAJE EV+{Number.isFinite(card.ev_percentage) && card.ev_percentage > 0 ? ` (+${card.ev_percentage.toFixed(0)}%)` : ''}</span>
           </div>
         )}
       </div>

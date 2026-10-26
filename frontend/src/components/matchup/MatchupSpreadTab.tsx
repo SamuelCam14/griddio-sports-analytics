@@ -29,14 +29,20 @@ export const MatchupSpreadTab: React.FC<MatchupSpreadTabProps> = ({
   }
 
   const marketLineLabel =
-    spread.market_line != null
+    spread.market_line != null && Number.isFinite(spread.market_line)
       ? spread.market_line > 0
         ? `+${spread.market_line}`
         : `${spread.market_line}`
       : 'Sin línea'
 
-  const projectedAway = spread.projected_away_score != null ? spread.projected_away_score : '—'
-  const projectedHome = spread.projected_home_score != null ? spread.projected_home_score : '—'
+  const projectedAway =
+    spread.projected_away_score != null && Number.isFinite(spread.projected_away_score)
+      ? spread.projected_away_score.toFixed(1)
+      : '—'
+  const projectedHome =
+    spread.projected_home_score != null && Number.isFinite(spread.projected_home_score)
+      ? spread.projected_home_score.toFixed(1)
+      : '—'
   const spreadPick = spread.pick || 'Sin selección disponible'
 
   const coverProbDisplay =

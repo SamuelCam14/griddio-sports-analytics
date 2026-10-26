@@ -80,7 +80,7 @@ export function HeroSpotlight({
                 {match?.prediction?.best_bet
                   ? `Recomendación de producción: ${match.prediction.best_bet.selection} (${(match.prediction.best_bet.odds_american ?? 0) > 0 ? '+' : ''}${match.prediction.best_bet.odds_american ?? '—'}) · EV ${formatEvDollars(match.prediction.best_bet.ev_dollars, 1, { suffix: '/100' })} · Prob. ${formatPercentage(match.prediction.best_bet.win_probability)}.`
                   : match?.prediction
-                    ? `Probabilidad estimada: local ${((match.prediction.home_win_prob ?? 0) * 100).toFixed(1)}% · visita ${((match.prediction.away_win_prob ?? 0) * 100).toFixed(1)}% (sin ventaja de cuota suficiente en el mercado actual).`
+                    ? `Probabilidad estimada: local ${formatPercentage(match.prediction.home_win_prob)} · visita ${formatPercentage(match.prediction.away_win_prob)} (sin ventaja de cuota suficiente en el mercado actual).`
                     : 'Esperando cuotas de mercado vigentes o reporte de inactivos para este evento.'}
               </p>
             </>

@@ -16,9 +16,10 @@ export function MvpOfTheDayCard({ sport, topPick }: MvpOfTheDayCardProps) {
     : topPick?.pick_team_name
 
   const teamName = topPick?.home_team?.name ?? ''
+  const rawEv = topPick?.best_bet?.ev_dollars ?? topPick?.ev_dolares
   const advantageText =
-    topPick?.ev_dolares != null && Number.isFinite(topPick.ev_dolares)
-      ? formatEvDollars(topPick.ev_dolares, 1, { suffix: ' EV' })
+    rawEv != null && Number.isFinite(rawEv)
+      ? formatEvDollars(rawEv, 1, { suffix: ' EV' })
       : null
 
   return (

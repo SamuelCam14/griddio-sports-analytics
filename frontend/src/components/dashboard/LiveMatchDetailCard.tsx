@@ -107,7 +107,7 @@ export function LiveMatchDetailCard({ match, sport, onOpenDeepDive }: LiveMatchD
                 <p>
                   EV y selección:{' '}
                   {prediction.best_bet
-                    ? `${prediction.best_bet.selection} · EV ${formatEvDollars(prediction.best_bet.ev_dollars, 1)} por cada $100`
+                    ? `${prediction.best_bet.selection} · EV ${formatEvDollars(prediction.best_bet.ev_dollars, 1, { suffix: ' por cada $100' })}`
                     : 'Sin ventaja matemática calculable en este mercado.'}
                 </p>
                 {prediction.spread?.status === 'available' && prediction.spread.projected_margin != null && (

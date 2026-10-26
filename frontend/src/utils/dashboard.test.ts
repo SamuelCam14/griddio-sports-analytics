@@ -25,6 +25,25 @@ describe('formatEvDollars', () => {
     assert.strictEqual(formatEvDollars(-0.001, 1), '+$0.0')
   })
 
+  it('handles negative numbers rounding to zero or non-zero properly', () => {
+    assert.strictEqual(formatEvDollars(-0.04, 1), '+$0.0')
+    assert.strictEqual(formatEvDollars(-0.06, 1), '-$0.1')
+    assert.strictEqual(formatEvDollars(-0.004, 2), '+$0.00')
+    assert.strictEqual(formatEvDollars(-0.006, 2), '-$0.01')
+  })
+
+  it('supports 0 digits and default digits', () => {
+    assert.strictEqual(formatEvDollars(2.7, 0), '+$3')
+    assert.strictEqual(formatEvDollars(-2.7, 0), '-$3')
+    assert.strictEqual(formatEvDollars(4.5), '+$4.5')
+  })
+
+  it('safely clamps invalid digits arguments without throwing RangeError', () => {
+    assert.strictEqual(formatEvDollars(2.5, -1), '+$3')
+    assert.strictEqual(formatEvDollars(2.5, 999), '+$2.50000000000000000000')
+    assert.strictEqual(formatEvDollars(2.5, NaN as any), '+$2.5')
+  })
+
   it('applies suffix correctly', () => {
     assert.strictEqual(formatEvDollars(2.5, 1, { suffix: ' EV' }), '+$2.5 EV')
     assert.strictEqual(formatEvDollars(-1.5, 1, { suffix: ' EV' }), '-$1.5 EV')
