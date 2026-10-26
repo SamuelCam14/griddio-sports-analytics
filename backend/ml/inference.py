@@ -400,7 +400,7 @@ def predict_matchups(
     if not np.isfinite(matrix).all():
         raise DataQualityError("Features de inferencia no finitas; no se imputan")
     # Multi-model concurrent inference
-    if sport == "nfl":
+    if sport in ("nfl", "nba"):
         all_models = load_all_ensemble_models(sport, model_variant=model_variant)
         all_models[model_name] = model
         expected_hashes = metadata.get("artifact_sha256", {})

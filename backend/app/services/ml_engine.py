@@ -1,7 +1,14 @@
 """
-Motor de Inferencia de Machine Learning (ML Engine).
-Carga los modelos entrenados (CatBoost + XGBoost + Logistic Regression)
-y ejecuta predicciones de confluencia con cálculo de probabilidades calibradas.
+Motor de Inferencia de Machine Learning Legacy (ML Engine).
+
+NOTA DE AUDITORÍA Y GOBERNANZA:
+Este módulo es un componente experimental/legacy no referenciado por las rutas activas de FastAPI
+ni por las tareas Celery en producción (el motor canónico de inferencia es `ml.inference.predict_matchups`).
+Los artefactos referenciados aquí (catboost_winner.joblib, xgboost_winner.joblib, logistic_baseline.joblib,
+feature_scaler.joblib) no forman parte de los modelos reproducibles checked-in y la metadata raíz
+(backend/ml/models/model_metadata.json) documenta un experimento legacy previo sobre `nba_historical_rolling.csv`.
+Ante la ausencia de dichos artefactos, MLEngine opera de forma fail-closed: `is_ready` permanece en False y
+cualquier invocación a `predict_matchup` levanta `RuntimeError`.
 """
 import os
 import json

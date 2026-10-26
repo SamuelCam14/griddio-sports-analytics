@@ -10,13 +10,14 @@ def generate_report():
     processed_dir = data_dir / "processed"
     report = {"generated_at": datetime.now(timezone.utc).isoformat(), "datasets": {}}
     
-    for manifest_path in processed_dir.glob("*_training.manifest.json"):
-        sport = manifest_path.name.split("_")[0]
+    for manifest_path in sorted(processed_dir.glob("*_training.manifest.json")):
+        stem = manifest_path.name.replace(".manifest.json", "")
+        dataset_key = stem[:-9] if stem.endswith("_training") else stem
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             dataset_path = manifest_path.with_name(manifest["dataset"])
             if not dataset_path.exists():
-                report["datasets"][sport] = {"error": "Dataset file not found"}
+                report["datasets"][dataset_key] = {"error": "Dataset file not found"}
                 continue
             
             file_bytes = dataset_path.read_bytes()
@@ -28,7 +29,7 @@ def generate_report():
             df = pd.read_csv(dataset_path)
             
             # Basic stats
-            report["datasets"][sport] = {
+            report["datasets"][dataset_key] = {
                 "manifest_path": str(manifest_path.relative_to(project_root())),
                 "dataset_path": str(dataset_path.relative_to(project_root())),
                 "hash_valid": hash_valid,
@@ -47,7 +48,7 @@ def generate_report():
                 "feature_max_observed_game_date_valid": bool((pd.to_datetime(df["feature_max_observed_game_date"]) < pd.to_datetime(df["game_date"])).all())
             }
         except Exception as e:
-            report["datasets"][sport] = {"error": str(e)}
+            report["datasets"][dataset_key] = {"error": str(e)}
             
     report_path = data_dir / "quality_report.json"
     report_path.write_text(json.dumps(report, indent=2))
