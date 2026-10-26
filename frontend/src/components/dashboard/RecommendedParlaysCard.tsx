@@ -1,5 +1,5 @@
 import type { RecommendedParlay } from '@/services/api'
-import { formatPercentage } from '@/utils/dashboard'
+import { formatPercentage, formatEvDollars } from '@/utils/dashboard'
 
 interface RecommendedParlaysCardProps {
   status?: string
@@ -43,7 +43,7 @@ export function RecommendedParlaysCard({
                 <span>{parlay.type ?? `${parlay.n_legs}-patas`}</span>
                 <span className="font-mono">{parlay.momio_americano != null ? `${parlay.momio_americano > 0 ? '+' : ''}${parlay.momio_americano}` : 'Cuota sin dato'}</span>
               </div>
-              <p className="mt-1 text-slate-400">Probabilidad combinada {formatPercentage(parlay.prob_combinada)} · EV {parlay.ev_dolares == null ? 'no calculado' : `${parlay.ev_dolares > 0 ? '+' : ''}$${parlay.ev_dolares} por cada $100`}</p>
+              <p className="mt-1 text-slate-400">Probabilidad combinada {formatPercentage(parlay.prob_combinada)} · EV {formatEvDollars(parlay.ev_dolares, 1, { fallback: 'no calculado', suffix: ' por cada $100' })}</p>
               <ul className="mt-2 space-y-1 text-slate-400">
                 {parlay.legs_evaluadas.map((leg, legIndex) => (
                   <li key={`${leg.team_name}-${legIndex}`}>

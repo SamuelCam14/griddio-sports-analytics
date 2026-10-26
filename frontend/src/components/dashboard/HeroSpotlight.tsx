@@ -1,6 +1,6 @@
 import { ArrowRight, ChevronRight, Sparkles } from 'lucide-react'
 import type { ScheduledMatch } from '@/types/dashboard'
-import { formatMatchDate, formatMatchTime } from '@/utils/dashboard'
+import { formatMatchDate, formatMatchTime, formatEvDollars, formatPercentage } from '@/utils/dashboard'
 import { Badge } from '@/components/ui/Badge'
 
 interface HeroSpotlightProps {
@@ -78,7 +78,7 @@ export function HeroSpotlight({
 
               <p className="mt-1.5 text-xs text-slate-300 line-clamp-2">
                 {match?.prediction?.best_bet
-                  ? `Recomendación de producción: ${match.prediction.best_bet.selection} (${(match.prediction.best_bet.odds_american ?? 0) > 0 ? '+' : ''}${match.prediction.best_bet.odds_american ?? '—'}) · EV +$${(match.prediction.best_bet.ev_dollars ?? 0).toFixed(1)}/100 · Prob. ${((match.prediction.best_bet.win_probability ?? 0) * 100).toFixed(1)}%.`
+                  ? `Recomendación de producción: ${match.prediction.best_bet.selection} (${(match.prediction.best_bet.odds_american ?? 0) > 0 ? '+' : ''}${match.prediction.best_bet.odds_american ?? '—'}) · EV ${formatEvDollars(match.prediction.best_bet.ev_dollars, 1, { suffix: '/100' })} · Prob. ${formatPercentage(match.prediction.best_bet.win_probability)}.`
                   : match?.prediction
                     ? `Probabilidad estimada: local ${((match.prediction.home_win_prob ?? 0) * 100).toFixed(1)}% · visita ${((match.prediction.away_win_prob ?? 0) * 100).toFixed(1)}% (sin ventaja de cuota suficiente en el mercado actual).`
                     : 'Esperando cuotas de mercado vigentes o reporte de inactivos para este evento.'}

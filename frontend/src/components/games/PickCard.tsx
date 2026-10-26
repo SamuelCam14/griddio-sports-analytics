@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { Star, AlertCircle } from 'lucide-react'
 import { useAppStore } from '@/store/useAppStore'
 import type { Pick } from '@/services/api'
+import { formatEvDollars } from '@/utils/dashboard'
 
 interface Props {
   pick: Pick
@@ -118,7 +119,7 @@ export function PickCard({ pick, bankroll }: Props) {
           <div className="flex justify-between text-sm mt-2">
             <span className="text-gray-400">EV esperado</span>
             <span className={`font-mono font-bold ${evColor}`}>
-              {pick.ev_dolares !== null ? `$${pick.ev_dolares.toFixed(2)}` : '—'}
+              {formatEvDollars(pick.ev_dolares, 2)}
             </span>
           </div>
 

@@ -1,6 +1,6 @@
 import type { ScheduledMatch } from '@/types/dashboard'
 import type { ExternalGameForecast } from '@/services/api'
-import { formatPercentage } from '@/utils/dashboard'
+import { formatPercentage, formatEvDollars } from '@/utils/dashboard'
 
 interface AiPredictionListProps {
   matches: ScheduledMatch[]
@@ -51,7 +51,7 @@ export function AiPredictionList({ matches, sport, externalForecast, externalFor
                 </div>
                 <div className="ml-3 shrink-0 text-right font-mono">
                   <span className="block text-xs font-semibold text-emerald-400">
-                    +${(bet?.ev_dollars ?? pred.ev_dolares ?? 0).toFixed(1)} EV
+                    {formatEvDollars(bet?.ev_dollars ?? pred.ev_dolares, 1, { suffix: ' EV' })}
                   </span>
                   <span className="block text-[10px] text-slate-400">
                     {formatPercentage(bet?.win_probability ?? pred.prob_modelo)}

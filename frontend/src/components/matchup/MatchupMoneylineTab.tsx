@@ -8,6 +8,7 @@
  * - Monto sugerido según el Criterio Fraccional de Kelly
  */
 import React from 'react'
+import { formatEvDollars } from '@/utils/dashboard'
 
 interface MatchupMoneylineTabProps {
   pickTeamName: string
@@ -24,10 +25,9 @@ export const MatchupMoneylineTab: React.FC<MatchupMoneylineTabProps> = ({
   kellyFraction = 0,
   bankroll,
 }) => {
-  const safeEv = evDollars ?? 0
-  const isPositiveEV = safeEv > 0
+  const isPositiveEV = evDollars != null && Number.isFinite(evDollars) && evDollars > 0
   const safeKelly = kellyFraction ?? 0
-  const kellyStake = (safeKelly * bankroll).toFixed(2)
+  const kellyStake = Number.isFinite(safeKelly * bankroll) ? (safeKelly * bankroll).toFixed(2) : '0.00'
 
   return (
     <div className="space-y-3">
@@ -47,7 +47,7 @@ export const MatchupMoneylineTab: React.FC<MatchupMoneylineTabProps> = ({
         <div className="bg-gray-900/80 p-2 rounded-lg border border-gray-800">
           <span className="text-gray-500 text-[10px] block uppercase">EV Esperado / $100</span>
           <span className={`font-bold mt-0.5 block ${isPositiveEV ? 'text-green-400' : 'text-red-400'}`}>
-            {isPositiveEV ? `+$${safeEv.toFixed(2)}` : `$${safeEv.toFixed(2)}`}
+            {formatEvDollars(evDollars, 2)}
           </span>
         </div>
         <div className="bg-gray-900/80 p-2 rounded-lg border border-gray-800">

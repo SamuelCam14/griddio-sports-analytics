@@ -73,3 +73,18 @@ export function formatNumber(value: number | null | undefined, digits = 1): stri
   if (value == null || !Number.isFinite(value)) return '—'
   return value.toFixed(digits)
 }
+
+export function formatEvDollars(
+  value: number | null | undefined,
+  digits = 1,
+  options?: { suffix?: string; fallback?: string }
+): string {
+  if (value == null || !Number.isFinite(value)) {
+    return options?.fallback ?? '—'
+  }
+  const absStr = Math.abs(value).toFixed(digits)
+  const isZero = Number(absStr) === 0
+  const sign = isZero || value >= 0 ? '+' : '-'
+  const formatted = `${sign}$${absStr}`
+  return options?.suffix ? `${formatted}${options.suffix}` : formatted
+}

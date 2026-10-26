@@ -23,6 +23,7 @@ import {
   type SportsCardItem,
   type CardEvaluationResponse,
 } from '@/services/api'
+import { getApiErrorMessage } from '@/utils/errors'
 
 export function SportsCardsView() {
   const [filterType, setFilterType] = useState<string>('all')
@@ -81,8 +82,13 @@ export function SportsCardsView() {
                   <span className="text-gray-400 text-[11px]">{c.brand} {c.parallel_name} ({c.grade})</span>
                 </div>
                 <div className="text-right font-mono">
-                  <span className="text-gray-400 block line-through">${c.fair_market_value.toFixed(0)} FMV</span>
-                  <span className="text-emerald-400 font-bold">${c.current_market_price.toFixed(0)} ({c.ev_percentage > 0 ? `+${c.ev_percentage.toFixed(0)}%` : ''})</span>
+                  <span className="text-gray-400 block line-through">
+                    {c.fair_market_value != null && Number.isFinite(c.fair_market_value) ? `$${c.fair_market_value.toFixed(0)} FMV` : '—'}
+                  </span>
+                  <span className="text-emerald-400 font-bold">
+                    {c.current_market_price != null && Number.isFinite(c.current_market_price) ? `$${c.current_market_price.toFixed(0)}` : '—'}{' '}
+                    {c.ev_percentage != null && Number.isFinite(c.ev_percentage) && c.ev_percentage > 0 ? `(+${c.ev_percentage.toFixed(0)}%)` : ''}
+                  </span>
                 </div>
               </div>
             ))}
@@ -123,15 +129,30 @@ export function SportsCardsView() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {cards.map(card => (
-            <CardItem
-              key={card.id}
-              card={card}
-              onInspectTrajectory={() => setSelectedCardForTrajectory(card)}
-            />
-          ))}
-        </div>
+        {catalogQuery.isError && (
+          <div className="rounded-xl border border-rose-500/30 bg-rose-950/20 p-6 text-center text-xs text-rose-300" role="alert">
+            <p className="font-semibold text-rose-200">Error al consultar el catálogo de tarjetas</p>
+            <p className="mt-1 text-rose-300/80">{getApiErrorMessage(catalogQuery.error)}</p>
+          </div>
+        )}
+
+        {!catalogQuery.isLoading && !catalogQuery.isError && cards.length === 0 && (
+          <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-8 text-center text-xs text-gray-500" role="status">
+            No hay tarjetas registradas para el filtro seleccionado.
+          </div>
+        )}
+
+        {!catalogQuery.isLoading && !catalogQuery.isError && cards.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {cards.map(card => (
+              <CardItem
+                key={card.id}
+                card={card}
+                onInspectTrajectory={() => setSelectedCardForTrajectory(card)}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
       {/* ─── Modal de Trayectoria / Curva Prophet ───────────────────────────── */}
@@ -168,6 +189,10 @@ export function SportsCardsView() {
               {trajectoryQuery.isLoading ? (
                 <div className="h-full flex items-center justify-center text-xs text-gray-500 animate-pulse">
                   Generando proyección con Prophet...
+                </div>
+              ) : trajectoryQuery.isError ? (
+                <div className="h-full flex items-center justify-center text-xs text-rose-300">
+                  {getApiErrorMessage(trajectoryQuery.error)}
                 </div>
               ) : trajectoryQuery.data ? (
                 <ResponsiveContainer width="100%" height="100%">
@@ -214,11 +239,15 @@ export function SportsCardsView() {
             <div className="bg-gray-950 p-4 rounded-xl border border-gray-800 text-xs flex justify-between items-center font-mono">
               <div>
                 <span className="text-gray-500 block text-[10px]">PRECIO ACTUAL</span>
-                <span className="text-white font-bold text-sm">${selectedCardForTrajectory.current_market_price.toFixed(2)}</span>
+                <span className="text-white font-bold text-sm">
+                  {Number.isFinite(selectedCardForTrajectory.current_market_price) ? `$${selectedCardForTrajectory.current_market_price.toFixed(2)}` : '—'}
+                </span>
               </div>
               <div>
                 <span className="text-gray-500 block text-[10px]">VALOR JUSTO (FMV)</span>
-                <span className="text-purple-400 font-bold text-sm">${selectedCardForTrajectory.fair_market_value.toFixed(2)}</span>
+                <span className="text-purple-400 font-bold text-sm">
+                  {Number.isFinite(selectedCardForTrajectory.fair_market_value) ? `$${selectedCardForTrajectory.fair_market_value.toFixed(2)}` : '—'}
+                </span>
               </div>
               <div>
                 <span className="text-gray-500 block text-[10px]">EFECTO UNIFORME</span>
@@ -265,7 +294,7 @@ function CardItem({ card, onInspectTrajectory }: { card: SportsCardItem; onInspe
         {isArbitrage && (
           <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800 px-2 py-0.5 rounded">
             <AlertTriangle className="h-3 w-3" />
-            <span>ARBITRAJE EV+ ({card.ev_percentage > 0 ? `+${card.ev_percentage.toFixed(0)}%` : ''})</span>
+            <span>ARBITRAJE EV+ ({Number.isFinite(card.ev_percentage) && card.ev_percentage > 0 ? `+${card.ev_percentage.toFixed(0)}%` : ''})</span>
           </div>
         )}
       </div>
@@ -273,11 +302,15 @@ function CardItem({ card, onInspectTrajectory }: { card: SportsCardItem; onInspe
       <div className="mt-4 pt-3 border-t border-gray-800 space-y-2">
         <div className="flex justify-between items-center text-xs font-mono">
           <span className="text-gray-400">Precio Mercado:</span>
-          <span className="text-white font-bold">${card.current_market_price.toFixed(0)}</span>
+          <span className="text-white font-bold">
+            {Number.isFinite(card.current_market_price) ? `$${card.current_market_price.toFixed(0)}` : '—'}
+          </span>
         </div>
         <div className="flex justify-between items-center text-xs font-mono">
           <span className="text-gray-400">Fair Value:</span>
-          <span className="text-purple-400 font-bold">${card.fair_market_value.toFixed(0)}</span>
+          <span className="text-purple-400 font-bold">
+            {Number.isFinite(card.fair_market_value) ? `$${card.fair_market_value.toFixed(0)}` : '—'}
+          </span>
         </div>
 
         <button
@@ -434,15 +467,22 @@ function CardValuationModal({ onClose }: { onClose: () => void }) {
             <div className="flex justify-between">
               <span className="text-gray-400">Valor Justo Estimado (FMV):</span>
               <span className="text-purple-400 font-bold text-sm">
-                ${evalResult.valuation.fair_market_value.toFixed(2)}
+                {evalResult.valuation?.fair_market_value != null && Number.isFinite(evalResult.valuation.fair_market_value)
+                  ? `$${evalResult.valuation.fair_market_value.toFixed(2)}`
+                  : '—'}
               </span>
             </div>
             {evalResult.arbitrage_analysis && (
               <>
                 <div className="flex justify-between">
                   <span className="text-gray-400">Retorno Neto Proyectado:</span>
-                  <span className={`font-bold ${evalResult.arbitrage_analysis.expected_profit_dollars > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    ${evalResult.arbitrage_analysis.expected_profit_dollars.toFixed(2)} ({evalResult.arbitrage_analysis.roi_percentage.toFixed(1)}%)
+                  <span className={`font-bold ${(evalResult.arbitrage_analysis.expected_profit_dollars ?? 0) > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {Number.isFinite(evalResult.arbitrage_analysis.expected_profit_dollars)
+                      ? `$${evalResult.arbitrage_analysis.expected_profit_dollars.toFixed(2)}`
+                      : '—'}{' '}
+                    ({Number.isFinite(evalResult.arbitrage_analysis.roi_percentage)
+                      ? `${evalResult.arbitrage_analysis.roi_percentage.toFixed(1)}%`
+                      : '—'})
                   </span>
                 </div>
                 <div className="p-2 bg-gray-900 rounded border border-gray-800 text-[11px] font-semibold text-center mt-2 text-brand-300">

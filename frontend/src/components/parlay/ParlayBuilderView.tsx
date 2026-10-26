@@ -31,6 +31,8 @@ import {
   oddsApi,
   parlayApi,
 } from '@/services/api'
+import { getApiErrorMessage } from '@/utils/errors'
+import { formatEvDollars } from '@/utils/dashboard'
 
 interface Props {
   bankroll: number
@@ -657,6 +659,17 @@ export function ParlayBuilderView({ bankroll }: Props) {
               </div>
             )}
 
+            {/* Estado de error de evaluación */}
+            {evaluateMutation.isError && (
+              <div className="rounded-xl border border-rose-500/30 bg-rose-950/20 p-3.5 text-xs text-rose-300 flex items-start gap-2" role="alert">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-rose-200">Error al evaluar parlay</p>
+                  <p className="mt-0.5 text-rose-300/80">{getApiErrorMessage(evaluateMutation.error)}</p>
+                </div>
+              </div>
+            )}
+
             {/* ─── Métricas Resueltas Exclusivamente por Backend SSOT ───────── */}
             {selectedLegs.length >= 2 && backendEvaluation && !evaluateMutation.isPending && (
               <div className="space-y-4 pt-2 border-t border-white/[0.08]">
@@ -729,24 +742,23 @@ export function ParlayBuilderView({ bankroll }: Props) {
                     <span className="text-[10px] uppercase text-slate-400 font-semibold block">
                       EV Esperado / $100
                     </span>
-                    {backendEvaluation.ev_dolares != null ? (
+                    {backendEvaluation.ev_dolares != null && Number.isFinite(backendEvaluation.ev_dolares) ? (
                       <>
                         <p
                           className={`mt-1 font-mono text-base font-bold ${
-                            backendEvaluation.ev_dolares > 0 ? 'text-emerald-400' : 'text-red-400'
+                            backendEvaluation.ev_dolares >= 0 ? 'text-emerald-400' : 'text-red-400'
                           }`}
                         >
-                          {backendEvaluation.ev_dolares > 0 ? '+' : ''}$
-                          {backendEvaluation.ev_dolares.toFixed(2)}
+                          {formatEvDollars(backendEvaluation.ev_dolares, 2)}
                         </p>
                         <span className="text-[10px] font-mono text-slate-500">
-                          {backendEvaluation.ev_dolares > 0 ? 'Ventaja Matemática' : 'Margen Negativo'}
+                          {backendEvaluation.ev_dolares > 0 ? 'Ventaja Matemática' : backendEvaluation.ev_dolares === 0 ? 'Margen Neutro' : 'Margen Negativo'}
                         </span>
                       </>
                     ) : (
                       <>
                         <p className="mt-1 font-mono text-sm font-semibold text-slate-400">
-                          No Disponible
+                          —
                         </p>
                         <span className="text-[10px] font-mono text-amber-400/80">
                           Sin prob. de modelo

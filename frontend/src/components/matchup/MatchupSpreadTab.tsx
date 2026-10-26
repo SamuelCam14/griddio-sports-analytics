@@ -20,7 +20,7 @@ export const MatchupSpreadTab: React.FC<MatchupSpreadTabProps> = ({
   homeAbbr,
   awayAbbr,
 }) => {
-  if (!spread) {
+  if (!spread || spread.status === 'unavailable' || spread.market_line == null) {
     return (
       <div className="text-center py-2 text-xs text-gray-500">
         Sin línea de spread activa disponible en este momento.
@@ -46,7 +46,7 @@ export const MatchupSpreadTab: React.FC<MatchupSpreadTabProps> = ({
 
   const edgePctDisplay =
     spread.edge_pct != null && Number.isFinite(spread.edge_pct)
-      ? `+${spread.edge_pct.toFixed(1)}% Ventaja`
+      ? `${spread.edge_pct > 0 ? '+' : ''}${spread.edge_pct.toFixed(1)}% Ventaja`
       : 'Sin ventaja calculada'
 
   return (

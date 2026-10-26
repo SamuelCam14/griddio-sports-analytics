@@ -6,6 +6,8 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Calculator, Zap } from 'lucide-react'
 import { evApi, type EVResult } from '@/services/api'
+import { getApiErrorMessage } from '@/utils/errors'
+import { formatEvDollars } from '@/utils/dashboard'
 
 interface Props {
   bankroll: number
@@ -105,9 +107,17 @@ export function EVCalculator({ bankroll }: Props) {
         )}
       </button>
 
+      {/* ─── Error ──────────────────────────────────────────────────────── */}
+      {mutation.isError && (
+        <div className="mt-4 rounded-xl border border-rose-500/30 bg-rose-950/20 p-3.5 text-xs text-rose-300" role="alert">
+          <p className="font-semibold text-rose-200">Error en el cálculo</p>
+          <p className="mt-0.5 text-rose-300/80">{getApiErrorMessage(mutation.error)}</p>
+        </div>
+      )}
+
       {/* ─── Resultado ───────────────────────────────────────────────────── */}
       {result && (
-        <div className={`mt-4 border rounded-xl p-4 ${tierColor[result.tier]}`}>
+        <div className={`mt-4 border rounded-xl p-4 ${tierColor[result.tier] ?? 'text-gray-300 border-gray-700 bg-gray-900'}`}>
           <div className="flex items-center justify-between mb-3">
             <span className="font-bold text-lg">{result.recomendacion}</span>
             <span className="text-sm font-mono bg-black/20 px-3 py-1 rounded-full">
@@ -116,18 +126,30 @@ export function EVCalculator({ bankroll }: Props) {
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-            <Metric label="EV por $100" value={`$${result.ev_dolares.toFixed(2)}`}
-              highlight={result.ev_dolares > 0} />
-            <Metric label="Ventaja" value={result.ventaja}
-              highlight={parseFloat(result.ventaja) > 0} />
-            <Metric label="Prob. implícita" value={`${(result.prob_implicita * 100).toFixed(1)}%`} />
-            <Metric label="Kelly ($)" value={`$${result.kelly_monto.toFixed(2)}`}
-              highlight={true} />
+            <Metric
+              label="EV por $100"
+              value={formatEvDollars(result.ev_dolares, 2)}
+              highlight={(result.ev_dolares ?? 0) > 0}
+            />
+            <Metric
+              label="Ventaja"
+              value={result.ventaja ?? '—'}
+              highlight={parseFloat(result.ventaja ?? '0') > 0}
+            />
+            <Metric
+              label="Prob. implícita"
+              value={result.prob_implicita != null && Number.isFinite(result.prob_implicita) ? `${(result.prob_implicita * 100).toFixed(1)}%` : '—'}
+            />
+            <Metric
+              label="Kelly ($)"
+              value={result.kelly_monto != null && Number.isFinite(result.kelly_monto) ? `$${result.kelly_monto.toFixed(2)}` : '—'}
+              highlight={true}
+            />
           </div>
 
-          {result.advertencias.length > 0 && (
+          {(result.advertencias ?? []).length > 0 && (
             <div className="mt-3 space-y-1">
-              {result.advertencias.map((w, i) => (
+              {(result.advertencias ?? []).map((w, i) => (
                 <p key={i} className="text-xs text-yellow-400">{w}</p>
               ))}
             </div>

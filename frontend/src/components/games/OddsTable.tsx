@@ -2,7 +2,7 @@
  * OddsTable — Tabla de momios con probabilidades implícitas sin vig.
  */
 import type { OddsData } from '@/services/api'
-import { format } from 'date-fns'
+import { formatMatchTime } from '@/utils/dashboard'
 
 interface Props {
   games: OddsData[]
@@ -40,9 +40,7 @@ export function OddsTable({ games }: Props) {
                 <div className="text-gray-500 text-xs">vs {game.away_team}</div>
               </td>
               <td className="px-4 py-3 text-center text-gray-400">
-                {game.commence_time
-                  ? format(new Date(game.commence_time), 'h:mm a')
-                  : '—'}
+                {formatMatchTime(game.commence_time)}
               </td>
               <td className="px-4 py-3 text-center">
                 <OddsBadge value={game.home_ml} />

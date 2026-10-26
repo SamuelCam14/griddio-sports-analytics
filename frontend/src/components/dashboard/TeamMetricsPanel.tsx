@@ -37,8 +37,8 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
     staleTime: 5 * 60_000,
   })
 
-  const homeInjuriesCount = context?.injuries.home.length ?? 0
-  const awayInjuriesCount = context?.injuries.away.length ?? 0
+  const homeInjuriesCount = context?.injuries?.home?.length ?? 0
+  const awayInjuriesCount = context?.injuries?.away?.length ?? 0
   const totalInjuriesCount = homeInjuriesCount + awayInjuriesCount
 
   return (
@@ -142,45 +142,45 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                     </h3>
                   </div>
                   <span className="font-mono text-xs text-slate-400">
-                    {context.h2h.total_games} enfrentamientos registrados
+                    {context.h2h?.total_games ?? 0} enfrentamientos registrados
                   </span>
                 </div>
 
                 <div className="mt-4 grid grid-cols-3 items-center gap-2 text-center">
                   <div className="rounded-lg bg-white/[0.02] p-2.5">
                     <p className="text-[11px] text-slate-400 truncate">{awayName}</p>
-                    <p className="mt-1 font-mono text-xl font-bold text-cyan-300">{context.h2h.away_wins}</p>
+                    <p className="mt-1 font-mono text-xl font-bold text-cyan-300">{context.h2h?.away_wins ?? 0}</p>
                     <p className="text-[10px] text-slate-500">Victorias</p>
                   </div>
                   <div className="rounded-lg bg-white/[0.02] p-2.5">
                     <p className="text-[11px] text-slate-400">Empates</p>
-                    <p className="mt-1 font-mono text-xl font-bold text-slate-300">{context.h2h.draws}</p>
+                    <p className="mt-1 font-mono text-xl font-bold text-slate-300">{context.h2h?.draws ?? 0}</p>
                     <p className="text-[10px] text-slate-500">Igualdades</p>
                   </div>
                   <div className="rounded-lg bg-white/[0.02] p-2.5">
                     <p className="text-[11px] text-slate-400 truncate">{homeName}</p>
-                    <p className="mt-1 font-mono text-xl font-bold text-emerald-300">{context.h2h.home_wins}</p>
+                    <p className="mt-1 font-mono text-xl font-bold text-emerald-300">{context.h2h?.home_wins ?? 0}</p>
                     <p className="text-[10px] text-slate-500">Victorias</p>
                   </div>
                 </div>
 
                 {/* Barra de Proporción H2H */}
-                {context.h2h.total_games > 0 && (
+                {(context.h2h?.total_games ?? 0) > 0 && (
                   <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-white/5">
                     <div
-                      style={{ width: `${(context.h2h.away_wins / context.h2h.total_games) * 100}%` }}
+                      style={{ width: `${((context.h2h?.away_wins ?? 0) / context.h2h.total_games) * 100}%` }}
                       className="bg-cyan-400 transition-all duration-500"
-                      title={`${awayName}: ${context.h2h.away_wins}`}
+                      title={`${awayName}: ${context.h2h?.away_wins ?? 0}`}
                     />
                     <div
-                      style={{ width: `${(context.h2h.draws / context.h2h.total_games) * 100}%` }}
+                      style={{ width: `${((context.h2h?.draws ?? 0) / context.h2h.total_games) * 100}%` }}
                       className="bg-slate-500 transition-all duration-500"
-                      title={`Empates: ${context.h2h.draws}`}
+                      title={`Empates: ${context.h2h?.draws ?? 0}`}
                     />
                     <div
-                      style={{ width: `${(context.h2h.home_wins / context.h2h.total_games) * 100}%` }}
+                      style={{ width: `${((context.h2h?.home_wins ?? 0) / context.h2h.total_games) * 100}%` }}
                       className="bg-emerald-400 transition-all duration-500"
-                      title={`${homeName}: ${context.h2h.home_wins}`}
+                      title={`${homeName}: ${context.h2h?.home_wins ?? 0}`}
                     />
                   </div>
                 )}
@@ -202,21 +202,21 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                   <TeamFormCard
                     teamName={awayName}
                     isAway
-                    streak={context.recent_form.away.streak}
-                    games={context.recent_form.away.games}
+                    streak={context.recent_form?.away?.streak ?? []}
+                    games={context.recent_form?.away?.games ?? []}
                   />
                   {/* Forma Local */}
                   <TeamFormCard
                     teamName={homeName}
                     isAway={false}
-                    streak={context.recent_form.home.streak}
-                    games={context.recent_form.home.games}
+                    streak={context.recent_form?.home?.streak ?? []}
+                    games={context.recent_form?.home?.games ?? []}
                   />
                 </div>
               </div>
 
               {/* Últimos Duelos Directos Detallados */}
-              {context.h2h.recent_clashes.length > 0 && (
+              {(context.h2h?.recent_clashes?.length ?? 0) > 0 && (
                 <div className="rounded-xl border border-white/8 bg-white/[0.025] p-4">
                   <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-300">
                     Últimos enfrentamientos cara a cara
@@ -256,11 +256,11 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
               className="mt-5 space-y-6"
             >
               <div className="rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 text-[11px] text-slate-400" role="status">
-                {context.injury_source.status === 'unavailable'
+                {context.injury_source?.status === 'unavailable'
                   ? 'No se pudo verificar el reporte de ESPN.'
-                  : context.injury_source.status === 'not_applicable_past_game'
+                  : context.injury_source?.status === 'not_applicable_past_game'
                     ? 'El reporte actual no aplica a un partido pasado.'
-                    : `Fuente: ${context.injury_source.source ?? 'desconocida'} · captura ${context.injury_source.captured_at_utc ?? 'sin timestamp'}${context.injury_source.is_from_cache ? ` · caché de ${Math.round((context.injury_source.cache_age_seconds ?? 0) / 60)} min` : ' · respuesta en vivo'}`}
+                    : `Fuente: ${context.injury_source?.source ?? 'desconocida'} · captura ${context.injury_source?.captured_at_utc ?? 'sin timestamp'}${context.injury_source?.is_from_cache ? ` · caché de ${Math.round((context.injury_source.cache_age_seconds ?? 0) / 60)} min` : ' · respuesta en vivo'}`}
               </div>
 
               {game.sport === 'NFL' && <div className="rounded-xl border border-white/8 bg-white/[0.025] p-4">
@@ -281,22 +281,22 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                       <div className="flex justify-between text-slate-400">
                         <span>Pérdida Ofensiva (PPR)</span>
                         <span className="font-mono text-slate-200">
-                          {formatPercentage(context.injuries.away_impact.ppr_lost_pct)}
+                          {formatPercentage(context.injuries?.away_impact?.ppr_lost_pct)}
                         </span>
                       </div>
                       <div className="flex justify-between text-slate-400">
                         <span>Snaps Ofensivos Perdidos</span>
                         <span className="font-mono text-slate-200">
-                          {formatPercentage(context.injuries.away_impact.off_snaps_lost_pct)}
+                          {formatPercentage(context.injuries?.away_impact?.off_snaps_lost_pct)}
                         </span>
                       </div>
                       <div className="flex justify-between text-slate-400">
                         <span>Snaps Defensivos Perdidos</span>
                         <span className="font-mono text-slate-200">
-                          {formatPercentage(context.injuries.away_impact.def_snaps_lost_pct)}
+                          {formatPercentage(context.injuries?.away_impact?.def_snaps_lost_pct)}
                         </span>
                       </div>
-                      {context.injuries.away_impact.qb_starter_injured && (
+                      {context.injuries?.away_impact?.qb_starter_injured && (
                         <div className="flex justify-between text-amber-300 font-medium">
                           <span>QB vs reemplazo de liga (EPA)</span>
                           <span className="font-mono">
@@ -315,22 +315,22 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                       <div className="flex justify-between text-slate-400">
                         <span>Pérdida Ofensiva (PPR)</span>
                         <span className="font-mono text-slate-200">
-                          {formatPercentage(context.injuries.home_impact.ppr_lost_pct)}
+                          {formatPercentage(context.injuries?.home_impact?.ppr_lost_pct)}
                         </span>
                       </div>
                       <div className="flex justify-between text-slate-400">
                         <span>Snaps Ofensivos Perdidos</span>
                         <span className="font-mono text-slate-200">
-                          {formatPercentage(context.injuries.home_impact.off_snaps_lost_pct)}
+                          {formatPercentage(context.injuries?.home_impact?.off_snaps_lost_pct)}
                         </span>
                       </div>
                       <div className="flex justify-between text-slate-400">
                         <span>Snaps Defensivos Perdidos</span>
                         <span className="font-mono text-slate-200">
-                          {formatPercentage(context.injuries.home_impact.def_snaps_lost_pct)}
+                          {formatPercentage(context.injuries?.home_impact?.def_snaps_lost_pct)}
                         </span>
                       </div>
-                      {context.injuries.home_impact.qb_starter_injured && (
+                      {context.injuries?.home_impact?.qb_starter_injured && (
                         <div className="flex justify-between text-amber-300 font-medium">
                           <span>QB vs reemplazo de liga (EPA)</span>
                           <span className="font-mono">
@@ -345,8 +345,8 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                 </div>
 
                 {/* Reporte Detallado de Puntos Fantasy y Snaps Perdidos */}
-                {((context.injuries.away_impact.affected_players?.length ?? 0) > 0 ||
-                  (context.injuries.home_impact.affected_players?.length ?? 0) > 0) && (
+                {((context.injuries?.away_impact?.affected_players?.length ?? 0) > 0 ||
+                  (context.injuries?.home_impact?.affected_players?.length ?? 0) > 0) && (
                   <div className="mt-4 border-t border-white/5 pt-3.5">
                     <button
                       type="button"
@@ -384,7 +384,7 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                             <p className="text-[11px] font-semibold text-cyan-300 mb-2 truncate">
                               Bajas con impacto · {awayName}
                             </p>
-                            {(!context.injuries.away_impact.affected_players ||
+                            {(!context.injuries?.away_impact?.affected_players ||
                               context.injuries.away_impact.affected_players.length === 0) ? (
                               <p className="text-[11px] text-slate-500">Sin penalizaciones de producción registradas.</p>
                             ) : (
@@ -401,7 +401,7 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                             <p className="text-[11px] font-semibold text-emerald-300 mb-2 truncate">
                               Bajas con impacto · {homeName}
                             </p>
-                            {(!context.injuries.home_impact.affected_players ||
+                            {(!context.injuries?.home_impact?.affected_players ||
                               context.injuries.home_impact.affected_players.length === 0) ? (
                               <p className="text-[11px] text-slate-500">Sin penalizaciones de producción registradas.</p>
                             ) : (
@@ -424,16 +424,16 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                 <InjuriesListCard
                   teamName={awayName}
                   isAway
-                  injuries={context.injuries.away}
-                  coverageState={context.injuries.away_impact.coverage_state}
-                  affectedPlayers={context.injuries.away_impact.affected_players}
+                  injuries={context.injuries?.away ?? []}
+                  coverageState={context.injuries?.away_impact?.coverage_state}
+                  affectedPlayers={context.injuries?.away_impact?.affected_players}
                 />
                 <InjuriesListCard
                   teamName={homeName}
                   isAway={false}
-                  injuries={context.injuries.home}
-                  coverageState={context.injuries.home_impact.coverage_state}
-                  affectedPlayers={context.injuries.home_impact.affected_players}
+                  injuries={context.injuries?.home ?? []}
+                  coverageState={context.injuries?.home_impact?.coverage_state}
+                  affectedPlayers={context.injuries?.home_impact?.affected_players}
                 />
               </div>
             </motion.div>
@@ -462,16 +462,16 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
                 <div className="mt-6 space-y-5">
                   <DuelComparisonBar
                     label="Puntos por Partido (PPG)"
-                    awayVal={context.comparison_stats.away.ppg}
-                    homeVal={context.comparison_stats.home.ppg}
+                    awayVal={context.comparison_stats?.away?.ppg ?? null}
+                    homeVal={context.comparison_stats?.home?.ppg ?? null}
                     awayName={awayName}
                     homeName={homeName}
                   />
 
                   <DuelComparisonBar
                     label="Puntos Permitidos por Partido"
-                    awayVal={context.comparison_stats.away.opp_ppg}
-                    homeVal={context.comparison_stats.home.opp_ppg}
+                    awayVal={context.comparison_stats?.away?.opp_ppg ?? null}
+                    homeVal={context.comparison_stats?.home?.opp_ppg ?? null}
                     awayName={awayName}
                     homeName={homeName}
                     inverted
@@ -479,16 +479,16 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
 
                   <DuelComparisonBar
                     label="Diferencial de Puntos (+/-)"
-                    awayVal={context.comparison_stats.away.avg_margin}
-                    homeVal={context.comparison_stats.home.avg_margin}
+                    awayVal={context.comparison_stats?.away?.avg_margin ?? null}
+                    homeVal={context.comparison_stats?.home?.avg_margin ?? null}
                     awayName={awayName}
                     homeName={homeName}
                   />
 
                   <DuelComparisonBar
                     label="Días de Descanso"
-                    awayVal={context.comparison_stats.away.days_rest}
-                    homeVal={context.comparison_stats.home.days_rest}
+                    awayVal={context.comparison_stats?.away?.days_rest ?? null}
+                    homeVal={context.comparison_stats?.home?.days_rest ?? null}
                     awayName={awayName}
                     homeName={homeName}
                   />
@@ -525,14 +525,17 @@ export function TeamMetricsPanel({ game, homeName, awayName }: TeamMetricsPanelP
 function TeamFormCard({
   teamName,
   isAway,
-  streak,
-  games
+  streak = [],
+  games = [],
 }: {
   teamName: string
   isAway: boolean
-  streak: Array<'W' | 'L' | 'T'>
-  games: any[]
+  streak?: Array<'W' | 'L' | 'T'>
+  games?: any[]
 }) {
+  const safeStreak = streak ?? []
+  const safeGames = games ?? []
+
   return (
     <div className="rounded-xl border border-white/8 bg-white/[0.025] p-3.5">
       <div className="flex items-center justify-between">
@@ -540,8 +543,8 @@ function TeamFormCard({
           {teamName}
         </p>
         <div className="flex items-center gap-1">
-          {streak.length > 0 ? (
-            streak.map((result, idx) => (
+          {safeStreak.length > 0 ? (
+            safeStreak.map((result, idx) => (
               <span
                 key={idx}
                 className={`flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold ${
@@ -562,7 +565,7 @@ function TeamFormCard({
       </div>
 
       <div className="mt-3 divide-y divide-white/5">
-        {games.map((g, idx) => (
+        {safeGames.map((g, idx) => (
           <div key={idx} className="flex items-center justify-between py-1.5 text-xs">
             <span className="font-mono text-slate-500 text-[11px]">{g.date}</span>
             <span className="text-slate-300">
@@ -592,10 +595,11 @@ function TeamFormCard({
 }
 
 function PlayerProductionImpactRow({ player }: { player: AffectedPlayerProduction }) {
-  const isOut = player.status.toUpperCase() === 'OUT' || player.p_absence >= 0.99
-  const hasPpr = player.rolling_ppr > 0 || player.lost_ppr > 0
-  const hasOffSnaps = player.rolling_off_pct > 0 || player.lost_off_snaps > 0
-  const hasDefSnaps = player.rolling_def_pct > 0 || player.lost_def_snaps > 0
+  const statusUpper = (player.status ?? '').toUpperCase()
+  const isOut = statusUpper === 'OUT' || (player.p_absence ?? 0) >= 0.99
+  const hasPpr = (player.rolling_ppr ?? 0) > 0 || (player.lost_ppr ?? 0) > 0
+  const hasOffSnaps = (player.rolling_off_pct ?? 0) > 0 || (player.lost_off_snaps ?? 0) > 0
+  const hasDefSnaps = (player.rolling_def_pct ?? 0) > 0 || (player.lost_def_snaps ?? 0) > 0
 
   return (
     <div className="rounded-md bg-white/[0.02] border border-white/5 p-2 text-xs">
@@ -686,14 +690,15 @@ function InjuriesListCard({
       ) : (
         <div className="mt-2.5 max-h-72 space-y-2 overflow-y-auto pr-1">
           {injuries.map((item, idx) => {
-            const isOut = item.status.toUpperCase() === 'OUT' || item.status.toUpperCase().includes('IR')
-            const isQuest = item.status.toUpperCase().includes('QUESTIONABLE')
-            const impact = affectedPlayers?.find(
-              (ap) =>
-                ap.player_name.toLowerCase().trim() === item.player_name.toLowerCase().trim() ||
-                ap.player_name.toLowerCase().includes(item.player_name.toLowerCase().trim()) ||
-                item.player_name.toLowerCase().includes(ap.player_name.toLowerCase().trim())
-            )
+            const statusUpper = (item.status ?? '').toUpperCase()
+            const isOut = statusUpper === 'OUT' || statusUpper.includes('IR')
+            const isQuest = statusUpper.includes('QUESTIONABLE')
+            const itemName = (item.player_name ?? '').toLowerCase().trim()
+            const impact = affectedPlayers?.find((ap) => {
+              const apName = (ap.player_name ?? '').toLowerCase().trim()
+              if (!apName || !itemName) return false
+              return apName === itemName || apName.includes(itemName) || itemName.includes(apName)
+            })
             return (
               <div
                 key={idx}
@@ -827,13 +832,16 @@ function LeagueMetricsSection({
   homeName: string
   awayName: string
 }) {
+  const homeStats = game?.team_stats?.home
+  const awayStats = game?.team_stats?.away
+
   const metrics = [
-    { label: 'Porcentaje de victorias', home: formatPercentage(game.team_stats.home.wpct), away: formatPercentage(game.team_stats.away.wpct) },
-    { label: 'Rating neto', home: formatNumber(game.team_stats.home.net_rtg), away: formatNumber(game.team_stats.away.net_rtg) },
-    { label: 'Rating ofensivo', home: formatNumber(game.team_stats.home.off_rtg), away: formatNumber(game.team_stats.away.off_rtg) },
-    { label: 'Rating defensivo', home: formatNumber(game.team_stats.home.def_rtg), away: formatNumber(game.team_stats.away.def_rtg) },
-    { label: 'Ritmo', home: formatNumber(game.team_stats.home.pace), away: formatNumber(game.team_stats.away.pace) },
-    { label: 'Descanso (días)', home: game.team_stats.home.days_rest == null ? '—' : `${game.team_stats.home.days_rest}`, away: game.team_stats.away.days_rest == null ? '—' : `${game.team_stats.away.days_rest}` },
+    { label: 'Porcentaje de victorias', home: formatPercentage(homeStats?.wpct), away: formatPercentage(awayStats?.wpct) },
+    { label: 'Rating neto', home: formatNumber(homeStats?.net_rtg), away: formatNumber(awayStats?.net_rtg) },
+    { label: 'Rating ofensivo', home: formatNumber(homeStats?.off_rtg), away: formatNumber(awayStats?.off_rtg) },
+    { label: 'Rating defensivo', home: formatNumber(homeStats?.def_rtg), away: formatNumber(awayStats?.def_rtg) },
+    { label: 'Ritmo', home: formatNumber(homeStats?.pace), away: formatNumber(awayStats?.pace) },
+    { label: 'Descanso (días)', home: homeStats?.days_rest == null ? '—' : `${homeStats.days_rest}`, away: awayStats?.days_rest == null ? '—' : `${awayStats.days_rest}` },
   ]
 
   return (

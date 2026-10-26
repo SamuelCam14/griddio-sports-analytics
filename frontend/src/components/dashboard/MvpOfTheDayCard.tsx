@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import { Sparkles } from 'lucide-react'
 import type { Pick } from '@/services/api'
+import { formatEvDollars } from '@/utils/dashboard'
 
 interface MvpOfTheDayCardProps {
   sport: 'NBA' | 'NFL'
@@ -15,7 +16,10 @@ export function MvpOfTheDayCard({ sport, topPick }: MvpOfTheDayCardProps) {
     : topPick?.pick_team_name
 
   const teamName = topPick?.home_team?.name ?? ''
-  const advantageText = topPick?.ev_dolares ? `+$${topPick.ev_dolares.toFixed(1)} EV` : null
+  const advantageText =
+    topPick?.ev_dolares != null && Number.isFinite(topPick.ev_dolares)
+      ? formatEvDollars(topPick.ev_dolares, 1, { suffix: ' EV' })
+      : null
 
   return (
     <motion.div

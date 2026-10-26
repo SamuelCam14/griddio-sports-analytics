@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Maximize2 } from 'lucide-react'
 import { PillTabs, type TabOption } from '@/components/ui/PillTabs'
 import type { ScheduledMatch } from '@/types/dashboard'
-import { formatMatchDate, formatMatchTime, formatPercentage, formatNumber } from '@/utils/dashboard'
+import { formatMatchDate, formatMatchTime, formatPercentage, formatNumber, formatEvDollars } from '@/utils/dashboard'
 
 interface LiveMatchDetailCardProps {
   match?: ScheduledMatch
@@ -104,7 +104,12 @@ export function LiveMatchDetailCard({ match, sport, onOpenDeepDive }: LiveMatchD
               <>
                 <p className="font-semibold text-emerald-400">Modelo de producción ({prediction.model_version ?? `${sport.toLowerCase()}_temporal_v1`})</p>
                 <p>Probabilidad estimada: Local {formatPercentage(prediction.home_win_prob)} / Visita {formatPercentage(prediction.away_win_prob)}</p>
-                <p>EV y selección: {prediction.best_bet ? `${prediction.best_bet.selection} · EV ${prediction.best_bet.ev_dollars > 0 ? '+' : ''}$${prediction.best_bet.ev_dollars} por cada $100` : 'Sin ventaja matemática calculable en este mercado.'}</p>
+                <p>
+                  EV y selección:{' '}
+                  {prediction.best_bet
+                    ? `${prediction.best_bet.selection} · EV ${formatEvDollars(prediction.best_bet.ev_dollars, 1)} por cada $100`
+                    : 'Sin ventaja matemática calculable en este mercado.'}
+                </p>
                 {prediction.spread?.status === 'available' && prediction.spread.projected_margin != null && (
                   <p className="text-slate-300">
                     Hándicap proyectado: {prediction.spread.projected_margin > 0 ? '+' : ''}{prediction.spread.projected_margin.toFixed(1)} pts · Prob. cubrir {formatPercentage(prediction.spread.cover_probability)}

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { TeamLogo } from '@/components/ui/TeamLogo'
 import { gamesApi } from '@/services/api'
+import { formatMatchDate } from '@/utils/dashboard'
 
 interface StandingsTableCardProps {
   sport: 'NBA' | 'NFL'
@@ -32,7 +33,7 @@ export function StandingsTableCard({ sport }: StandingsTableCardProps) {
       {standings.length > 0 && (
         <>
           <p className="mt-2 text-[10px] text-slate-500">
-            Temporada {query.data?.season ?? '—'} · corte {query.data?.as_of ? new Date(query.data.as_of).toLocaleDateString() : '—'} · {query.data?.teams_with_results ?? 0}/{query.data?.teams_in_catalog ?? 0} equipos con resultados.
+            Temporada {query.data?.season ?? '—'} · corte {formatMatchDate(query.data?.as_of)} · {query.data?.teams_with_results ?? 0}/{query.data?.teams_in_catalog ?? 0} equipos con resultados.
           </p>
           <div className="mt-2.5 grid grid-cols-[18px_1fr_36px_36px_42px_42px] gap-1 px-2 text-[10px] font-semibold uppercase text-slate-500">
             <span>#</span><span>Equipo</span><span className="text-center">G</span><span className="text-center">P</span><span className="text-center">%</span><span className="text-center">PF</span>
@@ -44,7 +45,7 @@ export function StandingsTableCard({ sport }: StandingsTableCardProps) {
                 <div className="flex min-w-0 items-center gap-2"><TeamLogo name={team.name} size="sm" /><span className="truncate font-medium text-slate-200">{team.name}</span></div>
                 <span className="text-center font-mono text-slate-300">{team.w}</span>
                 <span className="text-center font-mono text-slate-400">{team.l}</span>
-                <span className="text-center font-mono text-slate-300">{team.pct == null ? '—' : (team.pct * 100).toFixed(1)}</span>
+                <span className="text-center font-mono text-slate-300">{team.pct == null || !Number.isFinite(team.pct) ? '—' : (team.pct * 100).toFixed(1)}</span>
                 <span className="text-center font-mono text-slate-300">{team.points_for}</span>
               </div>
             ))}

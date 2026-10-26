@@ -34,6 +34,10 @@ export interface Game {
   status: 'scheduled' | 'live' | 'final'
   home_team_id: number
   away_team_id: number
+  home_team_name?: string | null
+  away_team_name?: string | null
+  home_team_abbreviation?: string | null
+  away_team_abbreviation?: string | null
   home_score: number | null
   away_score: number | null
   home_win: boolean | null
@@ -59,12 +63,15 @@ export interface StandingsTeam {
 export interface StandingsResponse {
   sport: string
   status: 'available' | 'partial' | 'unavailable'
-  season: string | null
+  season: string | number | null
   as_of: string | null
   teams_with_results: number
   teams_in_catalog: number
   ranking_note?: string
   reason?: string
+  source?: string
+  source_refs?: string[]
+  source_retrieved_at?: string | null
   standings: StandingsTeam[]
 }
 
@@ -182,40 +189,51 @@ export interface PlayerProp {
 
 export interface MatchupSpread {
   status?: string
-  market_line: number
-  odds_american: number
+  market_line: number | null
+  odds_american: number | null
+  home_spread_ml?: number | null
+  away_spread_ml?: number | null
   home_bookmaker?: string | null
   away_bookmaker?: string | null
   bookmaker?: string | null
-  projected_margin?: number
-  projected_home_score?: number
-  projected_away_score?: number
-  pick: string
-  cover_probability?: number
-  edge_pct?: number
-  tier: string
+  market_prob_home_cover_no_vig?: number | null
+  market_prob_away_cover_no_vig?: number | null
+  market_vig?: number | null
+  projected_margin?: number | null
+  projected_home_score?: number | null
+  projected_away_score?: number | null
+  pick: string | null
+  cover_probability?: number | null
+  edge_pct?: number | null
+  tier?: string
   // Campos EV y Kelly
-  ev_dollars?: number
-  kelly_stake?: number
+  ev_dollars?: number | null
+  kelly_stake?: number | null
   has_kelly_edge?: boolean
 }
 
 export interface MatchupTotals {
-  market_line: number
-  odds_american: number
+  status?: string
+  market_line: number | null
+  odds_american: number | null
+  over_ml?: number | null
+  under_ml?: number | null
   over_bookmaker?: string | null
   under_bookmaker?: string | null
   bookmaker?: string | null
-  projected_total: number
-  pick: 'OVER' | 'UNDER'
-  recommendation: string
-  probability: number
-  edge_pct: number
-  tier: string
+  market_prob_over_no_vig?: number | null
+  market_prob_under_no_vig?: number | null
+  market_vig?: number | null
+  projected_total: number | null
+  pick: 'OVER' | 'UNDER' | string | null
+  recommendation?: string | null
+  probability: number | null
+  edge_pct: number | null
+  tier?: string | null
   // Campos EV y Kelly
-  ev_dollars: number
-  kelly_stake: number
-  has_kelly_edge: boolean
+  ev_dollars?: number | null
+  kelly_stake?: number | null
+  has_kelly_edge?: boolean
 }
 
 /** La mejor apuesta del enfrentamiento según EV+Kelly — una sola recomendación. */
@@ -253,7 +271,9 @@ export interface Pick {
   away_team_id: number
   model_version?: string
   tier: 'CONFIANZA' | 'NO PICK' | 'PREMIUM' | 'VALUE' | 'SKIP' | 'NEUTRAL' | 'EXPERIMENTAL'
+  tier_label?: string | null
   tier_emoji: string
+  confluence_tier?: string | null
   model_agreement: number
   pick_side: 'home' | 'away' | null
   pick_team_name?: string
@@ -279,10 +299,12 @@ export interface Pick {
   predicted_at?: string
   as_of?: string
   best_bet?: BestBet | null
+  moneyline?: Record<string, any> | null
   spread?: MatchupSpread
   totals?: MatchupTotals
   player_props?: PlayerProp[]
   key_factors?: string[]
+  excluded_missing_market_data?: number
 }
 
 export interface MonteCarloResult {
@@ -503,12 +525,38 @@ export const gamesApi = {
   getStandings: (sport = 'NFL') => api.get<StandingsResponse>('/games/standings', { params: { sport } }),
 }
 
-// ─── Odds ────────────────────────────────────────────────────────────────────
+export interface OddsApiKeyInfo {
+  key_index: number
+  key_prefix: string
+  remaining: number
+  used: string
+  status: 'active' | 'exhausted' | string
+}
+
+export interface OddsRemainingResponse {
+  status: 'ok' | 'no_keys_configured' | string
+  keys: OddsApiKeyInfo[]
+  total_remaining_credits: number
+  requests_remaining: number
+  requests_used: number
+  remaining: string
+  used: string
+  active_key?: string | null
+  estimated_odds_calls_left?: number
+  circuit_breaker_open?: boolean
+  spent_by_envelope?: Record<string, number>
+}
 
 export const oddsApi = {
-  getNBA: () => api.get<{ sport: string; total_games: number; games: OddsData[] }>('/odds/nba'),
-  getNFL: () => api.get<{ sport: string; total_games: number; games: OddsData[] }>('/odds/nfl'),
-  getRemaining: () => api.get<{ remaining: string; used: string }>('/odds/remaining'),
+  getNBA: () =>
+    api.get<{ sport: string; status?: string; total_games: number; games: OddsData[]; reason?: string | null }>(
+      '/odds/nba'
+    ),
+  getNFL: () =>
+    api.get<{ sport: string; status?: string; total_games: number; games: OddsData[]; reason?: string | null }>(
+      '/odds/nfl'
+    ),
+  getRemaining: () => api.get<OddsRemainingResponse>('/odds/remaining'),
 }
 
 // ─── Predictions ─────────────────────────────────────────────────────────────
@@ -562,12 +610,16 @@ export const predictionsApi = {
     api.get<{
       sport: string
       period?: string
+      as_of?: string
       total_picks: number
+      confianza?: number
+      no_pick?: number
       premium: number
       value: number
       skip: number
       picks: Pick[]
       predictions_enabled?: boolean
+      excluded_missing_market_data?: number
       reason?: string
     }>('/predictions/today', { params: { sport, tier, period } }),
   getExperimental: (sport = 'nfl', lookahead_days = 14) =>
@@ -575,7 +627,7 @@ export const predictionsApi = {
       params: { lookahead_days },
     }),
   getTop: (sport = 'NBA', limit = 5) =>
-    api.get<{ sport: string; top_picks: Pick[] }>('/predictions/top', { params: { sport, limit } }),
+    api.get<{ sport: string; top_picks: Pick[]; mensaje?: string }>('/predictions/top', { params: { sport, limit } }),
   getForGame: (gameId: number) => api.get(`/predictions/game/${gameId}`),
   getModelInfo: () => api.get<ModelInfo>('/predictions/model-info'),
   simulate: (payload: {
@@ -614,19 +666,21 @@ export const evApi = {
 export interface ParlayLeg {
   team_name: string
   market?: string
+  side?: string | null
+  point?: number | string | null
   prob_model?: number | null
   odds_american?: number | null
   odds_decimal?: number | null
   edge_pct?: number | null
   has_individual_edge?: boolean
   tier?: string
-  bookmaker?: string
-  observed_at?: string
+  bookmaker?: string | null
+  observed_at?: string | null
   missing_reason?: string | null
   source?: string
   event_id?: string
+  game_id?: string | number
   matchup?: string
-  point?: number | string
 }
 
 export interface RecommendedParlay {
@@ -658,15 +712,24 @@ export interface CustomLegPayload {
 }
 
 export const parlayApi = {
-  getRecommended: (bankroll?: number, limit = 4) =>
-    api.get<{ status: string; total: number; target_odds: string; reason?: string; parlays: RecommendedParlay[] }>(
+  getRecommended: (bankroll?: number, limit = 4, sport = 'NFL') =>
+    api.get<{
+      status: string
+      sport?: string
+      as_of?: string
+      total: number
+      target_odds: string
+      reason?: string
+      parlays: RecommendedParlay[]
+    }>(
       '/parlay/recommended',
-      { params: { ...(bankroll != null ? { bankroll } : {}), limit } }
+      { params: { ...(bankroll != null ? { bankroll } : {}), limit, sport } }
     ),
   evaluate: (
     legs: CustomLegPayload[],
-    bankroll = 1000
-  ) => api.post<RecommendedParlay>('/parlay/evaluate', { legs, bankroll }),
+    bankroll = 1000,
+    kelly_fraction = 0.25
+  ) => api.post<RecommendedParlay>('/parlay/evaluate', { legs, bankroll, kelly_fraction }),
 }
 
 // ─── Sports Card Analytics ──────────────────────────────────────────────────

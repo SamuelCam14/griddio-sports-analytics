@@ -1,7 +1,7 @@
 import { Cpu } from 'lucide-react'
 import type { ScheduledMatch } from '@/types/dashboard'
 import type { ExternalGameForecast } from '@/services/api'
-import { formatMatchDate, formatMatchTime, formatPercentage } from '@/utils/dashboard'
+import { formatMatchDate, formatMatchTime, formatPercentage, formatEvDollars } from '@/utils/dashboard'
 
 interface AiMatchupSimulatorCardProps {
   match?: ScheduledMatch
@@ -50,13 +50,16 @@ export function AiMatchupSimulatorCard({ match, sport }: AiMatchupSimulatorCardP
                 {prediction.best_bet && (
                   <div className="rounded border border-emerald-500/20 bg-black/40 p-2 text-xs">
                     <p className="font-medium text-white">Recomendación con ventaja: {prediction.best_bet.selection}</p>
-                    <p className="text-[11px] text-emerald-400">Probabilidad: {formatPercentage(prediction.best_bet.win_probability)} · EV: +${prediction.best_bet.ev_dollars.toFixed(1)} / $100</p>
+                    <p className="text-[11px] text-emerald-400">
+                      Probabilidad: {formatPercentage(prediction.best_bet.win_probability)} · EV:{' '}
+                      {formatEvDollars(prediction.best_bet.ev_dollars, 1, { suffix: ' / $100' })}
+                    </p>
                     {prediction.best_bet.reason && <p className="mt-1 text-[10px] text-slate-400">{prediction.best_bet.reason}</p>}
                   </div>
                 )}
                 {prediction.spread?.status === 'available' && prediction.spread.projected_margin != null && (
                   <p className="text-[11px] text-slate-300">
-                    Margen proyectado: <span className="font-mono text-white">{prediction.spread.projected_margin > 0 ? '+' : ''}{prediction.spread.projected_margin.toFixed(1)} pts</span> ({prediction.spread.projected_home_score?.toFixed(1)} - {prediction.spread.projected_away_score?.toFixed(1)}) · Prob. cubrir: {formatPercentage(prediction.spread.cover_probability)}
+                    Margen proyectado: <span className="font-mono text-white">{prediction.spread.projected_margin > 0 ? '+' : ''}{prediction.spread.projected_margin.toFixed(1)} pts</span> ({prediction.spread.projected_home_score != null ? prediction.spread.projected_home_score.toFixed(1) : '—'} - {prediction.spread.projected_away_score != null ? prediction.spread.projected_away_score.toFixed(1) : '—'}) · Prob. cubrir: {formatPercentage(prediction.spread.cover_probability)}
                   </p>
                 )}
                 <p className="text-[10px] text-slate-400 italic">
