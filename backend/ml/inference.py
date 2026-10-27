@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 import joblib
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -111,6 +113,28 @@ def load_all_ensemble_models(
                 loaded[m_name] = joblib.load(p)
             except Exception as e:
                 logger.warning(f"No se pudo cargar modelo {m_name}: {e}")
+    return loaded
+
+
+def load_all_totals_models(
+    sport: str,
+    *,
+    models_root: Path | None = None,
+    model_variant: str = "injury_aware",
+) -> dict[str, Any]:
+    """Load all distinct regression models for totals (Over/Under) if present."""
+    sport = sport.lower()
+    models_root = models_root or backend_root() / "ml" / "models" / sport
+    if model_variant == "team_only":
+        models_root = models_root / "team_only"
+    loaded = {}
+    for m_name in ("ridge", "hist_gradient_boosting", "random_forest"):
+        p = models_root / f"totals_{m_name}.joblib"
+        if p.is_file():
+            try:
+                loaded[m_name] = joblib.load(p)
+            except Exception as e:
+                logger.warning(f"No se pudo cargar modelo de totales {m_name}: {e}")
     return loaded
 
 
@@ -439,6 +463,115 @@ def predict_matchups(
     features["model_artifact_sha256"] = metadata["_artifact_sha256"]
     features["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
     features["production_eligible"] = bool(metadata.get("production_enabled"))
+
+    # Totals (Over/Under) inference
+    totals_models = {}
+    selected_totals_model = None
+    if "totals_evaluation" in metadata or "totals_artifact_sha256" in metadata:
+        totals_models = load_all_totals_models(sport, model_variant=model_variant)
+        expected_totals_hashes = metadata.get("totals_artifact_sha256", {})
+        if expected_totals_hashes:
+            model_dir = backend_root() / "ml" / "models" / sport
+            if model_variant == "team_only":
+                model_dir = model_dir / "team_only"
+            for t_art_name, exp_t_hash in expected_totals_hashes.items():
+                t_file = model_dir / f"totals_{t_art_name}.joblib"
+                if not t_file.is_file():
+                    raise DataQualityError(f"Falta archivo físico de artefacto de totales: totals_{t_art_name}")
+                if _digest(t_file) != exp_t_hash:
+                    raise DataQualityError(f"Hash del artefacto de totales totals_{t_art_name} no coincide con metadata")
+                if t_art_name not in totals_models:
+                    raise DataQualityError(f"Artefacto de totales totals_{t_art_name} no pudo cargarse o está corrupto")
+
+        t_eval = metadata.get("totals_evaluation", {})
+        selected_totals_model = t_eval.get("selected_model", "ridge")
+        if len(features) == 0:
+            features["projected_total"] = np.array([], dtype=float)
+            features["predicted_total"] = np.array([], dtype=float)
+            features["prob_over"] = np.array([], dtype=float)
+            features["prob_under"] = np.array([], dtype=float)
+            features["totals_pick"] = np.array([], dtype=object)
+        else:
+            if selected_totals_model in ("ensemble_blend", "ensemble"):
+                if not totals_models:
+                    raise DataQualityError("No hay modelos de totales disponibles para ensamble")
+                proj_preds = [m.predict(X) for m in totals_models.values()]
+                projected_total = np.mean(proj_preds, axis=0)
+            elif selected_totals_model in totals_models:
+                projected_total = totals_models[selected_totals_model].predict(X)
+            else:
+                raise DataQualityError(f"Modelo seleccionado de totales {selected_totals_model!r} no está disponible")
+
+            if not np.isfinite(projected_total).all():
+                raise DataQualityError("El modelo de totales produjo predicciones no finitas")
+
+            features["projected_total"] = np.round(projected_total, 2)
+            features["predicted_total"] = features["projected_total"]
+
+            line_col = None
+            for col_cand in ("total_line", "over_under_line"):
+                if col_cand in upcoming_games.columns and upcoming_games[col_cand].notna().any():
+                    line_mapping = dict(zip(upcoming_games["game_id"].astype(str), upcoming_games[col_cand]))
+                    features[col_cand] = features["game_id"].astype(str).map(line_mapping)
+                    line_col = col_cand
+                    break
+                elif col_cand in features.columns and features[col_cand].notna().any():
+                    line_col = col_cand
+                    break
+
+            raw_sigma = t_eval.get("metrics", {}).get("residual_sigma")
+            try:
+                if raw_sigma is None:
+                    raise ValueError("residual_sigma ausente en metadata de totales")
+                parsed_sigma = float(raw_sigma)
+                if not math.isfinite(parsed_sigma) or parsed_sigma <= 0:
+                    raise ValueError(f"residual_sigma debe ser un número finito > 0, obtenido: {raw_sigma}")
+                res_sigma = parsed_sigma
+            except (TypeError, ValueError) as err:
+                raise DataQualityError(f"residual_sigma inválido en metadata para totales: {raw_sigma} ({err})") from err
+
+            probs_over = []
+            probs_under = []
+            totals_picks = []
+
+            if line_col:
+                for idx, r in features.iterrows():
+                    val = r[line_col]
+                    if pd.isna(val) or val is None:
+                        probs_over.append(np.nan)
+                        probs_under.append(np.nan)
+                        totals_picks.append(None)
+                    else:
+                        if isinstance(val, bool):
+                            raise DataQualityError(f"Línea de total inválida: tipo booleano no permitido ({val})")
+                        try:
+                            line_val = float(val)
+                        except (ValueError, TypeError):
+                            raise DataQualityError(f"Línea de total inválida: {val}")
+                        if not np.isfinite(line_val) or line_val <= 0:
+                            raise DataQualityError(f"Línea de total inválida o no positiva: {line_val}")
+
+                        proj_val = float(r["projected_total"])
+                        z = (proj_val - line_val) / res_sigma
+                        p_over = round(float(norm.cdf(z)), 4)
+                        p_under = round(1.0 - p_over, 4)
+                        probs_over.append(p_over)
+                        probs_under.append(p_under)
+                        if p_over > 0.5:
+                            totals_picks.append("OVER")
+                        elif p_under > 0.5:
+                            totals_picks.append("UNDER")
+                        else:
+                            totals_picks.append("PUSH")
+            else:
+                probs_over = [np.nan] * len(features)
+                probs_under = [np.nan] * len(features)
+                totals_picks = [None] * len(features)
+
+            features["prob_over"] = probs_over
+            features["prob_under"] = probs_under
+            features["totals_pick"] = totals_picks
+
     run_metadata = {
         "sport": sport.upper(), "model_version": metadata["model_version"],
         "artifact": model_name, "dataset_sha256": metadata["dataset_sha256"],
@@ -454,5 +587,8 @@ def predict_matchups(
         "skipped_games": provenance["skipped_games"],
         "availability_coverage": availability_coverage,
         "models_evaluated": models_evaluated,
+        "totals_evaluation": metadata.get("totals_evaluation"),
+        "totals_models_evaluated": list(totals_models.keys()) if totals_models else [],
+        "selected_totals_model": selected_totals_model,
     }
     return features, run_metadata

@@ -142,5 +142,26 @@
   * `getApiErrorMessage` (`frontend/src/utils/errors.ts`): Cobertura formal con suite unitaria (`errors.test.ts`, 9 tests) para errores de validación 422 de FastAPI, strings, objetos arbitrarios, timeouts ECONNABORTED y estados HTTP.
   * Componentes de Proyección (`MatchupSpreadTab.tsx`, `MatchupTotalsTab.tsx`, `HeroSpotlight.tsx`, `SportsCardsView.tsx`): Blindaje con `toFixed(1)` y `Number.isFinite` contra floats largos (`24.6666...` -> `24.7`), erradicación de `NaN%` en probabilidades y eliminación de paréntesis vacíos `()` en insignias de arbitraje.
 
+### 1.7. Modelo y Calibración de Totals (Over/Under) en NFL (Ridge, HGB, RF, Ensemble)
+- **Formulación del Target:** `total_points = home_score + away_score`. En ambos datasets históricos (`nfl_training.csv` y `nfl_team_only_training.csv`), los marcadores finales `home_score` y `away_score` existen en el 100% de las filas sin nulos ni valores negativos.
+- **Carga de Líneas de Mercado sin Data Leakage (`load_nfl_historical_total_lines`):** Se mapean las líneas de cierre `total_line` desde las capturas de schedules en `data/raw/nflverse/*/schedules_*.parquet` mediante `game_id`. La función opera de forma puramente determinista sin llamadas de red ni fuga de datos futuros.
+- **Evaluación Walk-Forward Temporal y Dispersión Out-of-Fold:**
+  - 4 folds cronológicos donde cada partición de test es estrictamente posterior a la de entrenamiento (`all_dates[train].max() < all_dates[test].min()`), y el holdout permanece posterior a todos los folds.
+  - La desviación estándar residual ($\sigma_{\text{train}}$) se calcula de forma estrictamente out-of-fold (OOF) dentro del tramo de entrenamiento mediante particiones temporales expansivas walk-forward (`estimate_oof_residual_sigma` y `generate_expanding_chronological_splits`), erradicando KFold bidireccional y garantizando matemáticamente `max(train_date) < min(val_date)` en el 100% de los splits internos, con bloques de validación disjuntos y crecimiento monótono del conjunto de entrenamiento.
+- **Selección de Modelo y Estado Experimental Transparente:**
+  - Ridge Regression con `StandardScaler` y regularización L2 (`alpha=15.0`) fue seleccionado estrictamente como elección previa por parsimonia lineal (`a_priori_linear_baseline_parsimony`), sin justificación basada en holdout/lockbox (el holdout no interviene jamás en la selección).
+  - Se registra formalmente que los resultados actuales OOF no superan a la baseline de mercado/mayoritaria (Ridge OOF MAE 12.60 vs baseline 12.40; Brier Over/Under 0.269 vs 0.252), por lo que Totals se mantiene estrictamente en estado experimental (`status: 'experimental'`, `beats_baseline_oof: false`, `production_enabled: false`) hasta contar con evidencia prospectiva de calibración y skill predictivo.
+- **Calibración Normal de Probabilidades Over/Under:**
+  - Para cualquier línea de mercado $L > 0$ y proyección $\hat{T}$: $z = (\hat{T} - L) / \sigma$.
+  - $p_{\text{over}} = \Phi(z)$, $p_{\text{under}} = 1 - p_{\text{over}}$.
+  - Casos límite: $z=0 \implies p=0.5$ ("PUSH"); $z \gg 0 \implies p_{\text{over}} \to 1.0$ ("OVER"); $z \ll 0 \implies p_{\text{under}} \to 1.0$ ("UNDER").
+- **Inferencia Fail-Closed (`predict_matchups` y `MLEngine`):**
+  - Validación fail-closed de `residual_sigma`: `inference.py` exige conversión con manejo de errores requiriendo obligatoriamente `math.isfinite(sigma) and sigma > 0`. Valores `None`, `NaN`, `±inf`, cero, negativos o texto inválido levantan inmediatamente `DataQualityError`.
+  - Si se pasa una línea inválida, no positiva ($\le 0$), de tipo booleano o no numérica, `predict_matchups` falla cerrado con `DataQualityError`.
+  - Si un artefacto físico de totales (`totals_ridge.joblib`, `totals_hist_gradient_boosting.joblib`, `totals_random_forest.joblib`) no existe, está corrupto o su hash SHA-256 no coincide con `model_metadata.json`, falla cerrado con `DataQualityError`.
+  - `MLEngine.predict_totals`: Documentado explícitamente como componente legacy de NBA no conectado a producción NFL. Falla cerrado con `RuntimeError` si el motor no está inicializado, o levanta `NotImplementedError` (redirigiendo a `ml.inference.predict_matchups`) ante la ausencia de un modelo inyectado. Si se provee un `totals_model`, ejecuta inferencia funcional validando líneas, sigma y que `projected_total` sea estrictamente finito (rechazando `NaN`/`±inf` o no convertibles fail-closed antes de calcular probabilidades).
+- **Ámbito Restringido a NFL:** El pipeline de entrenamiento de totales está acotado estrictamente a `sport.lower() == 'nfl' and has_scores`, impidiendo que corridas con `--sport all` extiendan totales a NBA sin líneas históricas validadas.
+- **Preservación Inmutable de Producción:** El artefacto ganador de producción `logistic.joblib` mantiene estrictamente su SHA-256 `c672f6a3cd5de9a23fa76a8351005a557c0e106cc008d4c22f09c34986fa28c0`.
+
 
 

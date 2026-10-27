@@ -166,6 +166,111 @@ class MLEngine:
             }
         }
 
+    def predict_totals(
+        self,
+        home_stats: Dict[str, Any],
+        visitor_stats: Dict[str, Any],
+        total_line: Optional[float] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Calcula proyección de puntos totales y probabilidades calibradas de Over/Under.
+
+        NOTA DE ALCANCE Y GOBERNANZA:
+        Este método pertenece al componente experimental legacy MLEngine.
+        El pipeline oficial y canónico de Totals NFL reside en `ml.inference.predict_matchups`.
+        Falla cerrado si el motor no está inicializado (`RuntimeError`), o levanta
+        `NotImplementedError` si no se ha inyectado un modelo de totales para este
+        componente legacy. Si se provee un `totals_model` registrado, ejecuta inferencia
+        completa y calibrada fail-closed.
+        """
+        if not self.is_ready:
+            raise RuntimeError("ML Engine no está inicializado o faltan modelos base entrenados.")
+
+        totals_model = getattr(self, "totals_model", None)
+        if totals_model is None:
+            raise NotImplementedError(
+                "Inferencia de Totals no soportada en el componente legacy MLEngine sin un modelo de totales registrado. "
+                "Para la inferencia oficial de NFL Totals, utilice ml.inference.predict_matchups."
+            )
+
+        merged_row: Dict[str, Any] = {
+            "H_WPCT": home_stats.get("w_pct") or home_stats.get("wpct", 0.5),
+            "V_WPCT": visitor_stats.get("w_pct") or visitor_stats.get("wpct", 0.5),
+            "H_LOC_WPCT": home_stats.get("home_w_pct") or home_stats.get("loc_wpct", home_stats.get("wpct", 0.5)),
+            "V_LOC_WPCT": visitor_stats.get("road_w_pct") or visitor_stats.get("loc_wpct", visitor_stats.get("wpct", 0.5)),
+            "H_L10_WPCT": home_stats.get("l10_w_pct") or home_stats.get("l10", 0.5),
+            "V_L10_WPCT": visitor_stats.get("l10_w_pct") or visitor_stats.get("l10", 0.5),
+            "H_OFF_RTG": home_stats.get("off_rating") or home_stats.get("off_rtg", 112.0),
+            "V_OFF_RTG": visitor_stats.get("off_rating") or visitor_stats.get("off_rtg", 112.0),
+            "H_DEF_RTG": home_stats.get("def_rating") or home_stats.get("def_rtg", 112.0),
+            "V_DEF_RTG": visitor_stats.get("def_rating") or visitor_stats.get("def_rtg", 112.0),
+            "H_NET_RTG": home_stats.get("net_rating") or home_stats.get("net_rtg", 0.0),
+            "V_NET_RTG": visitor_stats.get("net_rating") or visitor_stats.get("net_rtg", 0.0),
+            "H_PACE": home_stats.get("pace", 99.0),
+            "V_PACE": visitor_stats.get("pace", 99.0),
+        }
+        if context:
+            merged_row.update(context)
+
+        feats_dict = compute_derived_features(merged_row)
+        feat_df = pd.DataFrame([{col: feats_dict.get(col, 0.0) for col in CANONICAL_FEATURES}])
+        scaled_vector = self.scaler.transform(feat_df)
+
+        try:
+            raw_pred = totals_model.predict(scaled_vector)
+            val = raw_pred[0] if hasattr(raw_pred, "__getitem__") else raw_pred
+            projected_total = float(val)
+        except (TypeError, ValueError, IndexError) as err:
+            raise ValueError(f"totals_model retornó un valor de proyección no convertible a float: {err}") from err
+
+        if not np.isfinite(projected_total):
+            raise ValueError(f"projected_total del modelo debe ser estrictamente finito, obtenido: {projected_total}")
+
+        totals_sigma = getattr(self, "totals_sigma", 14.0)
+        try:
+            parsed_sigma = float(totals_sigma)
+            if not np.isfinite(parsed_sigma) or parsed_sigma <= 0:
+                raise ValueError(f"totals_sigma debe ser finito > 0, obtenido: {totals_sigma}")
+            totals_sigma = parsed_sigma
+        except (TypeError, ValueError) as err:
+            raise ValueError(f"totals_sigma inválido: {totals_sigma} ({err})") from err
+
+        prob_over = None
+        prob_under = None
+        totals_pick = None
+
+        if total_line is not None:
+            if isinstance(total_line, bool):
+                raise ValueError(f"total_line no puede ser de tipo booleano: {total_line}")
+            try:
+                line_val = float(total_line)
+            except (TypeError, ValueError) as err:
+                raise ValueError(f"total_line debe ser numérico: {total_line}") from err
+            if not np.isfinite(line_val) or line_val <= 0:
+                raise ValueError(f"total_line debe ser estrictamente finito y > 0: {line_val}")
+
+            from scipy.stats import norm
+            z = (projected_total - line_val) / totals_sigma
+            p_over = round(float(norm.cdf(z)), 4)
+            p_under = round(1.0 - p_over, 4)
+            prob_over = p_over
+            prob_under = p_under
+            if p_over > 0.5:
+                totals_pick = "OVER"
+            elif p_under > 0.5:
+                totals_pick = "UNDER"
+            else:
+                totals_pick = "PUSH"
+
+        return {
+            "projected_total": round(projected_total, 2),
+            "prob_over": prob_over,
+            "prob_under": prob_under,
+            "totals_pick": totals_pick,
+            "total_line": total_line,
+        }
+
 
 @lru_cache()
 def get_ml_engine() -> MLEngine:
