@@ -71,20 +71,62 @@ async def sync_nba_games_from_source(db: AsyncSession) -> Dict[str, Any]:
     """
     logger.info("sync_nba_games_from_source: iniciando sincronización de calendario NBA")
 
+    upcoming_df = None
+    source_name = "SportsDataverse ESPN schedule"
     try:
         upcoming_df = load_nba_upcoming_games()
     except Exception as exc:
-        logger.error("Error al cargar calendario NBA upcoming", error=str(exc))
+        logger.warning("No se pudo cargar calendario NBA desde snapshots locales; intentando fallback live de ESPN", error=str(exc))
+
+    if upcoming_df is None or upcoming_df.empty:
+        logger.info("Activando fallback a endpoint en vivo de ESPN Scoreboard para calendario NBA")
+        try:
+            from ml.data_pipeline.nba_source import fetch_espn_nba_scoreboard_live
+            import pandas as pd
+            events = fetch_espn_nba_scoreboard_live()
+            records = []
+            for ev in events:
+                comp = ev.get("competitions", [{}])[0]
+                competitors = comp.get("competitors", [])
+                h_comp = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                a_comp = next((c for c in competitors if c.get("homeAway") == "away"), None)
+                if not h_comp or not a_comp:
+                    continue
+                dt_str = ev.get("date")
+                start_dt = pd.to_datetime(dt_str, utc=True, errors="coerce")
+                if pd.isna(start_dt) or start_dt.tzinfo is None:
+                    continue
+                records.append({
+                    "game_id": str(ev.get("id")),
+                    "game_date": start_dt.date(),
+                    "game_start_utc": start_dt,
+                    "season": int(ev.get("season", {}).get("year", 2026)),
+                    "home_team_id": str(h_comp.get("id")),
+                    "away_team_id": str(a_comp.get("id")),
+                    "home_team_name": h_comp.get("team", {}).get("displayName"),
+                    "away_team_name": a_comp.get("team", {}).get("displayName"),
+                    "home_team_abbreviation": h_comp.get("team", {}).get("abbreviation"),
+                    "away_team_abbreviation": a_comp.get("team", {}).get("abbreviation"),
+                    "source": "ESPN public API live",
+                    "source_ref": f"espn:scoreboard:{ev.get('id')}",
+                })
+            if records:
+                upcoming_df = pd.DataFrame(records)
+                source_name = "ESPN public API live"
+        except Exception as live_err:
+            logger.warning("Fallo en fallback en vivo de ESPN Scoreboard", error=str(live_err))
+
+    if upcoming_df is None or upcoming_df.empty:
         return {
             "status": "error",
             "sport": "NBA",
-            "source": "sportsdataverse espn schedules",
+            "source": "sportsdataverse espn schedules + live fallback",
             "games_synced": 0,
             "inserted": 0,
             "updated": 0,
             "unchanged": 0,
             "rejected": 0,
-            "detail": str(exc),
+            "detail": "No se encontraron partidos en snapshots locales ni en fallback en vivo",
         }
 
     # Cargar catálogo de equipos NBA
@@ -153,6 +195,10 @@ async def sync_nba_games_from_source(db: AsyncSession) -> Dict[str, Any]:
             logger.error("Calendario NBA sin kickoff verificable", game_id=game_id)
             rejected += 1
             continue
+        if kickoff_utc.tzinfo is None or kickoff_utc.utcoffset() is None:
+            logger.error("Calendario NBA con kickoff naive sin timezone UTC explícito", game_id=game_id)
+            rejected += 1
+            continue
 
         kickoff_utc = _utc(kickoff_utc)
         instant_key = (home_team.id, away_team.id, kickoff_utc.replace(microsecond=0))
@@ -193,7 +239,7 @@ async def sync_nba_games_from_source(db: AsyncSession) -> Dict[str, Any]:
                 home_team_id=home_team.id,
                 away_team_id=away_team.id,
                 status="scheduled",
-                source=row.get("source", "SportsDataverse ESPN schedule"),
+                source=row.get("source", source_name),
                 source_ref=row.get("source_ref"),
                 observed_at=now_utc,
                 fetched_at=now_utc,
@@ -217,19 +263,24 @@ async def sync_nba_games_from_source(db: AsyncSession) -> Dict[str, Any]:
             else:
                 unchanged += 1
 
-        # Asegurar registro de crosswalk para providers
-        if sdv_crosswalk is None and existing_game is not None:
-            db.add(ProviderGameCrosswalk(
-                game_id=existing_game.id,
-                provider="sportsdataverse",
-                provider_event_id=game_id,
-            ))
-            # También registrar ESPN como alias del proveedor
-            db.add(ProviderGameCrosswalk(
-                game_id=existing_game.id,
-                provider="espn",
-                provider_event_id=game_id,
-            ))
+        # Asegurar registro de crosswalk para providers de forma estrictamente idempotente
+        if existing_game is not None:
+            if ("sportsdataverse", game_id) not in cws_by_key:
+                cw_sdv = ProviderGameCrosswalk(
+                    game_id=existing_game.id,
+                    provider="sportsdataverse",
+                    provider_event_id=game_id,
+                )
+                db.add(cw_sdv)
+                cws_by_key[("sportsdataverse", game_id)] = cw_sdv
+            if ("espn", game_id) not in cws_by_key:
+                cw_espn = ProviderGameCrosswalk(
+                    game_id=existing_game.id,
+                    provider="espn",
+                    provider_event_id=game_id,
+                )
+                db.add(cw_espn)
+                cws_by_key[("espn", game_id)] = cw_espn
 
     await db.commit()
 

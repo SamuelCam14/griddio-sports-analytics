@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import polars as pl
 
@@ -20,6 +22,118 @@ from ml.data_pipeline.common import (
 )
 
 NBA_RELEASES = "https://github.com/sportsdataverse/sportsdataverse-data/releases/download"
+ESPN_NBA_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+
+
+def fetch_espn_nba_scoreboard_live(dates: str | None = None, timeout: float = 10.0) -> list[dict[str, Any]]:
+    """
+    Consulta en vivo el endpoint público de ESPN Scoreboard para NBA.
+    Fuente gratuita, sin API keys, sin consumir créditos de cuota de The Odds API.
+    dates: formato YYYYMMDD opcional (por defecto hoy en ESPN).
+    """
+    import httpx
+    params = {}
+    if dates:
+        params["dates"] = dates
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(
+                ESPN_NBA_SCOREBOARD_URL,
+                params=params,
+                headers={"User-Agent": "sports-analytics/1.0"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("events", [])
+    except Exception as exc:
+        raise RuntimeError(f"Error consultando ESPN NBA Scoreboard: {exc}") from exc
+
+
+def compute_nba_game_possessions_and_ratings(
+    home_fga: float,
+    home_fta: float,
+    home_oreb: float,
+    home_tov: float,
+    home_score: float,
+    away_fga: float,
+    away_fta: float,
+    away_oreb: float,
+    away_tov: float,
+    away_score: float,
+) -> dict[str, float]:
+    """
+    Calcula posesiones de posesión, Pace, Offensive Rating y Defensive Rating
+    usando la formulación canónica de 4 factores de Dean Oliver / Basketball Reference:
+        Poss = FGA - OREB + TOV + 0.44 * FTA
+        Game Possessions = 0.5 * (Poss_home + Poss_away)
+        Pace = Game Possessions
+        OffRating = (Points / Game Possessions) * 100
+        DefRating = (Opponent Points / Game Possessions) * 100
+
+    Valida de forma fail-closed que todas las entradas sean estrictamente finitas,
+    numéricas, no booleanas, no negativas y que los intentos y posesiones sean positivos.
+    """
+    raw_inputs = {
+        "home_fga": home_fga,
+        "home_fta": home_fta,
+        "home_oreb": home_oreb,
+        "home_tov": home_tov,
+        "home_score": home_score,
+        "away_fga": away_fga,
+        "away_fta": away_fta,
+        "away_oreb": away_oreb,
+        "away_tov": away_tov,
+        "away_score": away_score,
+    }
+    parsed: dict[str, float] = {}
+    for name, val in raw_inputs.items():
+        if val is None or isinstance(val, (bool, np.bool_)):
+            raise DataQualityError(f"Valor no numérico o booleano en {name}: {val!r}")
+        try:
+            f_val = float(val)
+        except (ValueError, TypeError) as exc:
+            raise DataQualityError(f"No se pudo convertir {name} a float: {val!r}") from exc
+        if not math.isfinite(f_val):
+            raise DataQualityError(f"Valor no finito (NaN o inf) en {name}: {f_val}")
+        if f_val < 0.0:
+            raise DataQualityError(f"Valor negativo inválido en {name}: {f_val}")
+        parsed[name] = f_val
+
+    if parsed["home_fga"] <= 0.0 or parsed["away_fga"] <= 0.0:
+        raise DataQualityError(
+            f"Intentos de tiro de campo (FGA) deben ser estrictamente positivos: "
+            f"home={parsed['home_fga']}, away={parsed['away_fga']}"
+        )
+
+    home_poss_raw = parsed["home_fga"] - parsed["home_oreb"] + parsed["home_tov"] + 0.44 * parsed["home_fta"]
+    away_poss_raw = parsed["away_fga"] - parsed["away_oreb"] + parsed["away_tov"] + 0.44 * parsed["away_fta"]
+
+    if not math.isfinite(home_poss_raw) or home_poss_raw <= 0.0:
+        raise DataQualityError(f"Estimación de posesiones de local no positiva o no finita: {home_poss_raw}")
+    if not math.isfinite(away_poss_raw) or away_poss_raw <= 0.0:
+        raise DataQualityError(f"Estimación de posesiones de visitante no positiva o no finita: {away_poss_raw}")
+
+    game_poss = 0.5 * (home_poss_raw + away_poss_raw)
+    if not math.isfinite(game_poss) or game_poss <= 0.0:
+        raise DataQualityError(f"Posesiones estimadas de partido no positivas o no finitas: {game_poss}")
+
+    home_off_rtg = (parsed["home_score"] / game_poss) * 100.0
+    home_def_rtg = (parsed["away_score"] / game_poss) * 100.0
+    away_off_rtg = (parsed["away_score"] / game_poss) * 100.0
+    away_def_rtg = (parsed["home_score"] / game_poss) * 100.0
+
+    return {
+        "home_possessions": home_poss_raw,
+        "away_possessions": away_poss_raw,
+        "home_pace": game_poss,
+        "away_pace": game_poss,
+        "home_off_rating": home_off_rtg,
+        "away_off_rating": away_off_rtg,
+        "home_def_rating": home_def_rtg,
+        "away_def_rating": away_def_rtg,
+        "home_net_rating": home_off_rtg - home_def_rtg,
+        "away_net_rating": away_off_rtg - away_def_rtg,
+    }
 
 
 def sync_nba_upcoming_schedules(seasons: list[int], raw_root: Path | None = None) -> dict[str, Any]:
@@ -212,6 +326,18 @@ def load_nba_games(raw_root: Path | None = None) -> pd.DataFrame:
             dt = pd.to_datetime(game.game_date_time, utc=True, errors="coerce")
             if pd.isna(dt):
                 raise DataQualityError(f"NBA {game_id}: falta hora del partido para el cutoff temporal")
+            ratings = compute_nba_game_possessions_and_ratings(
+                home_fga=float(home.field_goals_attempted),
+                home_fta=float(home.free_throws_attempted),
+                home_oreb=float(home.offensive_rebounds),
+                home_tov=float(home.turnovers),
+                home_score=float(home.team_score),
+                away_fga=float(away.field_goals_attempted),
+                away_fta=float(away.free_throws_attempted),
+                away_oreb=float(away.offensive_rebounds),
+                away_tov=float(away.turnovers),
+                away_score=float(away.team_score),
+            )
             records.append({
                 "game_id": game_id,
                 "game_date": pd.Timestamp(game.game_date).date(),
@@ -230,6 +356,16 @@ def load_nba_games(raw_root: Path | None = None) -> pd.DataFrame:
                 "away_total_rebounds": float(away.total_rebounds),
                 "home_turnovers": float(home.turnovers),
                 "away_turnovers": float(away.turnovers),
+                "home_possessions": ratings["home_possessions"],
+                "away_possessions": ratings["away_possessions"],
+                "home_pace": ratings["home_pace"],
+                "away_pace": ratings["away_pace"],
+                "home_off_rating": ratings["home_off_rating"],
+                "away_off_rating": ratings["away_off_rating"],
+                "home_def_rating": ratings["home_def_rating"],
+                "away_def_rating": ratings["away_def_rating"],
+                "home_net_rating": ratings["home_net_rating"],
+                "away_net_rating": ratings["away_net_rating"],
                 "source": "ESPN via SportsDataverse",
                 "source_ref": f"sportsdataverse:espn_nba:{season}:{source_hash[season]}",
             })

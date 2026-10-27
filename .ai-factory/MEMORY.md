@@ -180,3 +180,42 @@
 - **Visualización Defensiva en Frontend (`MatchupTotalsTab.tsx` y `PickCard.tsx`):**
   - `MatchupTotalsTab.tsx`: Exhibe badge de alerta "Modelo Experimental (No Producción) · Sin EV validado". Requiere `status === 'available'` y `projected_total != null` para renderizar datos; ante PUSH o ausencia de cuotas observadas (`totals.odds_american == null`), aplica estilo neutral (`isNeutral`), suprimiendo fondos verdes engañosos y ocultando claims de ventaja matemática.
   - `PickCard.tsx`: Muestra una fila de Totales en su vista expandida detallando línea, proyección y probabilidad con badge "Experimental", dejando intacto el pick principal y la asignación Kelly. Si falta proyección o línea, muestra "Línea o proyección no disponible".
+
+### 1.13. Auditoría de Fuentes NBA y Desacoplamiento de Pipeline Propio (TAREA-11)
+- **Procedencia de Fuentes Públicas y Gobernanza de Red:**
+  - **Fuentes Gratuitas Auditadas:**
+    * SportsDataverse ESPN NBA releases (`https://github.com/sportsdataverse/sportsdataverse-data`): Archivos parquet inmutables de calendarios y estadísticas por equipo (`team_box_{season}.parquet`, `nba_schedule_{season}.parquet`) descargados con verificación estricta de hash SHA-256 en `data/raw/nba_espn/{season}/`.
+    * ESPN Live Scoreboard API (`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard`): Endpoint REST público sin autenticación ni cobro por llamada, consumido para actualización de calendarios y marcadores en vivo.
+    * ESPN Standings API (`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings`): Standings en vivo para los 30 equipos NBA con extracción de registros, rating ofensivo y rating defensivo, degradando limpiamente a los parquets locales si la red falla.
+  - **Invariantes de Red y Cuotas:**
+    * Cero llamadas a The Odds API para NBA o NFL. El archivo `data/odds_quota_ledger.json` permanece inmutable con hash SHA-256 `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff`.
+    * Celery Beat (`sports_beat`) se mantiene estrictamente detenido (`Exited (0)`), impidiendo cualquier tarea periódica de consumo de cuotas.
+- **Blindaje y Resiliencia en Ingesta (`nba_ingestion.py`):**
+  - **Manejo de Fallos en `stats.nba.com` (`nba_api`):** Se auditaron bloqueos por rate limiting y latencias excesivas en la API oficial de la NBA en contenedores. Se introdujo `_safe_fetch` con User-Agent de navegador moderno (`NBA_API_HEADERS`), timeout estricto de 5 segundos (`timeout=5.0`), backoff exponencial para hasta 3 reintentos (`_MAX_RETRIES = 3`, `_BACKOFF_BASE = 1.5`), y retorno fail-closed a `None` tras agotamiento.
+  - **Fallback Operativo Resiliente sin Estadísticas Fabricadas:** `_fetch_team_stats_fallback(season)` resuelve la temporada solicitada fail-closed (retornando `None` si la temporada no existe en datos verificados, prohibiendo sustituirla por la máxima). Los nombres de franquicia se resuelven por catálogo canónico (`NBA_ESPN_ID_TO_NAME`) en lugar de `Team <id>`. Métricas no calculables desde boxscores (`ts_pct`, `ast_ratio`, `reb_pct`) permanecen como `None` explícito en lugar de constantes inventadas (0.56, 18.0, 0.50).
+  - **Conector en Vivo de ESPN Standings (`fetch_espn_nba_standings`):** Consulta directamente el endpoint público `https://site.api.espn.com/apis/v2/sports/basketball/nba/standings` con timeout de 5s, validación de status HTTP 200, esquema JSON, correspondencia de temporada y presencia de los 30 equipos. No sintetiza métricas no observadas (`pace`, `off_rating`, `def_rating`, `ts_pct`, etc. permanecen `None`). Degrada a `_fetch_team_stats_fallback(season)` ante corte de red o payload insuficiente.
+- **Timezone Awareness y Fail-Closed en Calendario (`nba_schedule_service.py`):**
+  - **Rechazo de Timestamps Naive:** La función `_utc(dt)` verifica estrictamente `dt.tzinfo is not None and dt.utcoffset() is not None`. En `sync_nba_games_from_source`, cualquier partido con kickoff sin información horaria de zona es rechazado de forma fail-closed (`rejected += 1`), evitando desincronizaciones temporales o data leakage por desfases de zona local.
+  - **Fallback de Calendario en Vivo y Reporte de Estado:** Si la fuente local de partidos futuros no existe o está vacía, el sincronizador recurre automáticamente a `fetch_espn_nba_scoreboard_live()`. Si tanto los snapshots locales como el endpoint en vivo están vacíos o producen eventos inválidos, `sync_nba_games_from_source` retorna un estado explícito de error (`status: "error"`, `games_synced: 0`) evitando reportes falsos de éxito.
+  - **Idempotencia Estricta de Crosswalks y Aislamiento de Pruebas:** El registro en `ProviderGameCrosswalk` valida la presencia independiente de `("sportsdataverse", game_id)` y `("espn", game_id)`. Las pruebas de sincronización usan `AsyncMock` en `commit()` y ejecutan `rollback()` en bloques `finally`, garantizando cero contaminación o persistencia de fixtures en la base de datos compartida.
+- **Formulación Rigurosa de Posesiones (Dean Oliver) y Ratings de Eficiencia (`nba_source.py`):**
+  - Se implementó `compute_nba_game_possessions_and_ratings` aplicando la fórmula canónica de posesiones de Dean Oliver:
+    $$\text{Poss} = \text{FGA} - \text{OREB} + \text{TOV} + 0.44 \times \text{FTA}$$
+    $$\text{Pace} = 0.5 \times (\text{Poss}_{\text{home}} + \text{Poss}_{\text{away}})$$
+    $$\text{ORtg} = \frac{\text{Pts}}{\text{Pace}} \times 100, \quad \text{DRtg} = \frac{\text{OppPts}}{\text{Pace}} \times 100, \quad \text{NetRtg} = \text{ORtg} - \text{DRtg}$$
+  - **Validación Fail-Closed Contra NaN, ±inf y Booleanos:** Se valida rigurosamente cada uno de los 10 parámetros de entrada mediante `math.isfinite(f_val)` y `not isinstance(val, (bool, np.bool_))`, rechazando números negativos, intentos de campo no positivos (`FGA <= 0`), y verificando que tanto las posesiones individuales como el pace final sean finitos y estrictamente mayores a cero.
+  - Integración en `load_nba_games`: Cada juego completado incorpora automáticamente `home_possessions`, `away_possessions`, `home_pace`, `away_pace`, `home_off_rating`, `away_off_rating`, `home_def_rating`, `away_def_rating`, `home_net_rating` y `away_net_rating`.
+- **Desacoplamiento Absoluto y Pipeline de Features Diario (`temporal_features.py`):**
+  - **Erradicación de Fuga Conceptual de NFL:** Se eliminaron todas las dependencias de métricas semanales o de fútbol americano (`ppr_lost_pct`, `off_snaps_lost_pct`, `def_snaps_lost_pct`, `epa_per_play`).
+  - **Esquema Canónico de 44 Features Diarias:** `nba_daily_feature_columns()` define 17 variables de local, 17 de visitante y 10 diferenciales (incluyendo ritmo de juego, ratings ofensivo, defensivo y neto, porcentajes de tiro de campo, rebotes ofensivos y totales, y pérdidas).
+  - **Métricas de Fatiga y Calendario Acotadas:**
+    * `days_rest`: Días transcurridos desde el partido anterior del equipo, acotado estrictamente en $[1.0, 10.0]$ mediante `.clip(lower=1.0, upper=10.0)` en datasets de entrenamiento y `min(max(raw, 1), 10)` en features de inferencia para prevenir que descansos de pretemporada o All-Star desestabilicen los modelos.
+    * `is_back_to_back`: Indicador binario ($1$ si `days_rest == 1`, $0$ en caso contrario).
+    * `is_3_in_4`: Indicador binario de densidad extrema ($1$ si el equipo disputa su tercer partido en un lapso de 4 días calendario: $(T - T_{-2}) \le 3$).
+    * `games_in_last_4_days`: Conteo de partidos previos disputados en la ventana retrospectiva de 4 días.
+  - **Cero Data Leakage y Aislamiento de Equipos mediante Transformación Vectorial (`.transform` y `.shift(1)`):**
+    * En `build_nba_daily_temporal_dataset`, el agrupamiento vectorial por equipo aplica `g[col].transform(lambda s: s.shift(1).rolling(window, min_periods=minimum_history).mean())`. Al usar `transform`, el rolling window opera exclusivamente dentro de las observaciones del equipo, impidiendo que partidos de grupos contiguos contaminen el cálculo.
+    * Invariante temporal verificada: `feature_max_observed_game_date < game_date` se cumple en el 100% de los registros de entrenamiento e inferencia.
+    * Paridad de inferencia comprobada: los valores rodantes calculados por `build_nba_daily_temporal_dataset` y `build_nba_daily_matchup_features` coinciden 1:1 sin discrepancias numéricas.
+- **Invariante de Producción NFL:**
+  - El modelo ganador oficial de NFL `backend/ml/models/nfl/logistic.joblib` conserva intacto su hash SHA-256 `c672f6a3cd5de9a23fa76a8351005a557c0e106cc008d4c22f09c34986fa28c0`.

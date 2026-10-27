@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
 import pandas as pd
+import numpy as np
 
 from ml.data_pipeline.common import DataQualityError
 
@@ -424,4 +425,504 @@ def build_matchup_features(
         "source_refs": sorted({
             ref for refs in result["feature_source_refs"].tolist() for ref in refs
         }),
+    }
+
+
+# ─── NBA DEDICATED DAILY FEATURES PIPELINE (TAREA-11) ─────────────────────────
+
+NBA_DAILY_GAME_STATS = [
+    "pace", "off_rating", "def_rating", "net_rating",
+    "fg_pct", "offensive_rebounds", "total_rebounds", "turnovers",
+]
+
+NBA_DAILY_FATIGUE_STATS = [
+    "days_rest", "is_back_to_back", "is_3_in_4", "games_in_last_4_days", "games_prior",
+]
+
+
+def nba_daily_feature_columns() -> list[str]:
+    """
+    Retorna la lista de features exclusiva para la dinámica diaria de la NBA.
+    Comprende métricas de fatiga de calendario (B2B, days rest, 3-en-4),
+    ratings avanzados rodantes (Pace, ORtg, DRtg, NetRtg con .shift(1))
+    y estadísticas tradicionales de tiro/posesión, sin variables semanales de NFL.
+    """
+    cols: list[str] = []
+    for side in ("home", "away"):
+        # Fatiga de calendario
+        cols.extend([
+            f"{side}_days_rest",
+            f"{side}_is_back_to_back",
+            f"{side}_is_3_in_4",
+            f"{side}_games_in_last_4_days",
+            f"{side}_games_prior",
+        ])
+        # Récord y margen rodante
+        cols.extend([
+            f"{side}_win_rate",
+            f"{side}_avg_margin",
+            f"{side}_avg_points_for",
+            f"{side}_avg_points_against",
+        ])
+        # Ratings avanzados rodantes
+        cols.extend([
+            f"{side}_rolling_pace",
+            f"{side}_rolling_off_rating",
+            f"{side}_rolling_def_rating",
+            f"{side}_rolling_net_rating",
+        ])
+        # Box score rodante
+        cols.extend([
+            f"{side}_avg_fg_pct",
+            f"{side}_avg_offensive_rebounds",
+            f"{side}_avg_total_rebounds",
+            f"{side}_avg_turnovers",
+        ])
+
+    # Diferenciales (Home - Away)
+    cols.extend([
+        "diff_days_rest",
+        "diff_is_back_to_back",
+        "diff_is_3_in_4",
+        "diff_pace",
+        "diff_off_rating",
+        "diff_def_rating",
+        "diff_net_rating",
+        "diff_win_rate",
+        "diff_avg_margin",
+        "diff_avg_points_for",
+    ])
+    return cols
+
+
+def _require_nba_stat(game: dict, keys: tuple[str, ...], name: str) -> float:
+    for k in keys:
+        if k in game and game[k] is not None and not pd.isna(game[k]):
+            v = game[k]
+            if isinstance(v, (bool, np.bool_)):
+                raise DataQualityError(f"Valor booleano inválido en estadística {name} para game_id={game.get('game_id')}")
+            try:
+                f = float(v)
+            except (ValueError, TypeError) as exc:
+                raise DataQualityError(f"Valor no numérico en {name} para game_id={game.get('game_id')}: {v!r}") from exc
+            if not math.isfinite(f) or f < 0.0:
+                raise DataQualityError(f"Valor no finito o negativo en {name} para game_id={game.get('game_id')}: {f}")
+            return f
+    raise DataQualityError(f"Estadística requerida {name} ausente en partido NBA game_id={game.get('game_id')}; prohibido sintetizar")
+
+
+def _ensure_nba_game_ratings(games: pd.DataFrame) -> pd.DataFrame:
+    """Verifica y calcula posesiones y ratings de posesión en partidos NBA si faltan.
+    Falla cerrado ante datos incompletos o ausentes; nunca sintetiza estadísticas con defaults."""
+    df = games.copy()
+    if "home_pace" in df.columns and "home_off_rating" in df.columns:
+        if not (np.isfinite(df["home_pace"]) & np.isfinite(df["home_off_rating"])).all():
+            raise DataQualityError("Partidos NBA contienen home_pace o home_off_rating no finitos")
+        return df
+
+    from ml.data_pipeline.nba_source import compute_nba_game_possessions_and_ratings
+    ratings_records = []
+    for row in df.to_dict("records"):
+        r = compute_nba_game_possessions_and_ratings(
+            home_fga=_require_nba_stat(row, ("home_field_goals_attempted", "home_fga"), "home_fga"),
+            home_fta=_require_nba_stat(row, ("home_free_throws_attempted", "home_fta"), "home_fta"),
+            home_oreb=_require_nba_stat(row, ("home_offensive_rebounds", "home_oreb"), "home_oreb"),
+            home_tov=_require_nba_stat(row, ("home_turnovers", "home_tov"), "home_tov"),
+            home_score=_require_nba_stat(row, ("home_score",), "home_score"),
+            away_fga=_require_nba_stat(row, ("away_field_goals_attempted", "away_fga"), "away_fga"),
+            away_fta=_require_nba_stat(row, ("away_free_throws_attempted", "away_fta"), "away_fta"),
+            away_oreb=_require_nba_stat(row, ("away_offensive_rebounds", "away_oreb"), "away_oreb"),
+            away_tov=_require_nba_stat(row, ("away_turnovers", "away_tov"), "away_tov"),
+            away_score=_require_nba_stat(row, ("away_score",), "away_score"),
+        )
+        ratings_records.append(r)
+    ratings_df = pd.DataFrame(ratings_records, index=df.index)
+    for col in ratings_df.columns:
+        df[col] = ratings_df[col]
+    return df
+
+
+def build_nba_daily_temporal_dataset(
+    games: pd.DataFrame,
+    window: int = 10,
+    minimum_history: int = 1,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Construye el dataset temporal de entrenamiento/evaluación diario para NBA.
+    - Fatiga de calendario: days_rest (acotado [1, 10]), is_back_to_back, is_3_in_4.
+    - Ratings avanzados (Pace, ORtg, DRtg, NetRtg) rodantes estrictamente agrupados
+      por equipo mediante transform() con .shift(1), garantizando que no exista
+      fuga entre equipos contiguos ni leakage del partido evaluado.
+    - Cero variables semanales de NFL (sin availability, ppr, snaps, epa).
+    """
+    if window < 1 or minimum_history < 1:
+        raise ValueError("window and minimum_history must be positive")
+
+    required = {
+        "game_id", "game_date", "home_team_id", "away_team_id",
+        "home_score", "away_score", "home_win",
+    }
+    missing = required.difference(games.columns)
+    if missing:
+        raise DataQualityError(f"NBA daily dataset: faltan campos canónicos: {sorted(missing)}")
+
+    df = _ensure_nba_game_ratings(games)
+    df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce").dt.date
+    df["home_score"] = pd.to_numeric(df["home_score"], errors="coerce")
+    df["away_score"] = pd.to_numeric(df["away_score"], errors="coerce")
+    if df[["game_date", "home_score", "away_score", "home_team_id", "away_team_id"]].isna().any().any():
+        raise DataQualityError("NBA daily dataset: datos incompletos en schedule")
+    if df["game_id"].duplicated().any():
+        raise DataQualityError("NBA daily dataset: game_id duplicado")
+
+    df = df.sort_values(["game_date", "game_id"]).reset_index(drop=True)
+
+    # Construir log por equipo
+    home_rows = []
+    away_rows = []
+    for game in df.to_dict("records"):
+        gid = str(game["game_id"])
+        gdate = game["game_date"]
+        hs, aw = float(game["home_score"]), float(game["away_score"])
+        hw = float(game["home_win"])
+        home_rows.append({
+            "game_id": gid, "game_date": gdate, "team_id": str(game["home_team_id"]),
+            "opp_id": str(game["away_team_id"]), "is_home": 1,
+            "outcome": hw, "margin": hs - aw, "points_for": hs, "points_against": aw,
+            "pace": float(game["home_pace"]),
+            "off_rating": float(game["home_off_rating"]),
+            "def_rating": float(game["home_def_rating"]),
+            "net_rating": float(game["home_net_rating"]),
+            "fg_pct": _require_nba_stat(game, ("home_fg_pct",), "home_fg_pct"),
+            "offensive_rebounds": _require_nba_stat(game, ("home_offensive_rebounds",), "home_offensive_rebounds"),
+            "total_rebounds": _require_nba_stat(game, ("home_total_rebounds",), "home_total_rebounds"),
+            "turnovers": _require_nba_stat(game, ("home_turnovers",), "home_turnovers"),
+        })
+        away_rows.append({
+            "game_id": gid, "game_date": gdate, "team_id": str(game["away_team_id"]),
+            "opp_id": str(game["home_team_id"]), "is_home": 0,
+            "outcome": 1.0 - hw, "margin": aw - hs, "points_for": aw, "points_against": hs,
+            "pace": float(game["away_pace"]),
+            "off_rating": float(game["away_off_rating"]),
+            "def_rating": float(game["away_def_rating"]),
+            "net_rating": float(game["away_net_rating"]),
+            "fg_pct": _require_nba_stat(game, ("away_fg_pct",), "away_fg_pct"),
+            "offensive_rebounds": _require_nba_stat(game, ("away_offensive_rebounds",), "away_offensive_rebounds"),
+            "total_rebounds": _require_nba_stat(game, ("away_total_rebounds",), "away_total_rebounds"),
+            "turnovers": _require_nba_stat(game, ("away_turnovers",), "away_turnovers"),
+        })
+
+    team_games = pd.DataFrame(home_rows + away_rows)
+    team_games["game_date_dt"] = pd.to_datetime(team_games["game_date"])
+    team_games = team_games.sort_values(["team_id", "game_date_dt", "game_id"]).reset_index(drop=True)
+
+    # Agrupación por equipo y cálculo vectorial con .shift(1)
+    g = team_games.groupby("team_id")
+
+    # Fatiga de calendario (días de descanso acotados en [1.0, 10.0]):
+    prev_date = g["game_date_dt"].shift(1)
+    days_rest_series = (team_games["game_date_dt"] - prev_date).dt.days
+    team_games["is_back_to_back"] = (days_rest_series == 1).astype(int)
+    team_games["days_rest"] = days_rest_series.fillna(7.0).clip(lower=1.0, upper=10.0)
+
+    # Densidad 3-en-4 (juego 2 partidos antes dentro de <= 3 días):
+    prev_2_date = g["game_date_dt"].shift(2)
+    days_since_2_prior = (team_games["game_date_dt"] - prev_2_date).dt.days
+    team_games["is_3_in_4"] = ((days_since_2_prior <= 3) & (days_since_2_prior > 0)).astype(int)
+
+    def _count_prior_in_window(sub_s):
+        dates = sub_s.tolist()
+        counts = []
+        for i, d in enumerate(dates):
+            c = sum(1 for j in range(i) if 0 < (d - dates[j]).days <= 3)
+            counts.append(c)
+        return pd.Series(counts, index=sub_s.index)
+
+    team_games["games_in_last_4_days"] = g["game_date_dt"].transform(_count_prior_in_window)
+    team_games["games_prior"] = g.cumcount()
+    team_games["feature_max_observed_game_date"] = g["game_date"].shift(1)
+
+    # Métricas rodantes estrictamente calculadas por equipo mediante transform() con .shift(1):
+    stat_metrics = [
+        "pace", "off_rating", "def_rating", "net_rating",
+        "outcome", "margin", "points_for", "points_against",
+        "fg_pct", "offensive_rebounds", "total_rebounds", "turnovers",
+    ]
+    for m in stat_metrics:
+        team_games[f"rolling_{m}"] = g[m].transform(
+            lambda s: s.shift(1).rolling(window, min_periods=minimum_history).mean()
+        )
+
+    # Separar en home y away
+    h_df = team_games[team_games["is_home"] == 1].copy()
+    a_df = team_games[team_games["is_home"] == 0].copy()
+
+    # Prefijar columnas
+    rename_h = {
+        "days_rest": "home_days_rest", "is_back_to_back": "home_is_back_to_back",
+        "is_3_in_4": "home_is_3_in_4", "games_in_last_4_days": "home_games_in_last_4_days",
+        "games_prior": "home_games_prior", "feature_max_observed_game_date": "home_max_obs",
+        "rolling_pace": "home_rolling_pace", "rolling_off_rating": "home_rolling_off_rating",
+        "rolling_def_rating": "home_rolling_def_rating", "rolling_net_rating": "home_rolling_net_rating",
+        "rolling_outcome": "home_win_rate", "rolling_margin": "home_avg_margin",
+        "rolling_points_for": "home_avg_points_for", "rolling_points_against": "home_avg_points_against",
+        "rolling_fg_pct": "home_avg_fg_pct", "rolling_offensive_rebounds": "home_avg_offensive_rebounds",
+        "rolling_total_rebounds": "home_avg_total_rebounds", "rolling_turnovers": "home_avg_turnovers",
+    }
+    rename_a = {
+        "days_rest": "away_days_rest", "is_back_to_back": "away_is_back_to_back",
+        "is_3_in_4": "away_is_3_in_4", "games_in_last_4_days": "away_games_in_last_4_days",
+        "games_prior": "away_games_prior", "feature_max_observed_game_date": "away_max_obs",
+        "rolling_pace": "away_rolling_pace", "rolling_off_rating": "away_rolling_off_rating",
+        "rolling_def_rating": "away_rolling_def_rating", "rolling_net_rating": "away_rolling_net_rating",
+        "rolling_outcome": "away_win_rate", "rolling_margin": "away_avg_margin",
+        "rolling_points_for": "away_avg_points_for", "rolling_points_against": "away_avg_points_against",
+        "rolling_fg_pct": "away_avg_fg_pct", "rolling_offensive_rebounds": "away_avg_offensive_rebounds",
+        "rolling_total_rebounds": "away_avg_total_rebounds", "rolling_turnovers": "away_avg_turnovers",
+    }
+
+    h_df = h_df.rename(columns=rename_h)
+    a_df = a_df.rename(columns=rename_a)
+
+    cols_h = ["game_id"] + list(rename_h.values())
+    cols_a = ["game_id"] + list(rename_a.values())
+
+    merged = df.merge(h_df[cols_h], on="game_id").merge(a_df[cols_a], on="game_id")
+
+    # Filtrar partidos con historial suficiente en ambos lados
+    valid_mask = (merged["home_games_prior"] >= minimum_history) & (merged["away_games_prior"] >= minimum_history)
+    skipped_no_history = int((~valid_mask).sum())
+    result = merged[valid_mask].copy()
+
+    if result.empty:
+        raise DataQualityError("NBA daily dataset: ningún partido tiene historial suficiente")
+
+    # Max observed date
+    result["feature_max_observed_game_date"] = result.apply(
+        lambda r: max(r["home_max_obs"], r["away_max_obs"]).isoformat(), axis=1
+    )
+    result["feature_cutoff_exclusive"] = result["game_date"].apply(lambda d: d.isoformat())
+
+    # Comprobar ausencia estricta de fuga temporal: max_obs < game_date
+    if not (pd.to_datetime(result["feature_max_observed_game_date"]) < pd.to_datetime(result["game_date"])).all():
+        raise DataQualityError("NBA daily dataset: feature_max_observed_game_date no es estrictamente anterior a game_date")
+
+    # Calcular diferenciales (Home - Away)
+    result["diff_days_rest"] = result["home_days_rest"] - result["away_days_rest"]
+    result["diff_is_back_to_back"] = result["home_is_back_to_back"] - result["away_is_back_to_back"]
+    result["diff_is_3_in_4"] = result["home_is_3_in_4"] - result["away_is_3_in_4"]
+    result["diff_pace"] = result["home_rolling_pace"] - result["away_rolling_pace"]
+    result["diff_off_rating"] = result["home_rolling_off_rating"] - result["away_rolling_off_rating"]
+    result["diff_def_rating"] = result["home_rolling_def_rating"] - result["away_rolling_def_rating"]
+    result["diff_net_rating"] = result["home_rolling_net_rating"] - result["away_rolling_net_rating"]
+    result["diff_win_rate"] = result["home_win_rate"] - result["away_win_rate"]
+    result["diff_avg_margin"] = result["home_avg_margin"] - result["away_avg_margin"]
+    result["diff_avg_points_for"] = result["home_avg_points_for"] - result["away_avg_points_for"]
+
+    result["target_home_win"] = result["home_win"].astype(int)
+
+    features = nba_daily_feature_columns()
+    numeric_values = result[features].apply(pd.to_numeric, errors="coerce")
+    if numeric_values.isna().any().any() or not numeric_values.map(lambda x: math.isfinite(float(x))).all().all():
+        raise DataQualityError("NBA daily dataset: features no finitas o incompletas")
+    result[features] = numeric_values
+
+    metadata = {
+        "sport": "NBA",
+        "dataset_type": "nba_daily_temporal",
+        "source_rows": int(len(df)),
+        "training_rows": int(len(result)),
+        "skipped_no_history": skipped_no_history,
+        "window_games": window,
+        "features": features,
+        "feature_rule": "daily features with .shift(1) strictly before target game_date",
+    }
+    return result, metadata
+
+
+def build_nba_daily_matchup_features(
+    completed_games: pd.DataFrame,
+    upcoming_games: pd.DataFrame,
+    window: int = 10,
+    minimum_history: int = 1,
+    as_of: Any = None,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Construye las features de inferencia para partidos futuros de NBA.
+    - Fatiga de calendario (days_rest, is_back_to_back, is_3_in_4, games_in_last_4_days).
+    - Ratings avanzados (Pace, ORtg, DRtg, NetRtg) rodantes desde juegos completados hasta as_of.
+    - Cero variables de NFL.
+    - Verificación temporal estricta: feature_max_observed_game_date < game_date.
+    """
+    if window < 1 or minimum_history < 1:
+        raise ValueError("window and minimum_history must be positive")
+
+    past_required = {"game_id", "game_date", "home_team_id", "away_team_id", "home_score", "away_score", "home_win"}
+    target_required = {"game_id", "game_date", "home_team_id", "away_team_id"}
+    missing_past = past_required.difference(completed_games.columns)
+    missing_target = target_required.difference(upcoming_games.columns)
+    if missing_past or missing_target:
+        raise DataQualityError(
+            f"Features NBA de inferencia incompletas; historial={sorted(missing_past)}, schedule={sorted(missing_target)}"
+        )
+
+    as_of_ts = pd.to_datetime(as_of or datetime.now(timezone.utc), utc=True)
+    as_of_date = as_of_ts.date()
+
+    past = _ensure_nba_game_ratings(completed_games.copy())
+    past["game_date"] = pd.to_datetime(past["game_date"], errors="coerce").dt.date
+    targets = upcoming_games.copy()
+    targets["game_date"] = pd.to_datetime(targets["game_date"], errors="coerce").dt.date
+
+    # Validar targets futuros
+    target_dates = targets["game_date"]
+    kickoffs = targets["game_start_utc"] if "game_start_utc" in targets else pd.Series(pd.NaT, index=targets.index)
+    same_day_kickoff = pd.to_datetime(kickoffs, errors="coerce", utc=True)
+    is_future = (target_dates > as_of_date) | (
+        (target_dates == as_of_date) & same_day_kickoff.notna() & (same_day_kickoff > as_of_ts)
+    )
+    if not targets.empty and not is_future.all():
+        raise DataQualityError("El schedule NBA de inferencia contiene partidos no futuros al cutoff as_of")
+
+    # Filtrar historial observado
+    observed = past[past["game_date"] <= as_of_date].copy()
+    if "game_start_utc" in observed.columns:
+        past_kickoffs = pd.to_datetime(observed["game_start_utc"], errors="coerce", utc=True)
+        if (past_kickoffs > as_of_ts).any():
+            raise DataQualityError("completed_games NBA contiene partidos con kickoff posterior a as_of")
+
+    # Construir historial por equipo ordenado cronológicamente
+    history: dict[str, list[dict]] = defaultdict(list)
+    for game in observed.sort_values(["game_date", "game_id"]).to_dict("records"):
+        h_id, a_id = str(game["home_team_id"]), str(game["away_team_id"])
+        gdate = game["game_date"]
+        hs, aw = float(game["home_score"]), float(game["away_score"])
+        hw = float(game["home_win"])
+        base_h = {
+            "game_date": gdate, "outcome": hw, "margin": hs - aw,
+            "points_for": hs, "points_against": aw,
+            "pace": float(game["home_pace"]),
+            "off_rating": float(game["home_off_rating"]),
+            "def_rating": float(game["home_def_rating"]),
+            "net_rating": float(game["home_net_rating"]),
+            "fg_pct": _require_nba_stat(game, ("home_fg_pct",), "home_fg_pct"),
+            "offensive_rebounds": _require_nba_stat(game, ("home_offensive_rebounds",), "home_offensive_rebounds"),
+            "total_rebounds": _require_nba_stat(game, ("home_total_rebounds",), "home_total_rebounds"),
+            "turnovers": _require_nba_stat(game, ("home_turnovers",), "home_turnovers"),
+        }
+        base_a = {
+            "game_date": gdate, "outcome": 1.0 - hw, "margin": aw - hs,
+            "points_for": aw, "points_against": hs,
+            "pace": float(game["away_pace"]),
+            "off_rating": float(game["away_off_rating"]),
+            "def_rating": float(game["away_def_rating"]),
+            "net_rating": float(game["away_net_rating"]),
+            "fg_pct": _require_nba_stat(game, ("away_fg_pct",), "away_fg_pct"),
+            "offensive_rebounds": _require_nba_stat(game, ("away_offensive_rebounds",), "away_offensive_rebounds"),
+            "total_rebounds": _require_nba_stat(game, ("away_total_rebounds",), "away_total_rebounds"),
+            "turnovers": _require_nba_stat(game, ("away_turnovers",), "away_turnovers"),
+        }
+        history[h_id].append(base_h)
+        history[a_id].append(base_a)
+
+    def _calc_nba_side_features(side: str, team_history: list[dict], target_date) -> dict:
+        prior = [item for item in team_history if item["game_date"] < target_date]
+        count = len(prior)
+        if count == 0:
+            raise DataQualityError("No hay historial previo para el equipo")
+        last_g = prior[-1]
+        raw_days_rest = (target_date - last_g["game_date"]).days
+        is_b2b = int(raw_days_rest == 1)
+        days_rest = float(min(max(raw_days_rest, 1), 10))
+        if count >= 2:
+            prev_2_days = (target_date - prior[-2]["game_date"]).days
+            is_3_in_4 = int(prev_2_days <= 3)
+        else:
+            is_3_in_4 = 0
+        games_last_4 = sum(1 for item in prior if 0 < (target_date - item["game_date"]).days <= 3)
+
+        w_prior = prior[-window:]
+        w_len = len(w_prior)
+        res = {
+            f"{side}_days_rest": days_rest,
+            f"{side}_is_back_to_back": is_b2b,
+            f"{side}_is_3_in_4": is_3_in_4,
+            f"{side}_games_in_last_4_days": games_last_4,
+            f"{side}_games_prior": count,
+            f"{side}_win_rate": sum(x["outcome"] for x in w_prior) / w_len,
+            f"{side}_avg_margin": sum(x["margin"] for x in w_prior) / w_len,
+            f"{side}_avg_points_for": sum(x["points_for"] for x in w_prior) / w_len,
+            f"{side}_avg_points_against": sum(x["points_against"] for x in w_prior) / w_len,
+            f"{side}_rolling_pace": sum(x["pace"] for x in w_prior) / w_len,
+            f"{side}_rolling_off_rating": sum(x["off_rating"] for x in w_prior) / w_len,
+            f"{side}_rolling_def_rating": sum(x["def_rating"] for x in w_prior) / w_len,
+            f"{side}_rolling_net_rating": (sum(x["off_rating"] for x in w_prior) - sum(x["def_rating"] for x in w_prior)) / w_len,
+            f"{side}_avg_fg_pct": sum(x["fg_pct"] for x in w_prior) / w_len,
+            f"{side}_avg_offensive_rebounds": sum(x["offensive_rebounds"] for x in w_prior) / w_len,
+            f"{side}_avg_total_rebounds": sum(x["total_rebounds"] for x in w_prior) / w_len,
+            f"{side}_avg_turnovers": sum(x["turnovers"] for x in w_prior) / w_len,
+            f"{side}_max_obs": last_g["game_date"],
+        }
+        return res
+
+    rows = []
+    skipped_games = []
+    for target in targets.sort_values(["game_date", "game_id"]).to_dict("records"):
+        target_date = target["game_date"]
+        h_id, a_id = str(target["home_team_id"]), str(target["away_team_id"])
+        h_prior = [x for x in history[h_id] if x["game_date"] < target_date]
+        a_prior = [x for x in history[a_id] if x["game_date"] < target_date]
+        if min(len(h_prior), len(a_prior)) < minimum_history:
+            skipped_games.append({"game_id": str(target["game_id"]), "reason": "insufficient_history"})
+            continue
+
+        h_feat = _calc_nba_side_features("home", history[h_id], target_date)
+        a_feat = _calc_nba_side_features("away", history[a_id], target_date)
+
+        max_obs = max(h_feat.pop("home_max_obs"), a_feat.pop("away_max_obs"))
+        row = {
+            "game_id": str(target["game_id"]),
+            "game_date": target_date.isoformat(),
+            "feature_cutoff_exclusive": target_date.isoformat(),
+            "feature_max_observed_game_date": max_obs.isoformat(),
+            "home_team_id": h_id,
+            "away_team_id": a_id,
+        }
+        for col in ("game_start_utc", "season", "home_team_name", "away_team_name", "home_team_abbreviation", "away_team_abbreviation", "source_ref"):
+            if col in target:
+                row[col] = target[col]
+        row.update(h_feat)
+        row.update(a_feat)
+
+        row["diff_days_rest"] = row["home_days_rest"] - row["away_days_rest"]
+        row["diff_is_back_to_back"] = row["home_is_back_to_back"] - row["away_is_back_to_back"]
+        row["diff_is_3_in_4"] = row["home_is_3_in_4"] - row["away_is_3_in_4"]
+        row["diff_pace"] = row["home_rolling_pace"] - row["away_rolling_pace"]
+        row["diff_off_rating"] = row["home_rolling_off_rating"] - row["away_rolling_off_rating"]
+        row["diff_def_rating"] = row["home_rolling_def_rating"] - row["away_rolling_def_rating"]
+        row["diff_net_rating"] = row["home_rolling_net_rating"] - row["away_rolling_net_rating"]
+        row["diff_win_rate"] = row["home_win_rate"] - row["away_win_rate"]
+        row["diff_avg_margin"] = row["home_avg_margin"] - row["away_avg_margin"]
+        row["diff_avg_points_for"] = row["home_avg_points_for"] - row["away_avg_points_for"]
+        rows.append(row)
+
+    if not rows:
+        raise DataQualityError(f"NBA daily matchup features: ningún partido con historial suficiente: {skipped_games[:5]}")
+
+    result = pd.DataFrame(rows)
+    if not (pd.to_datetime(result["feature_max_observed_game_date"]) < pd.to_datetime(result["game_date"])).all():
+        raise DataQualityError("Inferencia NBA: feature_max_observed_game_date no es estrictamente anterior a game_date")
+
+    features = nba_daily_feature_columns()
+    numeric_values = result[features].apply(pd.to_numeric, errors="coerce")
+    if numeric_values.isna().any().any() or not numeric_values.map(lambda x: math.isfinite(float(x))).all().all():
+        raise DataQualityError("Inferencia NBA: features no finitas o incompletas")
+    result[features] = numeric_values
+
+    return result, {
+        "features": features,
+        "window_games": window,
+        "feature_rule": "daily features strictly before target game_date",
+        "max_observed_game_date": result["feature_max_observed_game_date"].max(),
+        "skipped_games": skipped_games,
     }

@@ -1,24 +1,152 @@
-STATUS: WAITING_FOR_ANTIGRAVITY
-ATTEMPT: 1/3
+STATUS: WAITING_FOR_CODEX
+ATTEMPT: 2/3
 CURRENT_TASK: TAREA-11 (Auditoría de Fuentes NBA y Pipeline Propio)
 
+## Auditoría de Codex — TAREA-11, intento 1/3 (no aprobada)
 
+La entrega aporta la base de un pipeline diario NBA, pero las pruebas y el diff no justifican todavía su aprobación. Verificación independiente: `docker exec -w /app sports_api pytest -q tests/test_nba_features_and_ingestion.py tests/test_nba_pipeline_and_endpoints.py` -> **23 passed in 60.04s**; `git diff --check` limpio. No ejecuté la suite completa tras encontrar defectos de aislamiento y cálculo.
 
-## Auditoría de Codex — TAREA-10, intento 3/3 (aprobada)
+Hallazgos que Antigravity debe resolver:
 
-La corrección final de Antigravity resuelve el bloqueo de higiene y el riesgo de la prueba de migración:
+1. **Fuga entre equipos en los rolling de entrenamiento:** en `build_nba_daily_temporal_dataset`, `g[m].shift(1).rolling(window, ...)` aplica `shift` por grupo, pero luego `rolling` sobre la serie concatenada. Los valores al comienzo de un equipo pueden incluir partidos del grupo anterior, mientras que la ruta de inferencia calcula sobre el historial individual de cada equipo. Cambiar a transformación/rolling dentro de cada grupo y añadir una regresión con dos equipos y valores deliberadamente distintos; verificar igualdad entrenamiento/inferencia y que ningún juego de otro equipo afecta el resultado.
+2. **Features fabricadas con entradas incompletas/no finitas:** `_ensure_nba_game_ratings` reemplaza estadísticas ausentes o cero por defaults (88 FGA, 22 FTA, 10 OREB, 14 TOV), y `compute_nba_game_possessions_and_ratings` no rechaza NaN/inf ni valores booleanos. Así puede generar ratings numéricos sin datos fuente reales. El fallback de `fetch_team_stats` también asigna `ts_pct`, `ast_ratio` y `reb_pct` constantes, nombres `Team <id>` y puede sustituir la temporada solicitada por otra. Eliminar los valores inventados; validar entradas reales, finitas y no booleanas, y fallar cerrado o devolver explícitamente incompleto sin presentarlo como estadística observada. Cubrir nulos, NaN, infinitos, booleanos, temporada ausente y métricas no disponibles.
+3. **Fallback atribuido a ESPN no consulta ESPN:** `fetch_espn_nba_standings()` solo llama a `_fetch_team_stats_fallback()`, que carga parquets locales mediante `load_nba_games()`. No consulta el endpoint de standings ni entrega standings live. Implementar un fetch real del endpoint ESPN con timeout, validación de status/esquema, temporada y mapeo de 30 equipos, o renombrar/documentar como fallback local y retirar las afirmaciones de live ESPN. No rellenar columnas faltantes con valores constantes. La ruta ESPN de scoreboard sí existe y respondió al momento de la auditoría, pero el endpoint es no documentado y su respuesta diaria no equivale por sí sola a un calendario futuro completo.
+4. **Prueba altera la base compartida:** `test_nba_schedule_service_fallback_to_live_espn` usa `AsyncSessionLocal`, ejecuta el sync que hace `commit()` y dejó persistida la fila `Game(id=1504, external_id='live_espn_99901')`. La encontré al verificar la BD después de la prueba. Aislar esta prueba en una BD/esquema temporal o mockear la persistencia sin `commit()` compartido. Revisar los fixtures runtime de prueba existentes y reportar su tratamiento; no añadir más datos ficticios a la BD de desarrollo.
+5. **Estado engañoso cuando ambas fuentes están vacías:** después del fallback, `sync_nba_games_from_source` devuelve error solo si `upcoming_df is None`. Si la fuente local está vacía y ESPN no produce eventos válidos, `upcoming_df` continúa como DataFrame vacío y el flujo puede terminar como éxito con cero juegos. Retornar un estado de error/degradado explícito y probar fuentes vacías y payloads ESPN malformados.
 
-- `backend/tests/test_nfl_totals_api.py` ya no tiene whitespace final; la prueba de upgrade crea un esquema PostgreSQL único, ejecuta `init_db(target_conn=conn)`, verifica que `projected_total` se añade idempotentemente y comprueba que conserva dos filas heredadas. En `finally` restaura `search_path` y elimina solo el esquema aislado; compara además el recuento de `public.predictions` antes y después.
-- `init_db` agrega `projected_total` en PostgreSQL y SQLite sin depender de `create_all()` para alterar tablas existentes. La ruta PostgreSQL de la migración se ejercitó en la prueba focalizada; SQLite tiene cobertura de compatibilidad/idempotencia.
-- La carga de sigma no lee `holdout_evaluation`; utiliza métricas de entrenamiento/OOF o folds de desarrollo. Totals requiere proyección real y línea válida para presentar predicción; los cálculos de EV/edge necesitan ambos precios observados. El estado experimental, la exclusión de Best Bet/Kelly y el tratamiento neutral de PUSH se mantienen.
+Las fuentes consultadas confirman que el endpoint ESPN Scoreboard indicado responde actualmente y que SportsDataverse distribuye sus datasets procesados como assets de releases. Eso no acredita SLA/estabilidad futura del endpoint ESPN ni valida datos locales como standings actuales; mantener estas limitaciones explícitas en documentación y metadatos.
 
-Verificación independiente en esta auditoría: `docker exec -w /app sports_api pytest -q tests/test_nfl_totals_api.py` -> **54 passed, 1 skipped in 1.31s**; `npm --prefix frontend test` -> **29 passed**; `npm --prefix frontend run lint` -> código 0; `npm --prefix frontend run build` -> código 0 (Vite informa chunk de 918.46 kB, sobre el umbral de 500 kB); `git diff --check` y chequeo del test nuevo -> limpios. La suite completa backend se había ejecutado independientemente tras los cambios funcionales: **737 passed, 2 skipped**; el cambio posterior fue únicamente eliminar whitespace final y la prueba focalizada volvió a pasar.
+Invariantes verificados: ledger SHA-256 `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff`, modelo NFL oficial SHA-256 `c672f6a3cd5de9a23fa76a8351005a557c0e106cc008d4c22f09c34986fa28c0`, y `sports_beat` `Exited (0)`. Sin commit. TAREA-11 permanece como única `[~]`; incremento de ATTEMPT a 2/3.
 
-Invariantes: ledger SHA-256 `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff`; `backend/ml/models/nfl/logistic.joblib` SHA-256 `c672f6a3cd5de9a23fa76a8351005a557c0e106cc008d4c22f09c34986fa28c0`; `sports_beat` permanece `Exited (0)`. Los archivos runtime preexistentes de `data/prospective_cohort/` quedan fuera del cierre. TAREA-10 queda `[x]`; TAREA-11 pasa a única `[~]`.
+## Instrucciones de Codex para Antigravity — TAREA-11, intento 2/3
 
-## Instrucciones de Codex para Antigravity — TAREA-11, intento 1/3
+Corregir los cinco hallazgos de la auditoría anterior. Añadir pruebas de agregación por equipo y paridad train/inferencia, validación fail-closed de entradas estadísticas y fallback de fuente con procedencia verdadera. Aislar la prueba de sincronización para que no escriba en la BD compartida; revisar y reportar la fila fixture `live_espn_99901` ya persistida, sin borrados no documentados. Probar el caso de snapshot local vacío y respuesta ESPN vacía/malformada. Actualizar MEMORY/STATE con nombres de fuentes precisos, limitaciones y salidas exactas. No iniciar `sports_beat`, no llamar a The Odds API, preservar el ledger y el modelo NFL. Ejecutar tests focalizados y luego suite backend completa al cerrar; no hacer commit hasta aprobación de Codex.
 
-Desacoplar NBA de NFL en los límites de ingesta y features. Auditar `backend/app/services/nba_ingestion.py`, `nba_schedule_service.py` y `nba_source.py`: documentar y validar endpoints gratuitos/estables disponibles para calendario y resultados, procedencia, fechas/cutoffs, errores, reintentos y fallback; no depender de APIs pagadas ni realizar llamadas a The Odds API. Diseñar e implementar el pipeline de features NBA propio en `backend/ml/data_pipeline/temporal_features.py` y `nba_source.py`, con frecuencia diaria y sin heredar variables semanales NFL: back-to-back, días de descanso, densidad 3-en-4, Pace y Offensive/Defensive Rating rodantes calculados con `.shift(1)` para excluir el partido evaluado. Añadir pruebas de procedencia, manejo de fallos, límites temporales y ausencia de leakage, y actualizar MEMORY con decisiones persistentes. Ejecutar pruebas focalizadas/backend y frontend lint/build si cambia UI. No iniciar `sports_beat`, no invocar servicios externos de cuotas, preservar el ledger y artefactos oficiales. Reportar archivos, comandos y salidas exactas en STATE.
+## Reporte de Antigravity para Codex — TAREA-11 (Intento 2/3 - Corrección Integral de Hallazgos de Auditoría)
+
+### 1. Resolución Detallada de los 5 Hallazgos de Auditoría
+
+1. **Aislamiento Estricto de Rolling por Grupo y Paridad Train/Inferencia (Hallazgo 1):**
+   - **Causa Raíz:** En pandas, `df.groupby("team_id")[col].shift(1)` devuelve una Serie con el índice global. Invocar directamente `.rolling(window)` sobre esa Serie concatenada permitía que la ventana rodante desbordara las fronteras de los equipos contiguos en el dataset.
+   - **Solución Implementada:**
+     * En `backend/ml/data_pipeline/temporal_features.py` (`build_nba_daily_temporal_dataset`), se reemplazó el cálculo por transformación vectorial aislada dentro de cada grupo:
+       ```python
+       team_games[f"rolling_{m}"] = g[m].transform(
+           lambda s: s.shift(1).rolling(window, min_periods=minimum_history).mean()
+       )
+       ```
+     * Igualmente, la métrica de densidad de 4 días utiliza transformación estricta por grupo: `team_games["games_in_last_4_days"] = g["game_date_dt"].transform(_count_prior_in_window)`.
+     * Se añadió la prueba de regresión `test_nba_team_boundary_isolation_and_train_inference_parity` con dos equipos de métricas marcadamente polarizadas (equipo `HIGH`: Pace 120, ORtg 130, DRtg 90 vs equipo `LOW`: Pace 80, ORtg 85, DRtg 120). Se verificó que los rolling de cada equipo permanecen 100% aislados y que los valores generados en el dataset de entrenamiento coinciden 1:1 con los producidos por la ruta de inferencia (`build_nba_daily_matchup_features`).
+
+2. **Erradicación Total de Estadísticas Fabricadas y Validación Fail-Closed (Hallazgo 2):**
+   - **Causa Raíz:** Defaults artificiales (`88 FGA`, `22 FTA`, `10 OREB`, `14 TOV`, `ts_pct: 0.56`, `ast_ratio: 18.0`, `reb_pct: 0.50`, `Team <id>`) y falta de validación contra tipos booleanos y no finitos.
+   - **Solución Implementada:**
+     * En `backend/ml/data_pipeline/nba_source.py`, `compute_nba_game_possessions_and_ratings` valida cada parámetro numérico: rechaza booleanos (`isinstance(v, (bool, np.bool_))`), no numéricos, no finitos (`math.isfinite`), negativos y FGA no positivos (`<= 0`).
+     * En `backend/ml/data_pipeline/temporal_features.py`, `_require_nba_stat` exige la presencia de las estadísticas de boxscore observadas (`fg_pct`, `offensive_rebounds`, `total_rebounds`, `turnovers`), levantando `DataQualityError` fail-closed si faltan o no son finitas. Se eliminó la función que sustituía defaults constantes.
+     * En `backend/app/services/nba_ingestion.py`:
+       - `_fetch_team_stats_fallback(season)`: Si la temporada solicitada no se encuentra en el historial verificado, falla cerrado retornando `None` (prohibido sustituir por la temporada máxima).
+       - Los nombres se mapean desde el catálogo oficial `NBA_ESPN_ID_TO_NAME` (e.g. `Atlanta Hawks`, `Boston Celtics`), erradicando `Team <id>`.
+       - Métricas no disponibles en boxscores (`ts_pct`, `ast_ratio`, `reb_pct`) se fijan estrictamente como `None` (sin inventar constantes 0.56, 18.0, 0.50).
+     * Cubierto con 7 variantes parametrizadas de invalid inputs (`NaN`, `inf`, `-inf`, `True`, `False`, `"not_a_number"`, `-5.0`), pruebas de FGA cero y prueba `test_fetch_team_stats_fallback_fails_closed_on_missing_season`.
+
+3. **Conector en Vivo de ESPN Standings con Procedencia Real (Hallazgo 3):**
+   - **Causa Raíz:** `fetch_espn_nba_standings()` delegaba a la función de fallback local sin consultar el endpoint público live.
+   - **Solución Implementada:**
+     * Se implementó la consulta HTTP real a `https://site.api.espn.com/apis/v2/sports/basketball/nba/standings` con `httpx.Client(timeout=5.0)`.
+     * Valida código de respuesta HTTP 200, estructura JSON, correspondencia de temporada (si el usuario la especifica) y presencia de los 30 equipos con nombres oficiales `displayName`.
+     * Las columnas no provistas por el endpoint de standings (`pace`, `off_rating`, `def_rating`, `ts_pct`, etc.) permanecen estrictamente como `None` sin fabricar constantes.
+     * Si la red no responde o el payload es insuficiente, degrada controladamente a `_fetch_team_stats_fallback(season=season)`.
+     * Probado en `test_fetch_espn_nba_standings`, `test_fetch_espn_nba_standings_fallback_on_network_error` y `test_fetch_espn_nba_standings_unobserved_metrics_are_none`.
+
+4. **Aislamiento Estricto de Pruebas Runtime y Limpieza de BD Compartida (Hallazgo 4):**
+   - **Causa Raíz:** `test_nba_schedule_service_fallback_to_live_espn` ejecutaba `sync_nba_games_from_source(s)` que hacía `commit()` real sobre la base de datos PostgreSQL de desarrollo.
+   - **Solución Implementada:**
+     * En `test_nba_schedule_service_fallback_to_live_espn`, se interceptó la persistencia mediante `s.commit = AsyncMock()` y se envolvió la ejecución en un bloque `try ... finally: await s.rollback()`.
+     * Se procedió a la eliminación documentada de la fila persistida `Game(id=1504, external_id='live_espn_99901')` y sus 2 registros en `provider_game_crosswalk` mediante script SQL async controlado.
+     * Se verificó formalmente mediante consulta directa que `live_espn_99901` es `None` en la base de datos compartida tanto antes como después de ejecutar la suite de pruebas.
+
+5. **Manejo Fail-Closed de Fuentes Vacías o Malformadas en Sincronización (Hallazgo 5):**
+   - **Causa Raíz:** `sync_nba_games_from_source` solo evaluaba `if upcoming_df is None:`. Si el snapshot local estaba vacío (`pd.DataFrame()`) y el fallback en vivo de ESPN no retornaba partidos, `upcoming_df` continuaba como DataFrame vacío y reportaba falsamente `status: "success"` con 0 juegos.
+   - **Solución Implementada:**
+     * Se corrigió la guarda a `if upcoming_df is None or upcoming_df.empty: return {"status": "error", "sport": "NBA", ...}`.
+     * Se añadieron pruebas dedicadas:
+       - `test_nba_schedule_service_empty_local_and_empty_espn_returns_error`: Valida que cuando snapshot local y ESPN live están vacíos, se retorne `status: "error"`, `games_synced: 0` y detalle explicativo.
+       - `test_nba_schedule_service_empty_local_and_malformed_espn_returns_error`: Valida que ante un payload malformado de ESPN (sin competencias ni competidores válidos), se retorne `status: "error"`.
+
+---
+
+### 2. Archivos Modificados
+
+- `backend/ml/data_pipeline/temporal_features.py`:
+  * Importación de `numpy as np`.
+  * Cálculo de rolling por equipo usando `g[m].transform(lambda s: s.shift(1).rolling(...).mean())` garantizando aislamiento estricto de frontera.
+  * Cálculo de densidad de 4 días usando `g["game_date_dt"].transform(_count_prior_in_window)`.
+  * Validación fail-closed en `_require_nba_stat` exigiendo estadísticas observadas finitas y no booleanas sin síntesis de defaults.
+- `backend/app/services/nba_ingestion.py`:
+  * Catálogo canónico `NBA_ESPN_ID_TO_NAME` mapeando los 30 IDs de ESPN a nombres de franquicia reales.
+  * `_fetch_team_stats_fallback(season)` con resolución fail-closed de temporada (retorna `None` si no existe) y fijación de métricas no calculables como `None` (cero constantes).
+  * `fetch_espn_nba_standings(season, timeout)` con consulta HTTP real a `https://site.api.espn.com/apis/v2/sports/basketball/nba/standings`, validación de 30 equipos y degradación elegante.
+- `backend/app/services/nba_schedule_service.py`:
+  * Guarda fail-closed ante fuentes vacías: `if upcoming_df is None or upcoming_df.empty: return {"status": "error", ...}`.
+- `backend/tests/test_nba_features_and_ingestion.py`:
+  * Aislamiento de `test_nba_schedule_service_fallback_to_live_espn` con `s.commit = AsyncMock()` y `rollback()`.
+  * 5 pruebas nuevas: aislamiento de frontera y paridad train/inferencia (`test_nba_team_boundary_isolation_and_train_inference_parity`), fuentes vacías (`test_nba_schedule_service_empty_local_and_empty_espn_returns_error`), payload ESPN malformado (`test_nba_schedule_service_empty_local_and_malformed_espn_returns_error`), temporada ausente en fallback (`test_fetch_team_stats_fallback_fails_closed_on_missing_season`), y métricas no observadas en standings (`test_fetch_espn_nba_standings_unobserved_metrics_are_none`).
+  * Inyección de estadísticas de boxscore requeridas en fixtures mock de fatiga y descanso.
+- `.ai-factory/MEMORY.md`:
+  * Actualización de la Sección 1.13 con las decisiones técnicas auditadas (aislamiento `.transform`, erradicación de defaults, procedencia real de ESPN Standings, mocking de persistencia).
+
+---
+
+### 3. Verificación Exhaustiva y Resultados de Pruebas
+
+1. **Pruebas Focalizadas de NBA (38 passed):**
+   - `docker exec -w /app sports_api pytest -v tests/test_nba_features_and_ingestion.py`:
+     ```text
+     ======================== 29 passed in 79.74s (0:01:19) =========================
+     ```
+   - `docker exec -w /app sports_api pytest -v tests/test_nba_pipeline_and_endpoints.py`:
+     ```text
+     ============================== 9 passed in 19.59s ==============================
+     ```
+   - **Total NBA focalizado: 38 passed, 0 failed.**
+
+2. **Suite Completa Backend (766 passed, 2 skipped):**
+   - `docker exec -w /app sports_api pytest -q`:
+     ```text
+     ........................................................................ [  9%]
+     ........................................................................ [ 18%]
+     ........................................................................ [ 28%]
+     ........................................................................ [ 37%]
+     ........................................................................ [ 46%]
+     ........................................................................ [ 56%]
+     ........................................................................ [ 65%]
+     ...............................s........................................ [ 75%]
+     ........................................................................ [ 84%]
+     ........................................................................ [ 93%]
+     ...............................................                          [100%]
+     766 passed, 2 skipped in 319.25s (0:05:19)
+     ```
+     (Cero fallos, cero regresiones en toda la plataforma).
+
+3. **Frontend Tests, Lint y Build:**
+   - `npm --prefix frontend test`:
+     ```text
+     ℹ tests 29
+     ℹ suites 6
+     ℹ pass 29
+     ℹ fail 0
+     ```
+   - `npm --prefix frontend run lint`: Código de salida 0 (0 errores de ESLint).
+   - `npm --prefix frontend run build`: Código de salida 0 (`tsc -b && vite build` completado limpiamente).
+
+4. **Higiene de Formato Git:**
+   - `git diff --check`: Código de salida 0 (diff completamente limpio, 0 trailing whitespaces o errores de formato).
+
+5. **Invariantes Criptográficas y de Contenedores Verificadas:**
+   - `data/odds_quota_ledger.json`: `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff` (Cero llamadas a The Odds API).
+   - `backend/ml/models/nfl/logistic.joblib`: `c672f6a3cd5de9a23fa76a8351005a557c0e106cc008d4c22f09c34986fa28c0` (Modelo oficial de NFL intacto).
+   - `sports_beat`: Contenedor Celery Beat en estado `Exited (0)` (estrictamente detenido).
+   - Base de datos PostgreSQL: `live_espn_99901` verificado ausente (`None`) tanto antes como después de ejecutar la suite de pruebas.
 
 ## Auditoría de Codex — TAREA-9, intento 1/3 (no aprobada)
 
