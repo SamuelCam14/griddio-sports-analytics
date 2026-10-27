@@ -270,6 +270,8 @@ export interface Pick {
   home_team_id: number
   away_team_id: number
   model_version?: string
+  pick_status?: 'preview' | 'official_cohort'
+  status_reason?: string
   tier: 'CONFIANZA' | 'NO PICK' | 'PREMIUM' | 'VALUE' | 'SKIP' | 'NEUTRAL' | 'EXPERIMENTAL'
   tier_label?: string | null
   tier_emoji: string
@@ -606,12 +608,14 @@ export interface ExperimentalPredictionsResponse {
 }
 
 export const predictionsApi = {
-  getToday: (sport = 'NBA', tier: PredictionTier | string = 'all', period = 'auto') =>
+  getToday: (sport = 'NBA', tier: PredictionTier | string = 'all', period = 'auto', status = 'all') =>
     api.get<{
       sport: string
       period?: string
       as_of?: string
       total_picks: number
+      official_cohort_picks?: number
+      preview_picks?: number
       confianza?: number
       no_pick?: number
       premium: number
@@ -621,13 +625,13 @@ export const predictionsApi = {
       predictions_enabled?: boolean
       excluded_missing_market_data?: number
       reason?: string
-    }>('/predictions/today', { params: { sport, tier, period } }),
+    }>('/predictions/today', { params: { sport, tier, period, status } }),
   getExperimental: (sport = 'nfl', lookahead_days = 14) =>
     api.get<ExperimentalPredictionsResponse>(`/predictions/experimental/${sport.toLowerCase()}`, {
       params: { lookahead_days },
     }),
-  getTop: (sport = 'NBA', limit = 5) =>
-    api.get<{ sport: string; top_picks: Pick[]; mensaje?: string }>('/predictions/top', { params: { sport, limit } }),
+  getTop: (sport = 'NBA', limit = 5, period = 'all', status = 'all') =>
+    api.get<{ sport: string; top_picks: Pick[]; mensaje?: string }>('/predictions/top', { params: { sport, limit, period, status } }),
   getForGame: (gameId: number) => api.get(`/predictions/game/${gameId}`),
   getModelInfo: () => api.get<ModelInfo>('/predictions/model-info'),
   simulate: (payload: {

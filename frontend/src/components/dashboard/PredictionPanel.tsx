@@ -18,7 +18,20 @@ export function PredictionPanel({ prediction, experimentalPrediction, isLoading,
           <p className="eyebrow">MODELO</p>
           <h2 className="section-title">Pronóstico</h2>
         </div>
-        {prediction && <span className="status-badge status-badge-green">{prediction.tier}</span>}
+        {prediction && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="status-badge status-badge-green">{prediction.tier}</span>
+            {prediction.pick_status === 'official_cohort' ? (
+              <span className="status-badge border-emerald-500/40 bg-emerald-500/15 text-emerald-300" title={prediction.status_reason ?? 'Pick oficial confirmado'}>
+                Oficial Confirmado
+              </span>
+            ) : (
+              <span className="status-badge border-amber-500/40 bg-amber-500/15 text-amber-300" title={prediction.status_reason ?? 'Early Lean (Preview)'}>
+                Early Lean
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {isLoading && <p className="state-copy mt-5">Consultando pronósticos…</p>}
@@ -50,6 +63,9 @@ export function PredictionPanel({ prediction, experimentalPrediction, isLoading,
 
       {prediction && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-5 space-y-4">
+          {prediction.status_reason && (
+            <p className="text-[11px] text-slate-400">{prediction.status_reason}</p>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Probability label="Local" value={prediction.home_win_prob} />
             <Probability label="Visitante" value={prediction.away_win_prob} />

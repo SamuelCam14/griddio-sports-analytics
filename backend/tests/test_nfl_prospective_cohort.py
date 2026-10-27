@@ -14,9 +14,11 @@ Verifica:
 6. Aislamiento por variant_tag (para experimentos futuros de VORP / spread).
 7. Actualización del manifiesto con hash SHA-256 y conteos.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import dataclasses
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 import pytest
 
 from app.services.nfl_prospective_cohort_service import (
@@ -109,14 +111,14 @@ def test_records_abstention_with_reason(cohort_service):
     with pytest.raises(ValueError, match="abstention_reason"):
         cohort_service.record_attempt(
             game_id="2026_08_BAL_CLE",
-            kickoff_utc="2026-10-27T17:00:00Z",
+            kickoff_utc="2026-11-01T20:00:00Z",
             attempt_status="abstained",
         )
 
     # Exitoso con motivo
     rec = cohort_service.record_attempt(
         game_id="2026_08_BAL_CLE",
-        kickoff_utc="2026-10-27T17:00:00Z",
+        kickoff_utc="2026-11-01T20:00:00Z",
         attempt_status="abstained",
         abstention_reason="MISSING_INJURY_SNAPSHOT",
         coverage_state_home="UNKNOWN",
@@ -624,4 +626,1124 @@ def test_concurrent_writes_and_file_locking(cohort_service):
     assert len(results) == 10
     records = cohort_service.load_all_records()
     assert len(records) == 10
+
+
+def test_cohort_eligibility_rejects_non_prospective_or_past_kickoff(cohort_service):
+    """Rechaza partidos anteriores o iguales a la fecha de congelamiento o posteriores al kickoff."""
+    # 1. Kickoff en fecha de congelamiento o anterior
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc="2026-10-25T22:27:48+00:00",
+        attempt_timestamp_utc="2026-10-25T21:00:00Z",
+    )
+    assert ok is False
+    assert "anterior o igual al congelamiento" in reason
+
+    # 2. Intento posterior o igual al kickoff
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc="2026-11-01T18:00:00Z",
+        attempt_timestamp_utc="2026-11-01T18:05:00Z",
+    )
+    assert ok is False
+    assert "posterior o igual al kickoff" in reason
+
+
+def test_cohort_eligibility_decision_window(cohort_service):
+    """Verifica que el límite de ventana pre-kickoff (default 2h) se aplique estrictamente."""
+    ko = "2026-11-01T20:00:00Z"
+
+    # Intento 5 horas antes de kickoff (> 2.0h) -> No elegible para cohorte oficial
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc="2026-11-01T15:00:00Z",
+        decision_window_hours=2.0,
+    )
+    assert ok is False
+    assert "Fuera de la ventana pre-kickoff oficial" in reason
+    assert cohort_service.is_cohort_eligible(
+        kickoff_utc=ko,
+        attempt_timestamp_utc="2026-11-01T15:00:00Z",
+        decision_window_hours=2.0,
+    ) is False
+
+    # Intento 1 hora antes de kickoff (<= 2.0h) -> Elegible si no hay cuotas o cuotas válidas
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc="2026-11-01T19:00:00Z",
+        decision_window_hours=2.0,
+    )
+    assert ok is True
+    assert "Elegible para cohorte prospectiva oficial" in reason
+    assert cohort_service.is_cohort_eligible(
+        kickoff_utc=ko,
+        attempt_timestamp_utc="2026-11-01T19:00:00Z",
+        decision_window_hours=2.0,
+    ) is True
+
+
+def test_cohort_eligibility_market_odds_validations(cohort_service):
+    """Valida requisitos fail-closed de cuotas de mercado (captura, frescura, probabilidades justas)."""
+    ko = "2026-11-01T20:00:00Z"
+    attempt = "2026-11-01T19:00:00Z"
+
+    # 1. Cuota marcada como stale (is_stale=True) -> Rechazada
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        market_odds={
+            "captured_at_utc": "2026-11-01T18:30:00Z",
+            "is_stale": True,
+            "home_fair_prob": 0.55,
+            "away_fair_prob": 0.45,
+        },
+    )
+    assert ok is False
+    assert "is_stale=True" in reason
+
+    # 2. Cuota sin captured_at_utc verificado -> Rechazada
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        market_odds={
+            "home_fair_prob": 0.55,
+            "away_fair_prob": 0.45,
+        },
+    )
+    assert ok is False
+    assert "carece de captured_at_utc verificado" in reason
+
+    # 3. Cuota con antigüedad mayor a freshness_limit_hours -> Rechazada
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        freshness_limit_hours=2.0,
+        market_odds={
+            "captured_at_utc": "2026-11-01T15:00:00Z",  # 4h de antigüedad
+            "home_fair_prob": 0.55,
+            "away_fair_prob": 0.45,
+        },
+    )
+    assert ok is False
+    assert "Cuota de mercado vencida" in reason
+
+    # 4. Probabilidades justas que no suman 1.0 -> Rechazada
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        freshness_limit_hours=2.0,
+        market_odds={
+            "captured_at_utc": "2026-11-01T18:30:00Z",
+            "home_fair_prob": 0.60,
+            "away_fair_prob": 0.60,
+        },
+    )
+    assert ok is False
+    assert "no suman 1.0" in reason
+
+    # 5. Probabilidades justas no numéricas o inválidas -> Rechazada
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        market_odds={
+            "captured_at_utc": "2026-11-01T18:30:00Z",
+            "home_fair_prob": "invalid",
+            "away_fair_prob": 0.5,
+        },
+    )
+    assert ok is False
+    assert "no numéricas" in reason
+
+    # 6. Momios moneyline inválidos (0, fuera de rango o corruptos) -> Rechazada
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        market_odds={
+            "captured_at_utc": "2026-11-01T18:45:00Z",
+            "is_stale": False,
+            "home_fair_prob": 0.58,
+            "away_fair_prob": 0.42,
+            "home_ml": 0,
+            "away_ml": 130,
+        },
+    )
+    assert ok is False
+    assert "Momios moneyline inválidos" in reason
+
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        market_odds={
+            "captured_at_utc": "2026-11-01T18:45:00Z",
+            "is_stale": False,
+            "home_fair_prob": 0.58,
+            "away_fair_prob": 0.42,
+            "home_ml": -50,
+            "away_ml": 130,
+        },
+    )
+    assert ok is False
+    assert "Momios moneyline inválidos" in reason
+
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        market_odds={
+            "captured_at_utc": "2026-11-01T18:45:00Z",
+            "is_stale": False,
+            "home_fair_prob": 0.58,
+            "away_fair_prob": 0.42,
+            "home_ml": "corrupt",
+            "away_ml": 130,
+        },
+    )
+    assert ok is False
+    assert "no numéricos" in reason
+
+    # 7. Probabilidades justas ausentes (ambas None o una None) -> Rechazada fail-closed
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        market_odds={
+            "captured_at_utc": "2026-11-01T18:45:00Z",
+            "is_stale": False,
+            "home_ml": -150,
+            "away_ml": 130,
+        },
+    )
+    assert ok is False
+    assert "Faltan probabilidades justas" in reason
+
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        market_odds={
+            "captured_at_utc": "2026-11-01T18:45:00Z",
+            "is_stale": False,
+            "home_fair_prob": 0.55,
+            "away_fair_prob": None,
+            "home_ml": -150,
+            "away_ml": 130,
+        },
+    )
+    assert ok is False
+    assert "Faltan probabilidades justas" in reason
+
+    # 8. Cuota válida y fresca dentro de la ventana de 2h -> Elegible
+    ok, reason = cohort_service.check_cohort_eligibility(
+        kickoff_utc=ko,
+        attempt_timestamp_utc=attempt,
+        freshness_limit_hours=2.0,
+        decision_window_hours=2.0,
+        market_odds={
+            "captured_at_utc": "2026-11-01T18:45:00Z",
+            "is_stale": False,
+            "home_fair_prob": 0.58,
+            "away_fair_prob": 0.42,
+            "home_ml": -150,
+            "away_ml": 130,
+        },
+    )
+    assert ok is True
+    assert "Elegible para cohorte prospectiva oficial" in reason
+
+
+def test_get_registered_attempt_exact_and_cross_match(cohort_service):
+    """Verifica consulta de intentos por coincidencia exacta de ID y canonical_external_id sin falsos positivos de subcadena."""
+    ko = "2026-11-01T20:00:00Z"
+    cohort_service.record_attempt(
+        game_id="10",
+        kickoff_utc=ko,
+        attempt_status="evaluated",
+        model_variant_applied="injury_aware",
+        home_win_probability=0.6,
+        away_win_probability=0.4,
+    )
+
+    # Coincidencia exacta de game_id
+    rec = cohort_service.get_registered_attempt(game_id="10")
+    assert rec is not None
+    assert rec.game_id == "10"
+
+    # Coincidencia exacta con canonical_external_id
+    rec_ext = cohort_service.get_registered_attempt(game_id="999", canonical_external_id="10")
+    assert rec_ext is not None
+    assert rec_ext.game_id == "10"
+
+    # Subcadena "1" NO debe coincidir con "10" (falso positivo prevenido)
+    rec_sub = cohort_service.get_registered_attempt(game_id="1")
+    assert rec_sub is None
+
+
+def test_correlate_attempt_with_prediction_scenarios(cohort_service):
+    """Verifica todos los caminos de decisión fail-closed de correlate_attempt_with_prediction."""
+    now = datetime(2026, 11, 1, 19, 0, 0, tzinfo=timezone.utc)
+    pred_ts = datetime(2026, 11, 1, 18, 45, 0, tzinfo=timezone.utc)
+    ko = "2026-11-01T20:00:00Z"
+
+    valid_market_odds = {
+        "bookmaker": "draftkings",
+        "home_ml": -160,
+        "away_ml": 140,
+        "home_fair_prob": 0.60,
+        "away_fair_prob": 0.40,
+        "captured_at_utc": "2026-11-01T18:40:00+00:00",
+        "is_stale": False,
+    }
+
+    valid_record = cohort_service.record_attempt(
+        game_id="2026_09_KC_LV",
+        kickoff_utc=ko,
+        attempt_timestamp_utc=pred_ts.isoformat(),
+        as_of_cutoff_utc=pred_ts.isoformat(),
+        attempt_status="evaluated",
+        model_variant_applied="injury_aware",
+        variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_probability=0.68,
+        away_win_probability=0.32,
+        market_odds=valid_market_odds,
+    )
+
+    # 1. Caso positivo exacto (todos los campos idénticos y válidos)
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is True
+    assert "confirmada" in detail.lower()
+
+    # 2. Status no evaluado (abstención)
+    rec_abst = cohort_service.record_attempt(
+        game_id="2026_09_KC_LV_abs",
+        kickoff_utc=ko,
+        attempt_timestamp_utc=pred_ts.isoformat(),
+        as_of_cutoff_utc=pred_ts.isoformat(),
+        attempt_status="abstained",
+        abstention_reason="qb_uncertainty",
+        variant_tag=DEFAULT_VARIANT_TAG,
+    )
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_abst,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "no está evaluado" in detail
+
+    # 3. Variante discordante
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag="spread_dual_penalty",
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "variante registrada" in detail.lower() and "discordante" in detail.lower()
+
+    # 4. Versión de modelo: discordante, ausente en served, ausente en record
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="legacy_v0",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "versión de modelo registrada" in detail.lower() and "discordante" in detail.lower()
+
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version=None,
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "predicción servida carece de model_version" in detail.lower()
+
+    rec_no_mv = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_no_mv, k, v)
+    rec_no_mv.model_version = None
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_no_mv,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "intento registrado carece de model_version" in detail.lower()
+
+    # 5. pred_ts nulo
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=None,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "timestamp de inferencia" in detail.lower()
+
+    # 6. attempt_timestamp_utc: ausente, inválido, descorrelacionado (>120s)
+    rec_no_att_ts = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_no_att_ts, k, v)
+    rec_no_att_ts.attempt_timestamp_utc = None
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_no_att_ts,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "carece de attempt_timestamp_utc" in detail.lower()
+
+    rec_bad_att_ts = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_bad_att_ts, k, v)
+    rec_bad_att_ts.attempt_timestamp_utc = "not-a-timestamp"
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_bad_att_ts,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "timestamp de intento inválido" in detail.lower()
+
+    old_pred_ts = datetime(2026, 11, 1, 10, 0, 0, tzinfo=timezone.utc)
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=old_pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "timestamp de registro" in detail.lower() and "descorrelacionado" in detail.lower()
+
+    # 7. as_of_cutoff_utc: ausente, formato inválido, descorrelacionado (>120s)
+    rec_no_cutoff = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_no_cutoff, k, v)
+    rec_no_cutoff.as_of_cutoff_utc = None
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_no_cutoff,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "carece de as_of_cutoff_utc" in detail.lower()
+
+    rec_bad_cutoff = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_bad_cutoff, k, v)
+    rec_bad_cutoff.as_of_cutoff_utc = "garbage-cutoff"
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_bad_cutoff,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "cutoff de registro" in detail.lower() and "inválido" in detail.lower()
+
+    rec_old_cutoff = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_old_cutoff, k, v)
+    rec_old_cutoff.as_of_cutoff_utc = (pred_ts - timedelta(hours=1)).isoformat()
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_old_cutoff,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "cutoff de registro" in detail.lower() and "descorrelacionado" in detail.lower()
+
+    # 8. Probabilidades de modelo: ausente en served, ausente en record, discordante
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=None,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "carece de probabilidades de victoria" in detail.lower()
+
+    rec_no_prob = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_no_prob, k, v)
+    rec_no_prob.home_win_probability = None
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_no_prob,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "carece de probabilidades de victoria" in detail.lower()
+
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.55,
+        away_win_prob=0.45,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "discordante con predicción" in detail.lower()
+
+    # 9. market_odds: ausente en served, ausente en record, stale
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=None,
+    )
+    assert corr is False
+    assert "predicción servida carece de snapshot de cuotas de mercado" in detail.lower()
+
+    rec_no_odds = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_no_odds, k, v)
+    rec_no_odds.market_odds = None
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_no_odds,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "intento registrado carece de snapshot de cuotas de mercado" in detail.lower()
+
+    stale_odds = dict(valid_market_odds)
+    stale_odds["is_stale"] = True
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=stale_odds,
+    )
+    assert corr is False
+    assert "obsoleto" in detail.lower()
+
+    rec_stale = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_stale, k, v)
+    stale_rec_odds = dict(valid_market_odds)
+    stale_rec_odds["is_stale"] = True
+    rec_stale.market_odds = stale_rec_odds
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_stale,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "obsoleto" in detail.lower()
+
+    # is_stale ausente en served y en registered
+    no_stale_served = dict(valid_market_odds)
+    no_stale_served.pop("is_stale")
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=no_stale_served,
+    )
+    assert corr is False
+    assert "carece del campo is_stale" in detail.lower()
+
+    rec_no_stale = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_no_stale, k, v)
+    no_stale_rec = dict(valid_market_odds)
+    no_stale_rec.pop("is_stale")
+    rec_no_stale.market_odds = no_stale_rec
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_no_stale,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "carece del campo is_stale" in detail.lower()
+
+    # is_stale con valor/tipo inválido en served y registered (e.g. "false", None, 0)
+    for inv_val in ["false", None, 0]:
+        inv_stale_served = dict(valid_market_odds)
+        inv_stale_served["is_stale"] = inv_val
+        corr, detail = cohort_service.correlate_attempt_with_prediction(
+            valid_record,
+            pred_ts=pred_ts,
+            model_version="nfl_temporal_v1",
+            expected_variant_tag=DEFAULT_VARIANT_TAG,
+            home_win_prob=0.68,
+            away_win_prob=0.32,
+            market_odds=inv_stale_served,
+        )
+        assert corr is False
+        assert "is_stale inválido" in detail.lower()
+
+        rec_inv_stale = MagicMock(spec=CohortAttemptRecord)
+        for k, v in valid_record.__dict__.items():
+            setattr(rec_inv_stale, k, v)
+        inv_stale_reg = dict(valid_market_odds)
+        inv_stale_reg["is_stale"] = inv_val
+        rec_inv_stale.market_odds = inv_stale_reg
+        corr, detail = cohort_service.correlate_attempt_with_prediction(
+            rec_inv_stale,
+            pred_ts=pred_ts,
+            model_version="nfl_temporal_v1",
+            expected_variant_tag=DEFAULT_VARIANT_TAG,
+            home_win_prob=0.68,
+            away_win_prob=0.32,
+            market_odds=valid_market_odds,
+        )
+        assert corr is False
+        assert "is_stale inválido" in detail.lower()
+
+    # 10. captured_at_utc: ausente en served, ausente en record, inválido, discordante
+    no_cap_odds = dict(valid_market_odds)
+    no_cap_odds.pop("captured_at_utc")
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=no_cap_odds,
+    )
+    assert corr is False
+    assert "carece de captured_at_utc verificado" in detail.lower()
+
+    rec_no_cap = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_no_cap, k, v)
+    rec_no_cap.market_odds = dict(no_cap_odds)
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_no_cap,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "carece de captured_at_utc verificado" in detail.lower()
+
+    bad_cap_odds = dict(valid_market_odds)
+    bad_cap_odds["captured_at_utc"] = "not-a-date"
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=bad_cap_odds,
+    )
+    assert corr is False
+    assert "inválido" in detail.lower()
+
+    diff_cap_odds = dict(valid_market_odds)
+    diff_cap_odds["captured_at_utc"] = "2026-11-01T17:00:00+00:00"
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=diff_cap_odds,
+    )
+    assert corr is False
+    assert "timestamp de captura de mercado discordante" in detail.lower()
+
+    # 11. fair probabilities: ausentes, fuera de rango, no suman 1.0, discordantes
+    no_fair_odds = dict(valid_market_odds)
+    no_fair_odds.pop("home_fair_prob")
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=no_fair_odds,
+    )
+    assert corr is False
+    assert "probabilidades justas" in detail.lower()
+
+    rec_no_fair = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_no_fair, k, v)
+    rec_no_fair.market_odds = dict(no_fair_odds)
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_no_fair,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "probabilidades justas" in detail.lower()
+
+    out_range_odds = dict(valid_market_odds)
+    out_range_odds["home_fair_prob"] = 1.2
+    out_range_odds["away_fair_prob"] = -0.2
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=out_range_odds,
+    )
+    assert corr is False
+    assert "fuera de rango" in detail.lower()
+
+    no_sum_odds = dict(valid_market_odds)
+    no_sum_odds["home_fair_prob"] = 0.50
+    no_sum_odds["away_fair_prob"] = 0.30
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=no_sum_odds,
+    )
+    assert corr is False
+    assert "no suman 1.0" in detail.lower()
+
+    disc_fair_odds = dict(valid_market_odds)
+    disc_fair_odds["home_fair_prob"] = 0.52
+    disc_fair_odds["away_fair_prob"] = 0.48
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=disc_fair_odds,
+    )
+    assert corr is False
+    assert "probabilidad justa home de mercado discordante" in detail.lower()
+
+    # 12. Bookmaker: ausente, discordante
+    no_bm_odds = dict(valid_market_odds)
+    no_bm_odds.pop("bookmaker")
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=no_bm_odds,
+    )
+    assert corr is False
+    assert "carece de bookmaker" in detail.lower()
+
+    rec_no_bm = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_no_bm, k, v)
+    rec_no_bm.market_odds = dict(no_bm_odds)
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_no_bm,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "carece de bookmaker" in detail.lower()
+
+    disc_bm_odds = dict(valid_market_odds)
+    disc_bm_odds["bookmaker"] = "fanduel"
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=disc_bm_odds,
+    )
+    assert corr is False
+    assert "bookmaker de mercado discordante" in detail.lower()
+
+    # 13. Moneylines: ausentes, no numéricos, discordantes
+    no_ml_odds = dict(valid_market_odds)
+    no_ml_odds.pop("home_ml")
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=no_ml_odds,
+    )
+    assert corr is False
+    assert "momios moneyline" in detail.lower()
+
+    rec_no_ml = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_no_ml, k, v)
+    rec_no_ml.market_odds = dict(no_ml_odds)
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_no_ml,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "momios moneyline" in detail.lower()
+
+    disc_hml_odds = dict(valid_market_odds)
+    disc_hml_odds["home_ml"] = -140
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=disc_hml_odds,
+    )
+    assert corr is False
+    assert "moneyline home de mercado discordante" in detail.lower()
+
+    disc_aml_odds = dict(valid_market_odds)
+    disc_aml_odds["away_ml"] = 120
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=disc_aml_odds,
+    )
+    assert corr is False
+    assert "moneyline away de mercado discordante" in detail.lower()
+
+    # Moneylines fraccionarios (no enteros): en servido y en registrado (sin redondeo)
+    for frac_val in [-160.4, 140.25]:
+        frac_served_odds = dict(valid_market_odds)
+        frac_served_odds["home_ml"] = frac_val
+        corr, detail = cohort_service.correlate_attempt_with_prediction(
+            valid_record,
+            pred_ts=pred_ts,
+            model_version="nfl_temporal_v1",
+            expected_variant_tag=DEFAULT_VARIANT_TAG,
+            home_win_prob=0.68,
+            away_win_prob=0.32,
+            market_odds=frac_served_odds,
+        )
+        assert corr is False
+        assert "fraccionario no entero" in detail.lower()
+
+        rec_frac = MagicMock(spec=CohortAttemptRecord)
+        for k, v in valid_record.__dict__.items():
+            setattr(rec_frac, k, v)
+        frac_rec_odds = dict(valid_market_odds)
+        frac_rec_odds["home_ml"] = frac_val
+        rec_frac.market_odds = frac_rec_odds
+        corr, detail = cohort_service.correlate_attempt_with_prediction(
+            rec_frac,
+            pred_ts=pred_ts,
+            model_version="nfl_temporal_v1",
+            expected_variant_tag=DEFAULT_VARIANT_TAG,
+            home_win_prob=0.68,
+            away_win_prob=0.32,
+            market_odds=valid_market_odds,  # Servido es -160 estricto
+        )
+        assert corr is False
+        assert "fraccionario no entero" in detail.lower()
+
+    # Moneylines no finitos (inf, -inf, nan)
+    for inf_val in [float("inf"), float("-inf"), float("nan")]:
+        inf_served = dict(valid_market_odds)
+        inf_served["home_ml"] = inf_val
+        corr, detail = cohort_service.correlate_attempt_with_prediction(
+            valid_record,
+            pred_ts=pred_ts,
+            model_version="nfl_temporal_v1",
+            expected_variant_tag=DEFAULT_VARIANT_TAG,
+            home_win_prob=0.68,
+            away_win_prob=0.32,
+            market_odds=inf_served,
+        )
+        assert corr is False
+        assert "no es finito" in detail.lower()
+
+        rec_inf = MagicMock(spec=CohortAttemptRecord)
+        for k, v in valid_record.__dict__.items():
+            setattr(rec_inf, k, v)
+        inf_rec_odds = dict(valid_market_odds)
+        inf_rec_odds["away_ml"] = inf_val
+        rec_inf.market_odds = inf_rec_odds
+        corr, detail = cohort_service.correlate_attempt_with_prediction(
+            rec_inf,
+            pred_ts=pred_ts,
+            model_version="nfl_temporal_v1",
+            expected_variant_tag=DEFAULT_VARIANT_TAG,
+            home_win_prob=0.68,
+            away_win_prob=0.32,
+            market_odds=valid_market_odds,
+        )
+        assert corr is False
+        assert "no es finito" in detail.lower()
+
+    # Moneylines cero (0)
+    zero_served = dict(valid_market_odds)
+    zero_served["home_ml"] = 0
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        valid_record,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=zero_served,
+    )
+    assert corr is False
+    assert "no puede ser cero" in detail.lower()
+
+    rec_zero = MagicMock(spec=CohortAttemptRecord)
+    for k, v in valid_record.__dict__.items():
+        setattr(rec_zero, k, v)
+    zero_rec_odds = dict(valid_market_odds)
+    zero_rec_odds["away_ml"] = 0
+    rec_zero.market_odds = zero_rec_odds
+    corr, detail = cohort_service.correlate_attempt_with_prediction(
+        rec_zero,
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        expected_variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.68,
+        away_win_prob=0.32,
+        market_odds=valid_market_odds,
+    )
+    assert corr is False
+    assert "no puede ser cero" in detail.lower()
+
+    # Moneylines en intervalo imposible (-100, 100)
+    for bad_price in [50, -50, 99, -99]:
+        bad_served = dict(valid_market_odds)
+        bad_served["home_ml"] = bad_price
+        corr, detail = cohort_service.correlate_attempt_with_prediction(
+            valid_record,
+            pred_ts=pred_ts,
+            model_version="nfl_temporal_v1",
+            expected_variant_tag=DEFAULT_VARIANT_TAG,
+            home_win_prob=0.68,
+            away_win_prob=0.32,
+            market_odds=bad_served,
+        )
+        assert corr is False
+        assert "intervalo inválido" in detail.lower()
+
+    # Moneylines booleanos o no numéricos
+    for bad_val in [True, False, "abc"]:
+        bad_type_served = dict(valid_market_odds)
+        bad_type_served["home_ml"] = bad_val
+        corr, detail = cohort_service.correlate_attempt_with_prediction(
+            valid_record,
+            pred_ts=pred_ts,
+            model_version="nfl_temporal_v1",
+            expected_variant_tag=DEFAULT_VARIANT_TAG,
+            home_win_prob=0.68,
+            away_win_prob=0.32,
+            market_odds=bad_type_served,
+        )
+        assert corr is False
+
+
+def test_validate_moneyline_scenarios(cohort_service):
+    """Prueba exhaustiva de _validate_moneyline para enteros, finitud, no cero y rango."""
+    # Válidos
+    assert cohort_service._validate_moneyline(-160, "test") == (-160, None)
+    assert cohort_service._validate_moneyline(140, "test") == (140, None)
+    assert cohort_service._validate_moneyline(-110, "test") == (-110, None)
+    assert cohort_service._validate_moneyline(100, "test") == (100, None)
+    assert cohort_service._validate_moneyline(-100, "test") == (-100, None)
+    assert cohort_service._validate_moneyline(-160.0, "test") == (-160, None)
+    assert cohort_service._validate_moneyline("-160", "test") == (-160, None)
+
+    # Fraccionarios
+    val, err = cohort_service._validate_moneyline(-160.4, "test")
+    assert val is None and "fraccionario no entero" in err
+
+    val, err = cohort_service._validate_moneyline(140.25, "test")
+    assert val is None and "fraccionario no entero" in err
+
+    # Infinitos y NaN
+    val, err = cohort_service._validate_moneyline(float("inf"), "test")
+    assert val is None and "no es finito" in err
+
+    val, err = cohort_service._validate_moneyline(float("-inf"), "test")
+    assert val is None and "no es finito" in err
+
+    val, err = cohort_service._validate_moneyline(float("nan"), "test")
+    assert val is None and "no es finito" in err
+
+    # Cero
+    val, err = cohort_service._validate_moneyline(0, "test")
+    assert val is None and "no puede ser cero" in err
+
+    # Rango (-100, 100)
+    for bad in [50, -50, 99, -99]:
+        val, err = cohort_service._validate_moneyline(bad, "test")
+        assert val is None and "intervalo inválido" in err
+
+    # Booleanos y no numéricos
+    val, err = cohort_service._validate_moneyline(True, "test")
+    assert val is None and "no puede ser booleano" in err
+
+    val, err = cohort_service._validate_moneyline(False, "test")
+    assert val is None and "no puede ser booleano" in err
+
+    val, err = cohort_service._validate_moneyline("abc", "test")
+    assert val is None and "no numéricos" in err
+
+    val, err = cohort_service._validate_moneyline(None, "test")
+    assert val is None and "carece de valor" in err
+
+
+def test_find_correlated_attempt_multi_candidates(cohort_service):
+    """find_correlated_attempt discrimina entre varios registros y selecciona el exacto."""
+    ko = "2026-11-01T20:00:00Z"
+    pred_ts = datetime(2026, 11, 1, 18, 45, 0, tzinfo=timezone.utc)
+    market_odds = {
+        "bookmaker": "draftkings",
+        "home_ml": -175,
+        "away_ml": 150,
+        "home_fair_prob": 0.62,
+        "away_fair_prob": 0.38,
+        "captured_at_utc": "2026-11-01T18:40:00+00:00",
+        "is_stale": False,
+    }
+
+    # Intento 1: Variante distinta
+    cohort_service.record_attempt(
+        game_id="2026_09_SF_LAR",
+        kickoff_utc=ko,
+        attempt_timestamp_utc=pred_ts.isoformat(),
+        as_of_cutoff_utc=pred_ts.isoformat(),
+        attempt_status="evaluated",
+        model_variant_applied="injury_aware",
+        variant_tag="spread_team_only_with_qb_adj",
+        home_win_probability=0.60,
+        away_win_probability=0.40,
+        market_odds=market_odds,
+    )
+
+    # Intento 2: Variante oficial DEFAULT_VARIANT_TAG
+    rec_target = cohort_service.record_attempt(
+        game_id="2026_09_SF_LAR",
+        kickoff_utc=ko,
+        attempt_timestamp_utc=pred_ts.isoformat(),
+        as_of_cutoff_utc=pred_ts.isoformat(),
+        attempt_status="evaluated",
+        model_variant_applied="injury_aware",
+        variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_probability=0.72,
+        away_win_probability=0.28,
+        market_odds=market_odds,
+        duplicate_policy="ignore",
+    )
+
+    res, reason = cohort_service.find_correlated_attempt(
+        game_id="2026_09_SF_LAR",
+        pred_ts=pred_ts,
+        model_version="nfl_temporal_v1",
+        variant_tag=DEFAULT_VARIANT_TAG,
+        home_win_prob=0.72,
+        away_win_prob=0.28,
+        market_odds=market_odds,
+    )
+    assert res is not None
+    assert res.variant_tag == DEFAULT_VARIANT_TAG
+    assert res.home_win_probability == 0.72
 

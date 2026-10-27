@@ -55,6 +55,15 @@ export const MatchupHeader: React.FC<MatchupHeaderProps> = ({ pick, isSaved, onT
           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase ${badgeStyle}`}>
             {pick.tier}
           </span>
+          {pick.pick_status === 'official_cohort' ? (
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-500/50" title={pick.status_reason ?? 'Pick oficial confirmado'}>
+              Pick Oficial Confirmado
+            </span>
+          ) : (
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-500/40" title={pick.status_reason ?? 'Early Lean (Preview)'}>
+              Early Lean
+            </span>
+          )}
           {pick.is_today && (
             <span className="flex items-center gap-1 text-[10px] font-bold bg-amber-950/80 text-amber-300 border border-amber-800 px-2 py-0.5 rounded-full">
               <Radio className="h-2.5 w-2.5 animate-pulse text-amber-400" />
@@ -74,6 +83,11 @@ export const MatchupHeader: React.FC<MatchupHeaderProps> = ({ pick, isSaved, onT
         <p className="text-xs text-gray-400 mt-0.5">
           {pick.sport} · {pick.bookmaker ?? 'DraftKings'} · Confluencia {pick.model_agreement}/3 Modelos
         </p>
+        {pick.status_reason && (
+          <p className="text-[10px] text-gray-400 mt-0.5" title={pick.status_reason}>
+            {pick.status_reason}
+          </p>
+        )}
       </div>
 
       <button

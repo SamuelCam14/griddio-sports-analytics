@@ -15,11 +15,12 @@ export function useModelInfo() {
 export function useTodayPicks(
   sport: string,
   tierFilter: 'all' | PredictionTier = 'all',
-  period = 'auto'
+  period = 'auto',
+  status = 'all'
 ) {
   return useQuery({
-    queryKey: ['picks', sport, tierFilter, period],
-    queryFn: () => predictionsApi.getToday(sport, tierFilter, period).then(r => r.data),
+    queryKey: ['picks', sport, tierFilter, period, status],
+    queryFn: () => predictionsApi.getToday(sport, tierFilter, period, status).then(r => r.data),
     refetchInterval: 5 * 60 * 1000, // Polling de actualización cada 5 minutos
     staleTime: 2 * 60 * 1000,
   })

@@ -102,7 +102,21 @@ export function LiveMatchDetailCard({ match, sport, onOpenDeepDive }: LiveMatchD
           <div className="space-y-2 text-slate-300">
             {prediction ? (
               <>
-                <p className="font-semibold text-emerald-400">Modelo de producción ({prediction.model_version ?? `${sport.toLowerCase()}_temporal_v1`})</p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="font-semibold text-emerald-400">Modelo de producción ({prediction.model_version ?? `${sport.toLowerCase()}_temporal_v1`})</p>
+                  {prediction.pick_status === 'official_cohort' ? (
+                    <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[9px] text-emerald-300">
+                      Pick Oficial Confirmado
+                    </span>
+                  ) : (
+                    <span className="rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9px] text-amber-300">
+                      Early Lean (Preview)
+                    </span>
+                  )}
+                </div>
+                {prediction.status_reason && (
+                  <p className="text-[10px] text-slate-400">{prediction.status_reason}</p>
+                )}
                 <p>Probabilidad estimada: Local {formatPercentage(prediction.home_win_prob)} / Visita {formatPercentage(prediction.away_win_prob)}</p>
                 <p>
                   EV y selección:{' '}

@@ -40,14 +40,28 @@ export function AiPredictionList({ matches, sport, externalForecast, externalFor
                 className="flex w-full items-center justify-between rounded-xl border border-emerald-500/15 bg-emerald-500/[0.03] p-2.5 text-left transition-colors hover:bg-emerald-500/[0.08]"
               >
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="truncate text-xs font-medium text-slate-100">{match.odds.away_team} @ {match.odds.home_team}</span>
                     <span className="rounded bg-emerald-500/20 px-1.5 py-0.2 font-mono text-[9px] text-emerald-300 uppercase">{pred.tier}</span>
+                    {pred.pick_status === 'official_cohort' ? (
+                      <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[9px] text-emerald-300" title={pred.status_reason ?? 'Pick oficial confirmado para cohorte prospectiva'}>
+                        Pick Oficial Confirmado
+                      </span>
+                    ) : (
+                      <span className="rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9px] text-amber-300" title={pred.status_reason ?? 'Early Lean (Preview preliminar)'}>
+                        Early Lean
+                      </span>
+                    )}
                   </div>
                   <p className="mt-0.5 truncate text-[11px] text-slate-400">
                     {bet?.selection ?? pred.pick_team_name}
                     {bet?.odds_american != null ? ` (${bet.odds_american > 0 ? '+' : ''}${bet.odds_american})` : ''}
                   </p>
+                  {pred.status_reason && (
+                    <p className="mt-0.5 truncate text-[10px] text-slate-500" title={pred.status_reason}>
+                      {pred.status_reason}
+                    </p>
+                  )}
                 </div>
                 <div className="ml-3 shrink-0 text-right font-mono">
                   <span className="block text-xs font-semibold text-emerald-400">

@@ -15,6 +15,20 @@
   - Snapshot de mercado: `captured_at_utc < kickoff_utc`, `captured_at_utc <= as_of_cutoff_utc`, sin flag `is_stale`, y probabilidades justas en `(0, 1)` sumando 1.0.
   - Detección y rechazo de duplicados para el mismo par `(game_id, variant_tag)` mediante `duplicate_policy="reject"` por defecto (o `"ignore"` idempotente en tareas recurrentes).
 - **Conexión de Flujo Real:** Conectado a la inferencia en `celery_app.py` (`evaluate_predictions_task`), liquidación automática en `espn_service.py` (`sync_scoreboard_games` al finalizar juegos NFL), y consulta pública en FastAPI (`GET /api/v1/predictions/prospective-cohort/nfl`).
+- **Correlación Exacta de Inscripción con Predicción Servida (`correlate_attempt_with_prediction` y `find_correlated_attempt`):**
+  Para otorgar `pick_status: "official_cohort"`, no basta con la presencia de cualquier registro histórico para el `game_id`. La inscripción en `nfl_cohort_registry.jsonl` debe demostrar correspondencia fáctica 100% exacta y fail-closed con la predicción servida:
+  1. `attempt_status == "evaluated"` (intentos con abstención no promueven picks).
+  2. Coincidencia estricta de `variant_tag` (`DEFAULT_VARIANT_TAG = "baseline_logistic_c672f6a3"`).
+  3. `model_version` obligatoriamente presente, no vacío e idéntico en ambos lados (`"nfl_temporal_v1"`).
+  4. Coherencia temporal: `attempt_timestamp_utc` y `as_of_cutoff_utc` obligatoriamente presentes, parseables y sincronizados con el instante de inferencia (`pred_ts = pred.as_of or pred.predicted_at`, tolerancia `<= 120s`). Registros descorrelacionados, sin cutoff o de corridas antiguas se rechazan.
+  5. Coincidencia numérica en probabilidades (`home_win_probability` y `away_win_probability` coincidentes con tolerancia `atol=1e-3`).
+  6. Concordancia integral fail-closed de cuotas de mercado (`market_odds` presente en ambos lados):
+     - `is_stale` debe ser obligatoriamente el booleano `False` (`is_stale is False`) en ambos lados; valores ausentes, obsoletos (`is_stale=True`) o de tipo inválido (`"false"`, `None`, `0`) se rechazan fail-closed.
+     - `captured_at_utc` verificado, parseable y coincidente (diferencia `<= 2s`).
+     - `home_fair_prob` y `away_fair_prob` presentes, en rango abierto `(0, 1)`, sumando 1.0, y coincidentes (`atol=1e-3`).
+     - `bookmaker` obligatoriamente presente en ambos lados y coincidente (case-insensitive).
+     - Moneylines (`home_ml` y `away_ml`) presentes en ambos lados, finitos, enteros válidos (sin parte fraccionaria), no cero, fuera de `(-100, 100)` y con coincidencia de precio exacta sin redondeo (impidiendo que precios fraccionarios discordantes como `-160.4` se redondeen a `-160`).
+  Si no se demuestra correspondencia exacta o falta cualquier dato de identidad, el pick permanece estrictamente en `pick_status: "preview"` con un `status_reason` descriptivo ("Early Lean: ...").
 
 ### 1.3. Integridad del Ledger de Cuotas The Odds API (`data/odds_quota_ledger.json`)
 - **Incidente de Consumo a 300 Consumidos / 200 Restantes (2026-10-26):** Celery Beat (`sports_beat`) disparó automáticamente la tarea `ingest-nfl-odds-optimized` a las 16:08:13 UTC tras el inicio de contenedores, consumiendo 3 créditos en `main_lines` (27/45) y fijando el hash `1639967d78f03967b00e00ba462f65210070ad41f734d95adb75c06dd294196a`.

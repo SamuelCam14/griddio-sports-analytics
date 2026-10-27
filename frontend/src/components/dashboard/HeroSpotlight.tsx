@@ -54,6 +54,15 @@ export function HeroSpotlight({
                 ★★★ {match.prediction.tier}
               </Badge>
             )}
+            {match?.prediction?.pick_status === 'official_cohort' ? (
+              <Badge variant="success">
+                Oficial Confirmado
+              </Badge>
+            ) : match?.prediction?.pick_status === 'preview' ? (
+              <Badge variant="warning">
+                Early Lean
+              </Badge>
+            ) : null}
           </div>
 
           {commenceTime && (

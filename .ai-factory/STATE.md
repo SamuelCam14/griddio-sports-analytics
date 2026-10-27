@@ -1,12 +1,326 @@
 STATUS: WAITING_FOR_ANTIGRAVITY
 ATTEMPT: 1/3
-CURRENT_TASK: TAREA-8 (Fix de Picks Desaparecidos - Modo Preview vs Modo Cohorte)
+CURRENT_TASK: TAREA-9 (Modelo y Inferencia de Totals NFL)
 
-## Instrucciones de Codex para Antigravity — TAREA-7, intento 2/3
+## Reporte de Antigravity para Codex — TAREA-8 (Intento 3/3 - Cierre Definitivo de Hallazgos Fail-Closed)
 
-## Instrucciones de Codex para Antigravity — TAREA-8, intento 1/3
+### 1. Resolución Integral de los Dos Huecos de Auditoría:
 
-Implementa el modo Preview de NFL conforme a la descripción de TAREA-8 en BACKLOG. Mantén estrictamente los requisitos de timestamp/ventana de `NFLProspectiveCohortService` para elegibilidad del registro prospectivo; los previews UI no deben registrarse como picks oficiales ni rebajar esa validación. Usa solo cuotas almacenadas verificables y expón `pick_status` (`preview` o `official_cohort`) y `status_reason` en los contratos requeridos. Agrega pruebas de regresión para cuotas antiguas/preview y cohorte oficial; no llames The Odds API ni inicies `sports_beat`. Ejecuta las pruebas focalizadas y reporta cambios y salidas exactas.
+1. **`is_stale is False` Estricto y Fail-Closed en Ambos Snapshots:**
+   - En `correlate_attempt_with_prediction` (`nfl_prospective_cohort_service.py`):
+     * Se eliminó la evaluación laxa que únicamente comprobaba `value is True`.
+     * Ahora se exige obligatoriamente la presencia del campo `is_stale` (`"is_stale" in srv_odds` y `"is_stale" in reg_odds`) y que su valor sea exactamente el singleton booleano `False` (`is_stale is False`).
+     * Si la clave falta en servido o registrado: falla cerrado (`"Snapshot de mercado ... carece del campo is_stale (requerido is_stale is False)"`).
+     * Si está marcado obsoleto (`is_stale is True`): falla cerrado (`"Snapshot de mercado ... está marcado como obsoleto (is_stale=True)"`).
+     * Si tiene un tipo o valor inválido (e.g. `"false"` en string, `None`, `0`, etc.): falla cerrado (`"Snapshot de mercado ... tiene is_stale inválido (requerido booleano False, valor: ...)"`).
+
+2. **Moneylines sin Redondeo, Finitos, Enteros Estrictos, No Cero y Fuera de `(-100, 100)` (Fail-Closed):**
+   - Se implementó el método estático `_validate_moneyline(val, label)` en `NFLProspectiveCohortService`:
+     * Rechaza tipos booleanos (`True`/`False`), `None` y valores no numéricos.
+     * Comprueba finitud con `math.isfinite` (rechaza `float('inf')`, `float('-inf')`, `float('nan')`).
+     * Comprueba que sea un entero estricto sin parte fraccionaria mediante `f_val.is_integer()` (rechaza precios fraccionarios como `-160.4`, `140.25`).
+     * Comprueba que no sea cero (`int_val != 0`).
+     * Comprueba que no esté en el intervalo de momios americanos inválidos `-100 < int_val < 100` (e.g. `50`, `-50`, `99`, `-99`).
+   - Se erradicó por completo la función `int(round(float(value)))`:
+     * Los momios moneyline (`home_ml` y `away_ml`) validados como enteros exactos se comparan directamente sin redondeo (`s_hml != r_hml`, `s_aml != r_aml`).
+     * Un registro con precio fraccionario discordante como `-160.4` frente a `-160` servido es rechazado de inmediato fail-closed sin redondearse al mismo entero.
+
+3. **Batería Exhaustiva de Pruebas Negativas y Adversariales:**
+   - **`backend/tests/test_nfl_prospective_cohort.py` (21 tests, 100% pasando):**
+     * `test_correlate_attempt_with_prediction_scenarios` ampliado con:
+       - Ausencia de `is_stale` en snapshot servido o registrado.
+       - `is_stale` con valores no booleanos (`"false"`, `None`, `0`) en servido o registrado.
+       - `is_stale=True` en snapshot registrado.
+       - Precios fraccionarios en servido (`-160.4`, `140.25`).
+       - Precios fraccionarios en registrado (`-160.4` registrado vs `-160` servido, demostrando que no se redondea a `-160`).
+       - Precios no finitos (`inf`, `-inf`, `nan`) en servido y registrado.
+       - Precios cero (`0`) en servido y registrado.
+       - Precios en intervalo imposible `(-100, 100)` (e.g. `50`, `-50`, `99`, `-99`) en servido y registrado.
+       - Tipos booleanos (`True`/`False`) y strings no numéricos (`"abc"`).
+     * Nuevo test unitario exhaustivo `test_validate_moneyline_scenarios` probando directamente todos los casos válidos e inválidos de `_validate_moneyline`.
+     * `test_records_abstention_with_reason` actualizado con `kickoff_utc="2026-11-01T20:00:00Z"`, inmune a la progresión del reloj de ejecución.
+     * `test_find_correlated_attempt_multi_candidates` fijado con `"is_stale": False`.
+   - **`backend/tests/test_nfl_preview_mode.py` (26 tests, 100% pasando):**
+     * `test_fractional_moneyline_in_registered_attempt_remains_preview`: Intento registrado con `-160.4` vs snap servido de `-160` permanece en `preview` con motivo `"fraccionario no entero"`.
+     * `test_missing_is_stale_in_registered_attempt_remains_preview`: Intento sin `is_stale` permanece en `preview` con motivo `"carece del campo is_stale"`.
+     * `test_invalid_type_is_stale_in_registered_attempt_remains_preview`: Intento con `is_stale="false"` permanece en `preview` con motivo `"is_stale inválido"`.
+     * Todas las fixtures de prueba sincronizadas con `"is_stale": False` estricto.
+
+4. **Invariantes de Protección y Blindaje de Red:**
+   - Ledger The Odds API (`data/odds_quota_ledger.json`): SHA-256 verificado en `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff` (0 llamadas a la API externa).
+   - Celery Beat (`sports_beat`): Contenedor detenido (`STATUS: Exited (0)`).
+   - UI de solo lectura: Jamás escribe al log append-only `nfl_cohort_registry.jsonl`.
+
+---
+
+### 2. Archivos Modificados:
+- `backend/app/services/nfl_prospective_cohort_service.py`: Método estático `_validate_moneyline`, validación fail-closed de `is_stale is False` estricto en ambos snapshots, eliminación de `int(round(...))` en moneylines.
+- `backend/tests/test_nfl_prospective_cohort.py`: Pruebas de `is_stale` ausente/inválido/stale, moneylines fraccionarios, infinitos, cero, fuera de rango; nuevo unit test `test_validate_moneyline_scenarios`; normalización temporal en `test_records_abstention_with_reason`.
+- `backend/tests/test_nfl_preview_mode.py`: 3 nuevos tests de integración endpoint para moneyline fraccionario, `is_stale` ausente e `is_stale` inválido; fixtures con `"is_stale": False`.
+- `.ai-factory/MEMORY.md`: Sección 1.2 actualizada con la exigencia fail-closed de `is_stale is False` y momios moneyline sin redondeo.
+- `.ai-factory/STATE.md`: Reporte detallado para Codex y actualización a `STATUS: WAITING_FOR_CODEX`.
+
+---
+
+### 3. Comandos Ejecutados y Salidas Exactas:
+
+- **Suite Cohorte y Modo Preview (47 pruebas):**
+  `docker exec -w /app sports_api pytest -v tests/test_nfl_preview_mode.py tests/test_nfl_prospective_cohort.py`
+  -> **47 passed in 3.22s** (0 fallos).
+
+- **Suite Focalizada de Regresión (107 pruebas):**
+  `docker exec -w /app sports_api pytest -v tests/test_odds_market_data_hardening.py tests/test_math.py tests/test_nfl_market_ev_phase05.py tests/test_parlay.py tests/test_freshness.py tests/test_tier5_adversarial_p2.py tests/test_game_crosswalk_and_freshness_integration.py`
+  -> **107 passed, 1 skipped, 1 warning in 55.62s** (0 fallos).
+
+- **Suite Completa de Backend (623 pruebas):**
+  `docker exec -w /app sports_api pytest -q`
+  -> **622 passed, 1 skipped in 276.39s (0:04:36)** (0 fallos).
+
+- **Linter Frontend:**
+  `npm --prefix frontend run lint`
+  -> **Código de salida 0, 0 errores**.
+
+- **Build de Producción Frontend:**
+  `npm --prefix frontend run build`
+  -> **Código de salida 0**, bundle generado exitosamente con Vite en 1.06s.
+
+- **Verificación Git Diff:**
+  `git diff --check`
+  -> **Código de salida 0** (limpio, sin errores de espaciado ni caracteres invisibles).
+
+- **Invariante del Ledger de Cuotas:**
+  `sha256sum data/odds_quota_ledger.json`
+  -> `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff  data/odds_quota_ledger.json` (intacto, 0 llamadas salientes).
+
+- **Estado de Celery Beat:**
+  `docker ps -a --filter name=sports_beat`
+  -> `STATUS: Exited (0)` (detenido).
+
+---
+
+
+
+## Auditoría de Codex — TAREA-8, intento 3/3, revisión de correcciones fail-closed
+
+La entrega nueva corrige los hallazgos previos de `model_version`, `as_of_cutoff_utc`, snapshots, probabilidades justas, bookmaker y timestamps. Verificación independiente: pruebas focalizadas `43 passed in 2.98s`; suite completa `618 passed, 1 skipped in 279.92s`; `npm run lint` y `npm run build` terminaron con código 0; `git diff --check` limpio. El build conserva el aviso de Vite por un chunk JavaScript de 918.46 kB (límite de aviso 500 kB). El ledger mantiene SHA-256 `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff`; `sports_beat` no está ejecutándose.
+
+TAREA-8 aún no se aprueba por dos huecos en la comparación del snapshot dentro de `correlate_attempt_with_prediction`:
+
+1. La validación de `is_stale` rechaza únicamente `value is True`. Si la clave falta o contiene un valor inválido (por ejemplo, `"false"` o `None`), continúa como si fuese `False`, aunque el reporte exige el booleano `False` explícito en ambos snapshots. Hacer fail-closed con `is_stale is False` y agregar pruebas para campo ausente y tipo/valor inválido en ambos lados.
+2. Las moneylines pasan por `int(round(float(value)))` antes de compararse. Eso permite que precios fraccionarios distintos, por ejemplo registrado `-160.4` y servido `-160`, se redondeen al mismo valor y se consideren idénticos. Validar primero que sean finitos, enteros válidos y no cero, y comparar sin redondeo; agregar pruebas para valores fraccionarios, infinitos y precio inválido.
+
+Conservar TAREA-8 activa en ATTEMPT 3/3 y mantener previews hasta que esos casos también fallen cerrados. No llamar a The Odds API ni iniciar `sports_beat`; mantener el ledger intacto. Estado final requerido por el usuario: `STATUS: WAITING_FOR_ANTIGRAVITY`.
+
+## Auditoría de Codex — TAREA-8, intento 3/3 (no aprobada)
+
+La revisión independiente confirma que las 37 pruebas focalizadas pasan (`docker exec -w /app sports_api pytest -q tests/test_nfl_preview_mode.py tests/test_nfl_prospective_cohort.py` -> `37 passed in 2.90s`) y que la suite completa pasa (`docker exec -w /app sports_api pytest -q` -> `612 passed, 1 skipped in 283.28s`). Frontend: `npm run lint` y `npm run build` terminan con código 0; Vite reporta un chunk JavaScript de 918.46 kB, por encima de su umbral de 500 kB. `git diff --check` no reporta errores y el ledger conserva el SHA-256 autorizado `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff`. `sports_beat` no está ejecutándose. Aun así, la promoción a `official_cohort` no es fail-closed para todos los datos de identidad:
+
+1. `correlate_attempt_with_prediction` permite que `attempt.model_version` sea `None` (solo compara cuando ambos valores existen); un registro sin versión puede correlacionar con una versión servida.
+2. `as_of_cutoff_utc` es opcional en la correlación. Si falta, no se rechaza; si tiene formato inválido, la excepción se ignora y la validación continúa.
+3. La comparación de mercado solo ocurre cuando ambos `market_odds` son diccionarios. Si el registro o snapshot servido carece de mercado, se omite. También se omiten campos faltantes de fair probabilities y `captured_at_utc`; solo se comparan si ambos lados los contienen. La igualdad de precios/bookmaker no se comprueba.
+4. Las pruebas actuales cubren timestamps, versión discordante no nula, fair probabilities discordantes y caso positivo, pero no ausencia/invalidación de versión/cutoff/snapshot ni discordancia de bookmaker/precios.
+
+### Instrucciones de Codex para Antigravity — TAREA-8
+
+Mantener TAREA-8 activa. Antes de otorgar `official_cohort`, exigir y validar fail-closed: `model_version` presente e idéntica; `as_of_cutoff_utc` presente, parseable y dentro de la tolerancia temporal; `market_odds` presente en ambos lados con fair probabilities válidas y coincidentes, `captured_at_utc` verificado y coincidente, y los campos de mercado usados por la predicción (incluidos bookmaker y moneylines) coincidentes. Añadir pruebas negativas para cada dato ausente, inválido o discordante, además del caso positivo. No sintetizar timestamps, no escribir desde endpoints de lectura al registro append-only, no iniciar `sports_beat` ni hacer llamadas a The Odds API, y conservar intacto el ledger autorizado. Reportar las salidas exactas de pruebas backend y lint/build frontend.
+
+El tercer intento no queda aprobado; ATTEMPT permanece en 3/3. El usuario pidió expresamente que el estado final sea `WAITING_FOR_ANTIGRAVITY` o `DONE`; se conserva `WAITING_FOR_ANTIGRAVITY` mientras haya hallazgos sin resolver y tareas pendientes.
+
+## Instrucciones de Codex para Antigravity — TAREA-8, intento 2/3
+
+- Corregir Hallazgo Crítico 1 (no sintetizar `captured_at_utc` en ningún endpoint ni sustituir por `observed_at`).
+- Corregir Hallazgo Crítico 2 (definir `official_cohort` únicamente con evidencia real del registro append-only `nfl_cohort_registry.jsonl`, con inferencia en ventana oficial pre-kickoff `pred_age_ko <= 2.0h`, cuota no expirada y fair probabilities válidas; de otro modo mostrar preview con motivo claro).
+- Corregir Hallazgo fail-closed (rechazar elegibilidad oficial si faltan probabilidades justas, ambas o una de ellas).
+- Añadir tests adversariales para estos 3 casos y conservar la verificación de que la UI es estrictamente de solo lectura y no escribe en el log de cohorte.
+- Cero llamadas a The Odds API y mantener `sports_beat` detenido.
+
+## Reporte de Antigravity para Codex — TAREA-8 (Intento 2/3)
+
+### 1. Resolución Integral de los Hallazgos de Auditoría:
+
+1. **Erradicación Total de Síntesis de Timestamps (`captured_at_utc`):**
+   - En `get_today_picks` y `get_game_prediction` (`predictions.py`), se eliminó cualquier fallback a `observed_at`.
+   - `captured_at_utc` se extrae estrictamente de `h2h_snap.captured_at.isoformat() if getattr(h2h_snap, "captured_at", None) else None`.
+   - Si `captured_at` no existe, `captured_at_utc` es `None`, causando que `check_cohort_eligibility` falle cerrado (`"Snapshot de cuotas carece de captured_at_utc verificado"`), preservando el pick en `pick_status: "preview"` ("Early Lean") sin posibilidad de ser etiquetado erróneamente como oficial.
+
+2. **Eliminación del Falso "Oficial Confirmado" (Dualidad de Verificación Temporal y Registro):**
+   - **Temporalidad de la Inferencia del Modelo:** Se extrae el timestamp real de inferencia `pred_ts = pred.as_of or pred.predicted_at` y se calcula `pred_age_ko = (g_kickoff - pred_ts).total_seconds() / 3600.0`.
+     * `check_cohort_eligibility` se evalúa con `attempt_timestamp_utc=pred_ts` y `as_of_cutoff_utc=pred_ts`, asegurando que cuotas capturadas post-inferencia o predicciones generadas fuera de la ventana oficial de 2h (`pred_age_ko > 2.0h`) sean rechazadas para la cohorte oficial.
+     * Si una predicción fue generada 12h antes del kickoff, aunque las cuotas en DB sean frescas a 30m del kickoff, el pick permanece estrictamente como `pick_status: "preview"` con motivo: `"Early Lean: Predicción preliminar generada a 12.0h del kickoff (confirmación oficial requiere inferencia a ≤ 2h)"`.
+   - **Evidencia Física en Registro Append-Only:** Se consulta el registro inmutable `nfl_cohort_registry.jsonl` mediante `get_registered_attempt` y precarga en memoria (`cohort_lookup` en `get_today_picks`).
+     * Un pick solo recibe `pick_status: "official_cohort"` SI cumple los requisitos matemáticos y de ventana pre-kickoff Y existe un registro previo en `nfl_cohort_registry.jsonl` con `attempt_status == "evaluated"`.
+     * Si cumple la ventana pero no está registrado aún, se expone explícitamente como `pick_status: "preview"` con motivo: `"Early Lean: Elegible en ventana pre-kickoff pero pendiente de registro en cohorte prospectiva"`.
+
+3. **Blindaje Fail-Closed de Probabilidades Justas:**
+   - En `NFLProspectiveCohortService.check_cohort_eligibility`, se exige que ambas probabilidades existan (`if h_fair is None or a_fair is None: return False, "Faltan probabilidades justas home_fair_prob y/o away_fair_prob (ambas requeridas)"`).
+   - Se validan como numéricas, en rango abierto `(0, 1)`, y con suma coherente `np.isclose(h_f + a_f, 1.0, atol=1e-2)`.
+
+4. **Blindaje de Búsqueda Exacta en `get_registered_attempt`:**
+   - Se refactorizó `get_registered_attempt` para usar comparación por conjunto exacto de IDs (`r_gid in {game_id, canonical_external_id}`), erradicando el riesgo de falsos positivos por coincidencia de subcadena (ej. "1" coincidiendo erróneamente con "10").
+
+5. **Nuevos Tests Adversariales Añadidos:**
+   - `test_old_prediction_outside_2h_remains_preview_despite_fresh_odds`: Predicción de hace 12h con cuota fresca a 1h del kickoff permanece como preview.
+   - `test_unregistered_attempt_remains_preview_despite_timing`: Partido dentro de 2h con cuota fresca pero sin registro en el log permanece como preview con motivo de pendiente de registro.
+   - `test_missing_fair_probabilities_cannot_be_official_cohort`: Snapshot sin probabilidades justas falla cerrado a preview.
+   - `test_missing_captured_at_timestamp_cannot_be_official_cohort`: Snapshot sin captured_at verificado falla cerrado a preview.
+   - `test_get_registered_attempt_exact_and_cross_match`: Certifica coincidencia exacta por ID y por external_id previniendo falsos positivos de subcadena.
+   - `test_preview_picks_do_not_leak_into_cohort_registry`: Confirma que las consultas de UI jamás invocan `record_attempt`.
+
+---
+
+### 2. Archivos Modificados:
+- `backend/app/services/nfl_prospective_cohort_service.py`: `check_cohort_eligibility` (fail-closed fair probs y momios), `get_registered_attempt` (búsqueda exacta por ID y external ID).
+- `backend/app/api/v1/predictions.py`: Eliminación de síntesis de `captured_at`, precarga de cohorte en `get_today_picks`, validación de `pred_age_ko <= 2.0h` y presencia de `reg_attempt.attempt_status == "evaluated"`.
+- `backend/tests/test_nfl_preview_mode.py`: 11 tests de regresión y cobertura adversarial (8 originales corregidos + 3 nuevos adversariales).
+- `backend/tests/test_nfl_prospective_cohort.py`: 18 tests (incluyendo fail-closed de fair probabilities y búsqueda exacta de registros).
+- `frontend/src/services/api.ts`: Contratos TypeScript para `pick_status`, `status_reason` y contadores.
+- `frontend/src/hooks/usePredictions.ts`: Parámetro `status` en hooks de React Query.
+- `frontend/src/components/dashboard/AiPredictionList.tsx`: Badges "Pick Oficial Confirmado" vs "Early Lean" y renderizado de `status_reason`.
+- `frontend/src/components/dashboard/HeroSpotlight.tsx`: Insignia y status en spotlight.
+- `frontend/src/components/dashboard/LiveMatchDetailCard.tsx`: Insignia y motivo de estado en insights.
+- `frontend/src/components/dashboard/PredictionPanel.tsx`: Insignia de estado.
+- `frontend/src/components/games/PickCard.tsx`: Badge visual en encabezado y fila en drawer.
+- `frontend/src/components/matchup/MatchupHeader.tsx`: Insignia de estado en header de matchup.
+
+---
+
+### 3. Comandos Ejecutados y Salidas Exactas:
+
+- **Suite Cohorte y Modo Preview (29 pruebas):**
+  `docker exec -w /app sports_api pytest -v tests/test_nfl_preview_mode.py tests/test_nfl_prospective_cohort.py`
+  -> **29 passed in 2.88s** (0 fallos).
+
+- **Suite Focalizada Completa (107 pruebas):**
+  `docker exec -w /app sports_api pytest -v tests/test_odds_market_data_hardening.py tests/test_math.py tests/test_nfl_market_ev_phase05.py tests/test_parlay.py tests/test_freshness.py tests/test_tier5_adversarial_p2.py tests/test_game_crosswalk_and_freshness_integration.py`
+  -> **107 passed, 1 skipped in 61.20s** (0 fallos).
+
+- **Linter Frontend:**
+  `npm --prefix frontend run lint`
+  -> **Código de salida 0, 0 errores**.
+
+- **Build de Producción Frontend:**
+  `npm --prefix frontend run build`
+  -> **Código de salida 0**, bundle generado exitosamente con Vite en 1.08s.
+
+- **Verificación Git Diff:**
+  `git diff --check`
+  -> **Código de salida 0** (limpio, sin errores de espaciado ni trailing whitespace).
+
+- **Invariante de Cuotas y Celery Beat:**
+  `sha256sum data/odds_quota_ledger.json`
+  -> `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff  data/odds_quota_ledger.json` (intacto, 0 llamadas salientes).
+  `docker ps --filter name=sports_beat`
+  -> 0 contenedores activos (daemon detenido).
+
+---
+
+## Auditoría de Codex — 2026-10-27 (TAREA-8, intento 2)
+
+- Revisé el diff del intento 2. Antigravity eliminó el fallback `captured_at -> observed_at`, ahora falla cerrado si faltan fair probabilities, exige timestamp de inferencia dentro de 2h y requiere que exista un intento `evaluated`. Las pruebas nuevas cubren timestamp faltante, probabilidades faltantes, predicción antigua, ausencia de registro y no escritura desde UI.
+- Verificación independiente: `docker exec -w /app sports_api pytest -q tests/test_nfl_preview_mode.py tests/test_nfl_prospective_cohort.py` -> **29 passed en 2.80s**. `npm --prefix frontend run lint` -> código 0. `npm --prefix frontend run build` -> código 0; advertencia no bloqueante de chunk JS de 918.46 kB (>500 kB). `git diff --check` -> limpio.
+- El ledger continúa en SHA-256 `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff`; `sports_beat` no aparece en ejecución. No hubo llamadas de cuotas.
+- **Hallazgo pendiente — el registro no está correlacionado con la predicción:** en `get_today_picks`, `cohort_lookup` indexa todo intento evaluado solo por `game_id` y luego promueve el pick si existe cualquier entrada; en `get_game_prediction`, `get_registered_attempt` se llama sin `variant_tag`. Ninguna ruta compara `reg_attempt.attempt_timestamp_utc`, `as_of_cutoff_utc`, `model_version`, `variant_tag`, probabilidades o `market_odds` con el `Prediction`/snapshot que devuelve. La propia fixture oficial construye un intento mock genérico que solo tiene game_id/status. Así, una inscripción vieja o de otra variante para el mismo juego puede dar badge oficial a una predicción distinta.
+- Para cerrar: correlacionar la inscripción exacta con el `pred_ts`/cutoff de la predicción, versión/variante y contenido de mercado/probabilidades registrados; elegir solo el intento que corresponde (incluido manejo de duplicados/settlement). Si no se puede demostrar la correspondencia, devolver `preview`. Agregar tests con registro viejo, variante incorrecta y market/prediction discordantes; mantener un caso positivo correlacionado.
+- **TAREA-8 no aprobada en intento 2/3.** Sin commit. `ATTEMPT` pasa a `3/3`; primera línea `STATUS: WAITING_FOR_ANTIGRAVITY`.
+
+## Auditoría de Codex — 2026-10-27 (TAREA-8, revisión del intento 3)
+
+- Releí DIRECTIVES, BACKLOG, MEMORY y STATE y comparé el diff actual con el reporte de Antigravity del intento 2. No aparece una entrega de código posterior: la lógica sigue precargando `cohort_lookup` por `game_id` y acepta cualquier `attempt_status == "evaluated"`; la ruta por partido llama `get_registered_attempt` sin `variant_tag`.
+- Se mantienen los hallazgos: no se ata la inscripción a `attempt_timestamp_utc`/`as_of_cutoff_utc`, `model_version`, `variant_tag`, probabilidades ni `market_odds` de la predicción que se devuelve. Un intento antiguo o de otra variante puede promover un pick distinto a `official_cohort`. La búsqueda exacta del identificador evita subcadenas, pero no establece identidad del evento de predicción.
+- Las pruebas y validaciones del intento 2 siguen siendo evidencia válida para el código sin cambios: 29 pruebas focalizadas, lint/build exitosos y `git diff --check` limpio. No repetí una suite sin cambios de implementación. Ledger actual: `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff`; `sports_beat` detenido.
+- **TAREA-8 continúa sin aprobar en intento 3/3.** No se creó commit ni se avanzó a TAREA-9. Para reauditar, Antigravity debe correlacionar la entrada append-only exacta con el timestamp de inferencia/cutoff, modelo/variante, probabilidades y snapshot que se presenta; las entradas no coincidentes deben quedarse en preview. Agregar casos de registro viejo y variante/datos discordantes junto al caso positivo exacto.
+- Primera línea conforme a la instrucción del usuario: `STATUS: WAITING_FOR_ANTIGRAVITY`.
+
+## Reporte de Antigravity para Codex — TAREA-8 (Intento 1/3)
+
+### 1. Resumen Ejecutivo de la Solución Implementada:
+
+1. **Separación Estricta entre Modo Cohorte Oficial y Modo Preview UI:**
+   - Se crearon los métodos `check_cohort_eligibility` e `is_cohort_eligible` en `NFLProspectiveCohortService`.
+   - Estos métodos concentran y aplican los 5 requisitos estrictos fail-closed **exclusivamente** para determinar la elegibilidad oficial de un partido/snapshot:
+     1. Kickoff estrictamente posterior a `CANDIDATE_FREEZING_TIMESTAMP` (`2026-10-25T22:27:48+00:00`).
+     2. Momento de intento estrictamente anterior al kickoff.
+     3. Cutoff temporal no posterior al intento y anterior al kickoff.
+     4. Dentro de la ventana pre-kickoff oficial (`decision_window_hours <= 2.0h`).
+     5. Cuota de mercado verificada con `captured_at_utc <= cutoff < kickoff`, no vencida (`age <= freshness_limit_hours`), no marcada como stale (`is_stale=False`) y con probabilidades justas válidas en `(0, 1)` sumando 1.0.
+
+2. **Restauración de Picks en Endpoints de Dashboard/UI (`predictions.py`):**
+   - Se removió el descarte prematuro `if h2h_age > freshness_limit: continue` en `get_today_picks`, que provocaba la desaparición total de los partidos programados para el fin de semana cuando se visualizaban entre semana.
+   - Para cálculo de líneas secundarias (spreads y totales) en modo preview, se configuró `usable_market_snapshot(allow_stale=True)` preservando la verificación estricta de coherencia matemática de líneas.
+   - Para cada partido, se evalúa `cohort_svc.check_cohort_eligibility`:
+     * Si cumple todas las condiciones oficiales: se asigna `pick_status: "official_cohort"` y `status_reason: "Pick oficial confirmado para cohorte prospectiva (ventana pre-kickoff ≤ 2h con cuota vigente)"`.
+     * Si no las cumple (ej. faltan días para el kickoff o la cuota en caché tiene >36h): se asigna `pick_status: "preview"` ("Early Lean") con un `status_reason` descriptivo indicando con precisión las horas restantes al kickoff y la antigüedad de la cuota en caché.
+   - Se incorporó soporte para filtrado en el endpoint mediante `status: str = Query(default="all")` y `mode: Optional[str] = Query(default=None)`:
+     * `status="preview"`: solo retorna picks preliminares ("Early Leans").
+     * `status="official_cohort"`: solo retorna picks oficiales confirmados.
+     * `status="all"`: retorna ambos.
+   - Se enriqueció la respuesta raíz con los contadores `official_cohort_picks` y `preview_picks`.
+   - Se actualizó el endpoint unitario `get_game_prediction(game_id)` para evaluar y exponer `pick_status` y `status_reason`.
+
+3. **Invariante Crítico de No-Contaminación de la Cohorte:**
+   - Los endpoints de UI (`get_today_picks`, `get_game_prediction`) son de solo lectura respecto a la cohorte: jamás invocan `record_attempt` ni modifican `nfl_cohort_registry.jsonl`.
+   - Se verificó formalmente mediante test que el archivo de registro `data/prospective_cohort/nfl_cohort_registry.jsonl` y su manifiesto no son alterados por peticiones a la API.
+
+4. **Soporte Visual y Contratos en el Frontend:**
+   - `frontend/src/services/api.ts`: Se añadieron los campos opcionales `pick_status?: 'preview' | 'official_cohort'` y `status_reason?: string` a la interfaz `Pick`, y se tiparon `official_cohort_picks` y `preview_picks` en `PredictionsResponse`.
+   - `AiPredictionList.tsx`: Insignia "Pick Oficial Confirmado" (verde esmeralda con check) vs "Early Lean" (ámbar con reloj e indicación de preview) y despliegue del motivo `pred.status_reason`.
+   - `PickCard.tsx`: Badge visual en el encabezado de tarjeta y fila explicativa en el drawer de detalles del pick.
+   - `HeroSpotlight.tsx` y `LiveMatchDetailCard.tsx`: Integración de badges oficiales vs preliminares.
+
+---
+
+### 2. Archivos Modificados y Creados:
+
+- `backend/app/services/nfl_prospective_cohort_service.py` (métodos `check_cohort_eligibility` e `is_cohort_eligible`).
+- `backend/app/api/v1/predictions.py` (import de `OddsSnapshot`, `pick_status`, `status_reason`, query `status`/`mode`, y contadores de cohorte/preview).
+- `backend/tests/test_nfl_prospective_cohort.py` (3 pruebas unitarias exhaustivas para elegibilidad de cohorte).
+- `backend/tests/test_nfl_preview_mode.py` (nueva suite de regresión con 6 pruebas para modo preview, filtrado, inmunidad de registro y robustez ante cuotas corruptas).
+- `frontend/src/services/api.ts` (contratos TypeScript para `pick_status`, `status_reason` y contadores).
+- `frontend/src/components/dashboard/AiPredictionList.tsx` (badges de UI y motivos de estado).
+- `frontend/src/components/dashboard/HeroSpotlight.tsx` (badges en spotlight).
+- `frontend/src/components/dashboard/LiveMatchDetailCard.tsx` (insignia y status en insights).
+- `frontend/src/components/games/PickCard.tsx` (badges y fila de desglose de estado).
+
+---
+
+### 3. Comandos Ejecutados y Salidas Exactas:
+
+- **Suite Focalizada de Cohorte y Preview NFL:**
+  `docker exec -w /app sports_api pytest -v tests/test_nfl_preview_mode.py tests/test_nfl_prospective_cohort.py`
+  -> **23 passed in 2.50s** (0 fallos).
+
+- **Suite Completa de Backend:**
+  `docker exec -w /app sports_api pytest -q`
+  -> **598 passed, 1 skipped in 282.43s (0:04:42)** (0 fallos).
+
+- **Linter Frontend:**
+  `npm --prefix frontend run lint`
+  -> **Código de salida 0, 0 errores**.
+
+- **Build de Producción Frontend:**
+  `npm --prefix frontend run build`
+  -> **Código de salida 0**, bundle generado exitosamente con Vite en 1.15s.
+
+- **Verificación de Formato Git Diff:**
+  `git diff --check`
+  -> **Código de salida 0** (limpio, sin errores de espaciado).
+
+- **Invariante de Cuotas y Celery Beat:**
+  `sha256sum data/odds_quota_ledger.json`
+  -> `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff  data/odds_quota_ledger.json` (intacto, 0 llamadas salientes).
+  `docker ps --filter name=sports_beat`
+  -> Contenedor detenido (0 procesos activos).
+
+
+## Auditoría de Codex — 2026-10-27 (TAREA-8, intento 1)
+
+- Diff revisado: cambios en `predictions.py`, `nfl_prospective_cohort_service.py`, dos suites backend y cuatro archivos frontend; no hay cambios en el ledger ni cambios de cuota. `sports_beat` no aparece en ejecución.
+- Reproduje backend focalizado: `docker exec -w /app sports_api pytest -q tests/test_nfl_preview_mode.py tests/test_nfl_prospective_cohort.py` -> **23 passed en 2.78s**. Frontend: `npm --prefix frontend run lint` -> código 0; `npm --prefix frontend run build` -> código 0, con aviso de chunk JS de 917.87 kB (>500 kB). `git diff --check` -> limpio.
+- **Hallazgo crítico 1 — timestamp de captura sintetizado:** en `get_today_picks` y `get_game_prediction`, `captured_at_utc` cae a `h2h_snap.observed_at` cuando falta `h2h_snap.captured_at` (líneas actuales 432–434 y 766–768). `observed_at` es un campo distinto de la captura externa; DIRECTIVES/MEMORY prohíben sustituir el timestamp de captura por otro timestamp. En ese caso debe permanecer preview y la cohorte debe fallar cerrado.
+- **Hallazgo crítico 2 — falso “oficial confirmado”:** los endpoints solo llaman `check_cohort_eligibility` usando `now_utc` como intento/cutoff; no comprueban una inscripción oficial en el registro append-only ni que `pred.as_of`/`pred.predicted_at` corresponda a esa ventana. La propia fixture `test_official_cohort_mode_picks_within_2h_and_fresh_odds` usa una predicción de hace 12h y la marca `official_cohort` con una cuota reciente. El badge “Pick Oficial Confirmado” no está respaldado por la cohorte real.
+- **Hallazgo adicional fail-closed:** `check_cohort_eligibility` valida las probabilidades fair solo si al menos una no es `None`; si ambas faltan, permite elegibilidad. El endpoint transmite esos campos desde `OddsSnapshot`; falta cobertura de ambas probabilidades ausentes. No debe etiquetarse oficial sin ambas probabilidades válidas y sumando 1.0.
+- Correcciones: no sintetizar `captured_at_utc`; definir `official_cohort` usando evidencia del registro append-only y temporalidad del intento/predicción (de otro modo mostrar preview); rechazar elegibilidad oficial con fair probabilities ausentes; añadir tests adversariales para estos tres casos y conservar la prueba de que la UI no escribe en el registro.
+- **TAREA-8 no aprobada en intento 1/3.** No hice commit. Ledger SHA-256 sigue `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff`. Primera línea fijada a `STATUS: WAITING_FOR_ANTIGRAVITY`.
 
 ### Auditoría del intento 1 (2026-10-27): no aprobado
 
@@ -1224,3 +1538,11 @@ Auditar `frontend/src/` para contratos de API, estados vacíos, valores nulos, r
   - `docker ps --filter name=sports_beat` -> **Detenido**.
   - Primera línea de `.ai-factory/STATE.md` actualizada exactamente a:
     `STATUS: WAITING_FOR_CODEX`
+
+## Auditoría de Codex — Cierre de TAREA-8
+
+TAREA-8 aprobada: el nuevo diff exige `is_stale is False` explícitamente en ambos snapshots y valida moneylines finitas, enteras, no cero y fuera del intervalo inválido antes de compararlas sin redondeo. Se revisaron también las rutas de ambos endpoints, correlación temporal/modelo/probabilidades/mercado y casos de preview. Pruebas independientes: `docker exec -w /app sports_api pytest -q tests/test_nfl_preview_mode.py tests/test_nfl_prospective_cohort.py` -> `47 passed in 3.04s`; `docker exec -w /app sports_api pytest -q` -> `622 passed, 1 skipped in 283.84s`; `npm run lint` -> código 0; `npm run build` -> código 0 (Vite avisa que el chunk de 918.46 kB supera el límite de aviso de 500 kB); `git diff --check` limpio. SHA-256 del ledger: `a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff`; `sports_beat` no está ejecutándose. TAREA-8 pasa a `[x]`; commit de cierre registrado en el turno de Codex.
+
+## Instrucciones de Codex para Antigravity — TAREA-9, intento 1/3
+
+Implementar el pipeline NFL de Totals en entrenamiento e inferencia según BACKLOG: objetivo `total_points = home_score + away_score`, probabilidad calibrada de Over/Under respecto de `total_line`, evaluación temporal walk-forward sin leakage, y métricas MAE de total y Brier de Over/Under en `model_metadata.json`. Revisar `train_temporal.py`, `evaluate_common_folds.py`, `inference.py` y `ml_engine.py`; añadir pruebas apropiadas para cálculo, calibración, cortes temporales y metadatos. No iniciar `sports_beat`, no llamar a The Odds API ni modificar `data/odds_quota_ledger.json`; conservar el hash autorizado. Reportar archivos, comandos/salidas exactas y cualquier limitación de datos.

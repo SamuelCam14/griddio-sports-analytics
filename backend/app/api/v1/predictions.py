@@ -21,7 +21,7 @@ from sqlalchemy import select, func
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.game import Game, Prediction
+from app.models.game import Game, Prediction, OddsSnapshot
 from app.services.ev_engine import calculate_ev
 from ml.data_pipeline.common import project_root
 
@@ -88,6 +88,8 @@ async def get_today_picks(
     sport: str = Query(default="NBA", description="NBA | NFL"),
     tier: str = Query(default="all", description="all | PREMIUM | VALUE | SKIP"),
     period: str = Query(default="auto", description="auto | today | week | all"),
+    status: str = Query(default="all", description="all | preview | official_cohort"),
+    mode: Optional[str] = Query(default=None, description="Alias for status: all | preview | official_cohort"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -97,6 +99,7 @@ async def get_today_picks(
     - Totales (Over / Under de puntos)
     - Player Props (Yardas aéreas, terrestres y de pase)
     - Factores clave del análisis cuantitativo
+    - Estado de pick (preview / official_cohort) y motivo de status
     """
     from datetime import date, datetime, timezone, timedelta
     from sqlalchemy.orm import aliased
@@ -109,12 +112,17 @@ async def get_today_picks(
     tier_str = (tier_val if isinstance(tier_val, str) else "all").strip()
     period_val = period.default if hasattr(period, "default") else period
     period_str = (period_val if isinstance(period_val, str) else "auto").strip()
+    status_val = status.default if hasattr(status, "default") else status
+    mode_val = mode.default if hasattr(mode, "default") else mode
+    effective_status = (mode_val or status_val or "all")
+    status_str = (effective_status if isinstance(effective_status, str) else "all").strip().lower()
 
     approved_version = get_approved_model_version(sport_str)
     if not approved_version or not _production_model_enabled(sport_str):
         return {
             "sport": sport_str.upper(), "period": period_str, "total_picks": 0,
             "as_of": datetime.now(timezone.utc).isoformat(),
+            "official_cohort_picks": 0, "preview_picks": 0,
             "confianza": 0, "no_pick": 0,
             "premium": 0, "value": 0, "skip": 0, "picks": [],
             "predictions_enabled": False,
@@ -125,6 +133,7 @@ async def get_today_picks(
         return {
             "sport": sport_str.upper(), "period": period_str, "total_picks": 0,
             "as_of": datetime.now(timezone.utc).isoformat(),
+            "official_cohort_picks": 0, "preview_picks": 0,
             "confianza": 0, "no_pick": 0,
             "premium": 0, "value": 0, "skip": 0, "picks": [],
             "predictions_enabled": True,
@@ -194,6 +203,18 @@ async def get_today_picks(
         if sport_upper == "NFL"
         else settings.FRESHNESS_HOURS_NBA_ODDS
     )
+    cohort_svc = None
+    cohort_records = []
+    if sport_upper == "NFL":
+        from app.services.nfl_prospective_cohort_service import (
+            NFLProspectiveCohortService,
+            DEFAULT_VARIANT_TAG,
+        )
+        cohort_svc = NFLProspectiveCohortService()
+        try:
+            cohort_records = cohort_svc.load_all_records()
+        except Exception:
+            cohort_records = []
 
     for pred, game, home, away in rows:
         # Prepartido estricto: descartar si ya inició o no está programado
@@ -232,7 +253,7 @@ async def get_today_picks(
         h2h_res = await db.execute(h2h_stmt)
         h2h_snap = h2h_res.scalar_one_or_none()
 
-        # Validación estricta de frescura del mercado de Moneyline usado por el pick
+        # Validación de presencia y temporalidad física pre-kickoff
         if not h2h_snap:
             excluded_missing_market_data += 1
             continue
@@ -240,8 +261,8 @@ async def get_today_picks(
         h2h_obs = h2h_snap.observed_at if h2h_snap.observed_at.tzinfo else h2h_snap.observed_at.replace(tzinfo=timezone.utc)
         h2h_age = (now_utc - h2h_obs).total_seconds() / 3600.0
 
-        if h2h_age < 0 or h2h_age > freshness_limit or h2h_obs >= g_kickoff:
-            # Cuota vencida o capturada post-kickoff: abstención estricta
+        if h2h_obs >= g_kickoff or h2h_age < 0:
+            # Cuota capturada post-kickoff o con timestamp en el futuro: corrupta, abstención estricta
             excluded_missing_market_data += 1
             continue
 
@@ -265,7 +286,7 @@ async def get_today_picks(
         total_res = await db.execute(total_stmt)
         total_snap = total_res.scalar_one_or_none()
 
-        def usable_market_snapshot(snapshot, market_type: str = "any"):
+        def usable_market_snapshot(snapshot, market_type: str = "any", allow_stale: bool = True):
             if snapshot is None or snapshot.observed_at is None:
                 return False
             observed = (
@@ -274,36 +295,44 @@ async def get_today_picks(
                 else snapshot.observed_at.replace(tzinfo=timezone.utc)
             )
             age = (now_utc - observed).total_seconds() / 3600.0
-            if age < 0 or age > freshness_limit or observed >= g_kickoff:
+            if age < 0 or observed >= g_kickoff:
+                return False
+            if not allow_stale and age > freshness_limit:
                 return False
             if market_type == "spread":
-                h_spr = snapshot.home_spread
-                a_spr = snapshot.away_spread
-                if h_spr is None or not math.isfinite(h_spr):
-                    return False
-                if a_spr is not None and not math.isclose(h_spr + a_spr, 0.0, abs_tol=1e-3):
-                    return False
-                h_spr_ml = snapshot.home_spread_ml
-                a_spr_ml = snapshot.away_spread_ml
-                if h_spr_ml is not None and (not math.isfinite(h_spr_ml) or (-100 < h_spr_ml < 100) or h_spr_ml == 0):
-                    return False
-                if a_spr_ml is not None and (not math.isfinite(a_spr_ml) or (-100 < a_spr_ml < 100) or a_spr_ml == 0):
+                try:
+                    h_spr = float(snapshot.home_spread) if snapshot.home_spread is not None else None
+                    a_spr = float(snapshot.away_spread) if snapshot.away_spread is not None else None
+                    if h_spr is None or not math.isfinite(h_spr):
+                        return False
+                    if a_spr is not None and (not math.isfinite(a_spr) or not math.isclose(h_spr + a_spr, 0.0, abs_tol=1e-3)):
+                        return False
+                    h_spr_ml = float(snapshot.home_spread_ml) if snapshot.home_spread_ml is not None else None
+                    a_spr_ml = float(snapshot.away_spread_ml) if snapshot.away_spread_ml is not None else None
+                    if h_spr_ml is not None and (not math.isfinite(h_spr_ml) or (-100 < h_spr_ml < 100) or h_spr_ml == 0):
+                        return False
+                    if a_spr_ml is not None and (not math.isfinite(a_spr_ml) or (-100 < a_spr_ml < 100) or a_spr_ml == 0):
+                        return False
+                except (TypeError, ValueError):
                     return False
             elif market_type == "total":
-                tot = snapshot.total_line
-                if tot is None or not math.isfinite(tot) or tot <= 0:
-                    return False
-                o_ml = snapshot.over_ml
-                u_ml = snapshot.under_ml
-                if o_ml is not None and (not math.isfinite(o_ml) or (-100 < o_ml < 100) or o_ml == 0):
-                    return False
-                if u_ml is not None and (not math.isfinite(u_ml) or (-100 < u_ml < 100) or u_ml == 0):
+                try:
+                    tot = float(snapshot.total_line) if snapshot.total_line is not None else None
+                    if tot is None or not math.isfinite(tot) or tot <= 0:
+                        return False
+                    o_ml = float(snapshot.over_ml) if snapshot.over_ml is not None else None
+                    u_ml = float(snapshot.under_ml) if snapshot.under_ml is not None else None
+                    if o_ml is not None and (not math.isfinite(o_ml) or (-100 < o_ml < 100) or o_ml == 0):
+                        return False
+                    if u_ml is not None and (not math.isfinite(u_ml) or (-100 < u_ml < 100) or u_ml == 0):
+                        return False
+                except (TypeError, ValueError):
                     return False
             return True
 
-        if not usable_market_snapshot(spread_snap, "spread"):
+        if not usable_market_snapshot(spread_snap, "spread", allow_stale=True):
             spread_snap = None
-        if not usable_market_snapshot(total_snap, "total"):
+        if not usable_market_snapshot(total_snap, "total", allow_stale=True):
             total_snap = None
 
         spread_line = spread_snap.home_spread if spread_snap else None
@@ -322,10 +351,17 @@ async def get_today_picks(
         home_ml = h2h_snap.home_ml
         away_ml = h2h_snap.away_ml
 
+        try:
+            h_ml_f = float(home_ml) if home_ml is not None else None
+            a_ml_f = float(away_ml) if away_ml is not None else None
+        except (TypeError, ValueError):
+            excluded_missing_market_data += 1
+            continue
+
         if (
-            home_ml is None or away_ml is None or home_ml == 0 or away_ml == 0 or not bookmaker
-            or not math.isfinite(home_ml) or not math.isfinite(away_ml)
-            or (-100 < home_ml < 100) or (-100 < away_ml < 100)
+            h_ml_f is None or a_ml_f is None or h_ml_f == 0 or a_ml_f == 0 or not bookmaker
+            or not math.isfinite(h_ml_f) or not math.isfinite(a_ml_f)
+            or (-100 < h_ml_f < 100) or (-100 < a_ml_f < 100)
             or pred.home_win_prob is None or pred.away_win_prob is None
         ):
             excluded_missing_market_data += 1
@@ -403,6 +439,81 @@ async def get_today_picks(
             confluence_tier=pred.confluence_tier,
         )
 
+        p_pred_at = pred.predicted_at if (pred.predicted_at and pred.predicted_at.tzinfo) else (pred.predicted_at.replace(tzinfo=timezone.utc) if pred.predicted_at else None)
+        p_as_of_val = pred.as_of or pred.predicted_at
+        p_as_of_dt = p_as_of_val if (p_as_of_val and p_as_of_val.tzinfo) else (p_as_of_val.replace(tzinfo=timezone.utc) if p_as_of_val else None)
+        pred_ts = p_as_of_dt or p_pred_at
+        pred_age_ko = (g_kickoff - pred_ts).total_seconds() / 3600.0 if pred_ts else 999.0
+
+        if sport_upper == "NFL":
+            if cohort_svc is None:
+                from app.services.nfl_prospective_cohort_service import (
+                    NFLProspectiveCohortService,
+                    DEFAULT_VARIANT_TAG,
+                )
+                cohort_svc = NFLProspectiveCohortService()
+
+            odds_dict = {
+                "bookmaker": pick_bm or h2h_snap.bookmaker,
+                "home_ml": int(h_ml_f),
+                "away_ml": int(a_ml_f),
+                "home_fair_prob": h2h_snap.home_implied_prob,
+                "away_fair_prob": h2h_snap.away_implied_prob,
+                "captured_at_utc": (
+                    h2h_snap.captured_at.isoformat()
+                    if getattr(h2h_snap, "captured_at", None)
+                    else None
+                ),
+                "is_stale": getattr(h2h_snap, "is_stale", False),
+            }
+            attempt_ts = pred_ts or now_utc
+            is_official, reason_detail = cohort_svc.check_cohort_eligibility(
+                kickoff_utc=g_kickoff,
+                attempt_timestamp_utc=attempt_ts,
+                as_of_cutoff_utc=attempt_ts,
+                market_odds=odds_dict,
+                freshness_limit_hours=freshness_limit,
+                decision_window_hours=2.0,
+            )
+
+            # Correlación exacta con el registro append-only de cohorte:
+            reg_attempt, corr_reason = cohort_svc.find_correlated_attempt(
+                game_id=game.id,
+                canonical_external_id=getattr(game, "external_id", None),
+                pred_ts=pred_ts,
+                model_version=pred.model_version,
+                variant_tag=getattr(pred, "variant_tag", None) or DEFAULT_VARIANT_TAG,
+                home_win_prob=pred.home_win_prob,
+                away_win_prob=pred.away_win_prob,
+                market_odds=odds_dict,
+                all_records=cohort_records,
+            )
+
+            if is_official and (pred_age_ko <= 2.0) and reg_attempt is not None:
+                pick_status = "official_cohort"
+                status_reason = "Pick oficial confirmado para cohorte prospectiva (ventana pre-kickoff ≤ 2h con cuota vigente)"
+            elif is_official and (pred_age_ko <= 2.0) and reg_attempt is None:
+                pick_status = "preview"
+                status_reason = corr_reason
+            else:
+                pick_status = "preview"
+                if pred_age_ko > 2.0 and h2h_age > freshness_limit:
+                    status_reason = f"Early Lean: Evaluación a {round(pred_age_ko, 1)}h del kickoff con cuota en caché ({round(h2h_age, 1)}h de antigüedad)"
+                elif pred_age_ko > 2.0:
+                    status_reason = f"Early Lean: Predicción preliminar generada a {round(pred_age_ko, 1)}h del kickoff (confirmación oficial requiere inferencia a ≤ 2h)"
+                elif h2h_age > freshness_limit:
+                    status_reason = f"Early Lean: Cuota en caché observada hace {round(h2h_age, 1)}h (límite oficial {freshness_limit}h)"
+                else:
+                    status_reason = f"Early Lean: {reason_detail}"
+        else:
+            pick_status = "preview"
+            status_reason = f"Early Lean ({sport_upper}): Evaluación preliminar de mercado"
+
+        if status_str in ("preview", "early_lean") and pick_status != "preview":
+            continue
+        elif status_str in ("official_cohort", "cohort", "official") and pick_status != "official_cohort":
+            continue
+
         if tier_str != "all":
             t_req = tier_str.upper()
             if t_req in ("CONFIANZA", "PREMIUM", "VALUE") and normalized_tier != "CONFIANZA":
@@ -411,10 +522,6 @@ async def get_today_picks(
                 continue
             elif t_req not in ("CONFIANZA", "PREMIUM", "VALUE", "NO PICK", "NO_PICK", "SKIP") and normalized_tier != t_req:
                 continue
-
-        p_pred_at = pred.predicted_at if (pred.predicted_at and pred.predicted_at.tzinfo) else (pred.predicted_at.replace(tzinfo=timezone.utc) if pred.predicted_at else None)
-        p_as_of_val = pred.as_of or pred.predicted_at
-        p_as_of_dt = p_as_of_val if (p_as_of_val and p_as_of_val.tzinfo) else (p_as_of_val.replace(tzinfo=timezone.utc) if p_as_of_val else None)
 
         picks.append({
             "game_id":          game.id,
@@ -426,6 +533,8 @@ async def get_today_picks(
             "away_team_id":     away.id,
             "canonical_external_id": game.external_id,
             "model_version":    pred.model_version,
+            "pick_status":      pick_status,
+            "status_reason":    status_reason,
             "home_team": {
                 "id":           home.id,
                 "name":         home.name,
@@ -486,6 +595,8 @@ async def get_today_picks(
         "predictions_enabled": True,
         "total_picks": len(picks),
         "excluded_missing_market_data": excluded_missing_market_data,
+        "official_cohort_picks": sum(1 for p in picks if p.get("pick_status") == "official_cohort"),
+        "preview_picks": sum(1 for p in picks if p.get("pick_status") == "preview"),
         "confianza": sum(1 for p in picks if p["tier"] == "CONFIANZA"),
         "no_pick":   sum(1 for p in picks if p["tier"] == "NO PICK"),
         "premium":   sum(1 for p in picks if p["tier"] == "CONFIANZA"),
@@ -620,6 +731,8 @@ async def get_top_picks(
     sport: str = Query(default="NBA"),
     limit: int = Query(default=5, ge=1, le=20),
     period: str = Query(default="all"),
+    status: str = Query(default="all", description="all | preview | official_cohort"),
+    mode: Optional[str] = Query(default=None, description="Alias for status: all | preview | official_cohort"),
     db: AsyncSession = Depends(get_db),
 ):
     """Retorna los N mejores picks por EV, solo picks con ventaja matemática demostrada."""
@@ -629,8 +742,12 @@ async def get_top_picks(
     clean_limit = int(limit_val) if isinstance(limit_val, int) or (isinstance(limit_val, str) and str(limit_val).isdigit()) else 5
     period_val = period.default if hasattr(period, "default") else period
     period_str = (period_val if isinstance(period_val, str) else "all").strip()
+    status_val = status.default if hasattr(status, "default") else status
+    mode_val = mode.default if hasattr(mode, "default") else mode
+    effective_status = (mode_val or status_val or "all")
+    status_str = (effective_status if isinstance(effective_status, str) else "all").strip().lower()
 
-    all_picks = await get_today_picks(sport=sport_str, tier="all", period=period_str, db=db)
+    all_picks = await get_today_picks(sport=sport_str, tier="all", period=period_str, status=status_str, db=db)
 
     top = [
         p for p in all_picks.get("picks", [])
@@ -670,9 +787,97 @@ async def get_game_prediction(
     if not _production_model_enabled(pred_sport):
         raise HTTPException(status_code=503, detail=f"Predicciones deshabilitadas para {pred_sport.upper()}: no hay modelo aprobado para producción.")
 
+    game_res = await db.execute(select(Game).where(Game.id == game_id))
+    game_obj = game_res.scalar_one_or_none()
+    pick_status = "preview"
+    status_reason = "Evaluación preliminar de partido"
+    if game_obj:
+        from app.services.nfl_prospective_cohort_service import (
+            NFLProspectiveCohortService,
+            DEFAULT_VARIANT_TAG,
+        )
+        h2h_stmt = (
+            select(OddsSnapshot)
+            .where(OddsSnapshot.game_id == game_id)
+            .where(OddsSnapshot.home_ml.isnot(None), OddsSnapshot.away_ml.isnot(None))
+            .order_by(OddsSnapshot.observed_at.desc())
+            .limit(1)
+        )
+        h2h_res = await db.execute(h2h_stmt)
+        h2h_snap = h2h_res.scalar_one_or_none()
+        now_utc = datetime.now(timezone.utc)
+        g_kickoff = game_obj.game_date if game_obj.game_date.tzinfo else game_obj.game_date.replace(tzinfo=timezone.utc)
+        freshness_limit = settings.FRESHNESS_HOURS_NFL_ODDS if pred_sport == "nfl" else settings.FRESHNESS_HOURS_NBA_ODDS
+        if pred_sport == "nfl" and h2h_snap:
+            cohort_svc = NFLProspectiveCohortService()
+            p_pred_at = pred.predicted_at if (pred.predicted_at and pred.predicted_at.tzinfo) else (pred.predicted_at.replace(tzinfo=timezone.utc) if pred.predicted_at else None)
+            p_as_of_val = pred.as_of or pred.predicted_at
+            p_as_of_dt = p_as_of_val if (p_as_of_val and p_as_of_val.tzinfo) else (p_as_of_val.replace(tzinfo=timezone.utc) if p_as_of_val else None)
+            pred_ts = p_as_of_dt or p_pred_at
+            pred_age_ko = (g_kickoff - pred_ts).total_seconds() / 3600.0 if pred_ts else 999.0
+            h2h_obs = h2h_snap.observed_at if h2h_snap.observed_at.tzinfo else h2h_snap.observed_at.replace(tzinfo=timezone.utc)
+            h2h_age = (now_utc - h2h_obs).total_seconds() / 3600.0
+
+            try:
+                h_ml_val = int(float(h2h_snap.home_ml)) if h2h_snap.home_ml is not None else None
+                a_ml_val = int(float(h2h_snap.away_ml)) if h2h_snap.away_ml is not None else None
+            except (TypeError, ValueError):
+                h_ml_val = None
+                a_ml_val = None
+            odds_dict = {
+                "bookmaker": h2h_snap.bookmaker,
+                "home_ml": h_ml_val,
+                "away_ml": a_ml_val,
+                "home_fair_prob": h2h_snap.home_implied_prob,
+                "away_fair_prob": h2h_snap.away_implied_prob,
+                "captured_at_utc": (
+                    h2h_snap.captured_at.isoformat()
+                    if getattr(h2h_snap, "captured_at", None)
+                    else None
+                ),
+                "is_stale": getattr(h2h_snap, "is_stale", False),
+            }
+            attempt_ts = pred_ts or now_utc
+            is_official, reason_detail = cohort_svc.check_cohort_eligibility(
+                kickoff_utc=g_kickoff,
+                attempt_timestamp_utc=attempt_ts,
+                as_of_cutoff_utc=attempt_ts,
+                market_odds=odds_dict,
+                freshness_limit_hours=freshness_limit,
+                decision_window_hours=2.0,
+            )
+            reg_attempt, corr_reason = cohort_svc.find_correlated_attempt(
+                game_id=str(game_id),
+                canonical_external_id=getattr(game_obj, "external_id", None),
+                pred_ts=pred_ts,
+                model_version=pred.model_version,
+                variant_tag=getattr(pred, "variant_tag", None) or DEFAULT_VARIANT_TAG,
+                home_win_prob=pred.home_win_prob,
+                away_win_prob=pred.away_win_prob,
+                market_odds=odds_dict,
+            )
+            if is_official and (pred_age_ko <= 2.0) and reg_attempt is not None:
+                pick_status = "official_cohort"
+                status_reason = "Pick oficial confirmado para cohorte prospectiva (ventana pre-kickoff ≤ 2h con cuota vigente)"
+            elif is_official and (pred_age_ko <= 2.0) and reg_attempt is None:
+                pick_status = "preview"
+                status_reason = corr_reason
+            else:
+                pick_status = "preview"
+                if pred_age_ko > 2.0 and h2h_age > freshness_limit:
+                    status_reason = f"Early Lean: Evaluación a {round(pred_age_ko, 1)}h del kickoff con cuota en caché ({round(h2h_age, 1)}h de antigüedad)"
+                elif pred_age_ko > 2.0:
+                    status_reason = f"Early Lean: Predicción preliminar generada a {round(pred_age_ko, 1)}h del kickoff (confirmación oficial requiere inferencia a ≤ 2h)"
+                elif h2h_age > freshness_limit:
+                    status_reason = f"Early Lean: Cuota en caché observada hace {round(h2h_age, 1)}h (límite oficial {freshness_limit}h)"
+                else:
+                    status_reason = f"Early Lean: {reason_detail}"
+
     return {
         "game_id":          pred.game_id,
         "model_version":    pred.model_version,
+        "pick_status":      pick_status,
+        "status_reason":    status_reason,
         "predicted_at":     pred.predicted_at.isoformat() if pred.predicted_at else None,
         "probabilidades": {
             "home_win":     round(pred.home_win_prob, 4),

@@ -77,10 +77,24 @@ export function PickCard({ pick, bankroll }: Props) {
       {/* ─── Header ──────────────────────────────────────────────── */}
       <div className="flex items-start justify-between mb-3">
         <div>
-          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${style.badge}`}>
-            {pick.tier}
-          </span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${style.badge}`}>
+              {pick.tier}
+            </span>
+            {pick.pick_status === 'official_cohort' ? (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-500/50" title={pick.status_reason ?? 'Pick oficial confirmado'}>
+                Pick Oficial Confirmado
+              </span>
+            ) : (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-500/40" title={pick.status_reason ?? 'Early Lean (Preview)'}>
+                Early Lean
+              </span>
+            )}
+          </div>
           <p className="text-xs text-gray-500 mt-1">{pick.sport} · {pick.model_agreement}/3 modelos</p>
+          {pick.status_reason && (
+            <p className="text-[10px] text-gray-400 mt-0.5" title={pick.status_reason}>{pick.status_reason}</p>
+          )}
         </div>
         <button
           onClick={(e) => {
@@ -144,6 +158,8 @@ export function PickCard({ pick, bankroll }: Props) {
           <DetailRow label="Prob. implícita" value={pick.momio ? impliedProb(pick.momio) : '—'} />
           <DetailRow label="Bookmaker" value={pick.bookmaker ?? '—'} />
           <DetailRow label="Kelly fraction" value={pick.kelly_fraccion ? `${(pick.kelly_fraccion * 100).toFixed(2)}%` : '—'} />
+          <DetailRow label="Estado del pick" value={pick.pick_status === 'official_cohort' ? 'Oficial Confirmado' : 'Early Lean (Preview)'} />
+          {pick.status_reason && <DetailRow label="Detalle de estado" value={pick.status_reason} />}
         </div>
       )}
     </div>
