@@ -116,3 +116,47 @@ describe('formatMatchDate and formatMatchTime', () => {
     assert.ok(timeFormatted !== '—')
   })
 })
+
+describe('NFL Totals UI presentation helpers', () => {
+  it('formats over/under probabilities accurately with formatPercentage', () => {
+    assert.strictEqual(formatPercentage(0.5432), '54.3%')
+    assert.strictEqual(formatPercentage(0.5), '50.0%')
+    assert.strictEqual(formatPercentage(0.4568), '45.7%')
+  })
+
+  it('formats projected total points with 1 decimal digit and fallback', () => {
+    assert.strictEqual(formatNumber(48.5, 1), '48.5')
+    assert.strictEqual(formatNumber(45.0, 1), '45.0')
+    assert.strictEqual(formatNumber(null, 1), '—')
+    assert.strictEqual(formatNumber(NaN, 1), '—')
+    assert.strictEqual(formatNumber(Infinity, 1), '—')
+  })
+
+  it('formats push label and probability correctly', () => {
+    const pick = 'PUSH'
+    const prob = 0.5
+    const label = pick === 'PUSH' ? 'PUSH (50%)' : `${pick} (${formatPercentage(prob)})`
+    assert.strictEqual(label, 'PUSH (50%)')
+  })
+
+  it('formats over/under pick labels correctly when probability is available or missing', () => {
+    const pickOver = 'OVER'
+    const probOver = 0.582
+    const labelOver = `${pickOver} (${formatPercentage(probOver)})`
+    assert.strictEqual(labelOver, 'OVER (58.2%)')
+
+    const labelMissing = `${pickOver} (${formatPercentage(null)})`
+    assert.strictEqual(labelMissing, 'OVER (—)')
+  })
+
+  it('determines neutral totals state when pick is PUSH or odds are absent', () => {
+    const isNeutralPush = (pick: string | null, odds: number | null) =>
+      pick === 'PUSH' || !pick || odds == null
+
+    assert.strictEqual(isNeutralPush('PUSH', -110), true)
+    assert.strictEqual(isNeutralPush('OVER', null), true)
+    assert.strictEqual(isNeutralPush('UNDER', null), true)
+    assert.strictEqual(isNeutralPush('OVER', -110), false)
+    assert.strictEqual(isNeutralPush(null, -110), true)
+  })
+})

@@ -206,6 +206,9 @@ class Prediction(Base):
     # Resultado post-partido (para backtesting)
     outcome_correct     = Column(Boolean)      # ¿Acertó el pick principal?
 
+    # Proyección de puntos totales (Over/Under)
+    projected_total     = Column(Float, nullable=True)
+
     game                = relationship("Game", back_populates="predictions")
 
     __table_args__ = (

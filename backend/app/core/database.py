@@ -42,13 +42,15 @@ class Base(DeclarativeBase):
 
 
 # ─── Inicialización de tablas ────────────────────────────────────────────────
-async def init_db() -> None:
-    """Crea todas las tablas si no existen y asegura columnas de procedencia por lado."""
+async def init_db(target_engine=None, target_conn=None) -> None:
+    """Crea todas las tablas si no existen y asegura columnas de procedencia por lado y totales."""
     from sqlalchemy import text
-    async with engine.begin() as conn:
-        from app.models import Team, Game, OddsSnapshot, Prediction, BankrollEntry, SportsCard, ProviderGameCrosswalk  # noqa: F401
+    from app.models import Team, Game, OddsSnapshot, Prediction, BankrollEntry, SportsCard, ProviderGameCrosswalk  # noqa: F401
+
+    async def _run_migrations(conn):
         await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(text("""
+        if conn.dialect.name == "postgresql":
+            await conn.execute(text("""
             DO $$
             BEGIN
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='odds_snapshots' AND column_name='home_bookmaker') THEN
@@ -72,8 +74,25 @@ async def init_db() -> None:
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='odds_snapshots' AND column_name='h2h_benchmark_bookmaker') THEN
                     ALTER TABLE odds_snapshots ADD COLUMN h2h_benchmark_bookmaker VARCHAR(50);
                 END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='predictions' AND column_name='projected_total') THEN
+                    ALTER TABLE predictions ADD COLUMN projected_total DOUBLE PRECISION;
+                END IF;
             END $$;
         """))
+        elif conn.dialect.name == "sqlite":
+            res = await conn.execute(text("PRAGMA table_info(predictions)"))
+            cols = [row[1] for row in res.fetchall()]
+            if "projected_total" not in cols:
+                await conn.execute(text("ALTER TABLE predictions ADD COLUMN projected_total REAL"))
+
+    if target_conn is not None:
+        await _run_migrations(target_conn)
+    elif target_engine is not None:
+        async with target_engine.begin() as conn:
+            await _run_migrations(conn)
+    else:
+        async with engine.begin() as conn:
+            await _run_migrations(conn)
 
 
 # ─── Dependency para FastAPI ─────────────────────────────────────────────────

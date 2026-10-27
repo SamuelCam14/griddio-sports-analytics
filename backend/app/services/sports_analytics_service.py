@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import math
 import structlog
+import numpy as np
 
 from app.services.math.odds_converter import (
     american_to_decimal,
@@ -23,6 +24,71 @@ from app.services.math.ev import TierStr
 from scipy.stats import norm
 
 logger = structlog.get_logger(__name__)
+
+_CALIBRATED_TOTALS_SIGMA: Optional[float] = None
+
+
+def get_nfl_totals_calibrated_sigma(
+    force_refresh: bool = False,
+    metadata_override: Optional[Dict[str, Any]] = None,
+) -> float:
+    """Obtiene la residual_sigma calibrada de NFL Totals desde metadata OOF/training o fallback 14.6.
+
+    Excluye estrictamente cualquier métrica de holdout_evaluation para evitar que los datos
+    de holdout/lockbox intervengan en la calibración o en las probabilidades servidas en producción.
+    """
+    global _CALIBRATED_TOTALS_SIGMA
+    if not force_refresh and metadata_override is None and _CALIBRATED_TOTALS_SIGMA is not None:
+        return _CALIBRATED_TOTALS_SIGMA
+    try:
+        if metadata_override is not None:
+            meta = metadata_override
+        else:
+            from ml.data_pipeline.common import backend_root
+            meta_path = backend_root() / "ml" / "models" / "nfl" / "model_metadata.json"
+            if not meta_path.is_file():
+                return 14.6
+            import json
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+        t_eval = meta.get("totals_evaluation", {})
+        # EXCLUSIÓN ESTRICTA DE HOLDOUT:
+        # Jamás consultar t_eval.get("holdout_evaluation") ni holdout de modelos individuales.
+        # Solo se extrae residual_sigma de metrics de entrenamiento/OOF o de folds de desarrollo.
+        parsed_sigma = None
+        raw_sigma = t_eval.get("metrics", {}).get("residual_sigma")
+        if raw_sigma is not None and not isinstance(raw_sigma, (bool, np.bool_)):
+            try:
+                candidate = float(raw_sigma)
+                if math.isfinite(candidate) and candidate > 0:
+                    parsed_sigma = candidate
+            except (TypeError, ValueError):
+                parsed_sigma = None
+
+        if parsed_sigma is None:
+            sel_model = t_eval.get("selected_model", "ridge")
+            model_info = t_eval.get("models", {}).get(sel_model, {})
+            folds = model_info.get("folds", [])
+            valid_fold_sigmas = []
+            for f in folds:
+                f_sig = f.get("residual_sigma")
+                if f_sig is not None and not isinstance(f_sig, (bool, np.bool_)):
+                    try:
+                        f_candidate = float(f_sig)
+                        if math.isfinite(f_candidate) and f_candidate > 0:
+                            valid_fold_sigmas.append(f_candidate)
+                    except (TypeError, ValueError):
+                        pass
+            if valid_fold_sigmas:
+                parsed_sigma = float(np.mean(valid_fold_sigmas))
+
+        if parsed_sigma is not None:
+            if metadata_override is None:
+                _CALIBRATED_TOTALS_SIGMA = parsed_sigma
+            return parsed_sigma
+    except Exception:
+        pass
+    return 14.6
 
 
 def generate_nfl_matchup_analytics(
@@ -57,6 +123,8 @@ def generate_nfl_matchup_analytics(
     confluence_tier: Optional[str] = None,
     qb_expected_epa_lost_home: Optional[float] = None,
     qb_expected_epa_lost_away: Optional[float] = None,
+    model_projected_total: Optional[float] = None,
+    totals_residual_sigma: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Genera el análisis probabilístico, líneas de spread, totales y player props reales para un partido NFL.
@@ -64,16 +132,59 @@ def generate_nfl_matchup_analytics(
     el Best Bet (#1 Pick) para indicar con total transparencia dónde se encuentra la ventaja matemática.
     """
     # 0. Sanitización de líneas de spread, total y momios observados (fail-closed)
-    if total_line is not None and (not math.isfinite(total_line) or total_line <= 0):
-        total_line = None
-    if spread_line is not None and not math.isfinite(spread_line):
-        spread_line = None
+    if total_line is not None:
+        if isinstance(total_line, (bool, np.bool_)):
+            total_line = None
+        else:
+            try:
+                tl = float(total_line)
+                if not math.isfinite(tl) or tl <= 0:
+                    total_line = None
+                else:
+                    total_line = tl
+            except (TypeError, ValueError):
+                total_line = None
+
+    parsed_proj_total = None
+    if model_projected_total is not None:
+        if isinstance(model_projected_total, (int, float, np.floating, np.integer, str)) and not isinstance(model_projected_total, (bool, np.bool_)):
+            try:
+                pt = float(model_projected_total)
+                if math.isfinite(pt) and pt > 0:
+                    parsed_proj_total = pt
+            except (TypeError, ValueError):
+                parsed_proj_total = None
+
+    calibrated_default_sigma = get_nfl_totals_calibrated_sigma()
+    parsed_totals_sigma = calibrated_default_sigma
+    if totals_residual_sigma is not None:
+        if isinstance(totals_residual_sigma, (int, float, np.floating, np.integer, str)) and not isinstance(totals_residual_sigma, (bool, np.bool_)):
+            try:
+                ts = float(totals_residual_sigma)
+                if math.isfinite(ts) and ts > 0:
+                    parsed_totals_sigma = ts
+            except (TypeError, ValueError):
+                parsed_totals_sigma = calibrated_default_sigma
+
+    if spread_line is not None:
+        if isinstance(spread_line, (bool, np.bool_)):
+            spread_line = None
+        else:
+            try:
+                sl = float(spread_line)
+                if not math.isfinite(sl):
+                    spread_line = None
+                else:
+                    spread_line = sl
+            except (TypeError, ValueError):
+                spread_line = None
+
     def _is_valid_american(val: Any) -> bool:
-        if val is None:
+        if not isinstance(val, (int, float, np.floating, np.integer, str)) or isinstance(val, (bool, np.bool_)):
             return False
         try:
             f = float(val)
-            return math.isfinite(f) and f != 0 and (-100 >= f or f >= 100)
+            return math.isfinite(f) and f.is_integer() and f != 0 and (-100 >= f or f >= 100)
         except (TypeError, ValueError):
             return False
 
@@ -93,9 +204,21 @@ def generate_nfl_matchup_analytics(
         and (-100 >= home_ml or home_ml >= 100)
         and (-100 >= away_ml or away_ml >= 100)
     )
-    if market_prob_home_no_vig is not None and market_prob_away_no_vig is not None:
-        p_h_fair = market_prob_home_no_vig
-        p_a_fair = market_prob_away_no_vig
+    valid_market_fair = (
+        market_prob_home_no_vig is not None
+        and market_prob_away_no_vig is not None
+        and isinstance(market_prob_home_no_vig, (int, float, np.floating, np.integer))
+        and isinstance(market_prob_away_no_vig, (int, float, np.floating, np.integer))
+        and not isinstance(market_prob_home_no_vig, (bool, np.bool_))
+        and not isinstance(market_prob_away_no_vig, (bool, np.bool_))
+        and math.isfinite(market_prob_home_no_vig)
+        and math.isfinite(market_prob_away_no_vig)
+        and 0.0 < market_prob_home_no_vig < 1.0
+        and 0.0 < market_prob_away_no_vig < 1.0
+    )
+    if valid_market_fair:
+        p_h_fair = float(market_prob_home_no_vig)
+        p_a_fair = float(market_prob_away_no_vig)
         if valid_ml:
             p_h_raw = american_to_implied_prob(home_ml)
             p_a_raw = american_to_implied_prob(away_ml)
@@ -113,6 +236,8 @@ def generate_nfl_matchup_analytics(
     model_valid = (
         model_prob_home is not None
         and model_prob_away is not None
+        and not isinstance(model_prob_home, (bool, np.bool_))
+        and not isinstance(model_prob_away, (bool, np.bool_))
         and math.isfinite(model_prob_home)
         and math.isfinite(model_prob_away)
         and 0.0 < model_prob_home < 1.0
@@ -129,10 +254,15 @@ def generate_nfl_matchup_analytics(
         # QB se mantiene como diagnóstico hasta completar la ablación de Punto 6.
         proj_margin_raw = proj_margin_base
         t_base = total_line if total_line is not None else 44.0
-        proj_home_score = round((t_base + proj_margin_raw) / 2.0, 1)
-        proj_away_score = round((t_base - proj_margin_raw) / 2.0, 1)
+        if parsed_proj_total is not None:
+            proj_total = round(parsed_proj_total, 1)
+        else:
+            proj_total = None
+
+        effective_total_for_scores = proj_total if proj_total is not None else t_base
+        proj_home_score = round((effective_total_for_scores + proj_margin_raw) / 2.0, 1)
+        proj_away_score = round((effective_total_for_scores - proj_margin_raw) / 2.0, 1)
         proj_margin = round(proj_home_score - proj_away_score, 1)
-        proj_total = round(t_base, 1) if total_line is not None else None
     else:
         proj_margin_raw = None
         proj_margin = None
@@ -268,27 +398,125 @@ def generate_nfl_matchup_analytics(
         fair_h_spr, fair_a_spr, spr_vig = None, None, None
 
     # 5. Análisis Cuantitativo de Totales
-    # Hasta contar con modelo validado específicamente para totales,
-    # se omiten recomendaciones, probabilidades OVER/UNDER y picks sintéticos.
-    totals_pick = None
-    totals_prob = None
-    totals_recommendation = (
-        "Totales no modelados; se omiten proyecciones y picks sin modelo validado."
-        if total_line is not None
-        else "Totales no disponibles en cuotas observadas."
+    # Respetar totals_evaluation.status == "experimental" y production_enabled == false:
+    # no presentar Totals como pick oficial ni EV validado;
+    # cualquier vista debe dejar claro el estado experimental hasta que exista evidencia prospectiva de skill.
+    totals_is_available = (
+        total_line is not None
+        and not totals_odds_corrupt
+        and model_valid
+        and proj_total is not None
     )
-    totals_tier = "UNAVAILABLE"
-    totals_edge = None
-    ev_totals = None
-    totals_kelly_frac = None
-    totals_kelly_stake = None
 
-    if over_ml is not None and under_ml is not None and not totals_odds_corrupt:
-        p_o_raw = american_to_implied_prob(over_ml)
-        p_u_raw = american_to_implied_prob(under_ml)
-        fair_o, fair_u, totals_vig = remove_vig(p_o_raw, p_u_raw)
+    if totals_is_available:
+        z_tot = (proj_total - total_line) / parsed_totals_sigma
+        p_over_raw = float(norm.cdf(z_tot))
+        p_under_raw = 1.0 - p_over_raw
+
+        has_observed_totals_odds = (
+            over_ml is not None
+            and under_ml is not None
+            and not totals_odds_corrupt
+        )
+
+        if has_observed_totals_odds:
+            dec_over = american_to_decimal(over_ml)
+            dec_under = american_to_decimal(under_ml)
+            ev_over = (p_over_raw * (dec_over - 1.0) * 100.0) - ((1.0 - p_over_raw) * 100.0)
+            ev_under = (p_under_raw * (dec_under - 1.0) * 100.0) - ((1.0 - p_under_raw) * 100.0)
+            p_o_raw = american_to_implied_prob(over_ml)
+            p_u_raw = american_to_implied_prob(under_ml)
+            fair_o, fair_u, totals_vig = remove_vig(p_o_raw, p_u_raw)
+            edge_over = p_over_raw - fair_o
+            edge_under = p_under_raw - fair_u
+        else:
+            ev_over = None
+            ev_under = None
+            fair_o, fair_u, totals_vig = None, None, None
+            edge_over = None
+            edge_under = None
+
+        # Manejo de Push y selección de lado
+        if math.isclose(proj_total, total_line, abs_tol=1e-3):
+            totals_pick = "PUSH"
+            totals_prob = 0.5
+            p_over = 0.5
+            p_under = 0.5
+            ev_totals = 0.0 if has_observed_totals_odds else None
+            totals_edge = 0.0 if has_observed_totals_odds else None
+            totals_odds_american = None
+            totals_recommendation = (
+                f"Modelo experimental (sin producción): Proyección {proj_total:.1f} vs Línea {total_line:.1f} (PUSH / Línea Neutra)."
+            )
+        elif proj_total > total_line:
+            totals_pick = "OVER"
+            totals_prob = round(p_over_raw, 4)
+            p_over = round(p_over_raw, 4)
+            p_under = round(p_under_raw, 4)
+            ev_totals = round(ev_over, 2) if has_observed_totals_odds else None
+            totals_edge = round(edge_over * 100.0, 1) if (has_observed_totals_odds and edge_over is not None) else None
+            totals_odds_american = over_ml if has_observed_totals_odds else None
+            if has_observed_totals_odds:
+                totals_recommendation = (
+                    f"Modelo experimental (sin producción): Proyección {proj_total:.1f} vs Línea {total_line:.1f} (OVER)."
+                )
+            else:
+                totals_recommendation = (
+                    f"Modelo experimental (sin producción): Proyección {proj_total:.1f} vs Línea {total_line:.1f} (OVER). Sin momios observados para cálculo de EV."
+                )
+        else:
+            totals_pick = "UNDER"
+            totals_prob = round(p_under_raw, 4)
+            p_over = round(p_over_raw, 4)
+            p_under = round(p_under_raw, 4)
+            ev_totals = round(ev_under, 2) if has_observed_totals_odds else None
+            totals_edge = round(edge_under * 100.0, 1) if (has_observed_totals_odds and edge_under is not None) else None
+            totals_odds_american = under_ml if has_observed_totals_odds else None
+            if has_observed_totals_odds:
+                totals_recommendation = (
+                    f"Modelo experimental (sin producción): Proyección {proj_total:.1f} vs Línea {total_line:.1f} (UNDER)."
+                )
+            else:
+                totals_recommendation = (
+                    f"Modelo experimental (sin producción): Proyección {proj_total:.1f} vs Línea {total_line:.1f} (UNDER). Sin momios observados para cálculo de EV."
+                )
+
+        # Totals se mantiene estrictamente experimental: NO tier CONFIANZA ni pick oficial
+        totals_tier = "EXPERIMENTAL"
+        totals_kelly_frac = 0.0
+        totals_kelly_stake = None
+        totals_has_kelly_edge = False
     else:
-        fair_o, fair_u, totals_vig = None, None, None
+        totals_pick = None
+        totals_prob = None
+        p_over = None
+        p_under = None
+        totals_recommendation = (
+            "Totales no disponibles sin modelo de inferencia o proyección."
+            if proj_total is None
+            else (
+                "Totales no disponibles en cuotas observadas."
+                if total_line is None
+                else (
+                    "Momios de totales explícitamente inválidos."
+                    if totals_odds_corrupt
+                    else "Totales no disponibles."
+                )
+            )
+        )
+        totals_tier = "UNAVAILABLE"
+        totals_edge = None
+        ev_totals = None
+        totals_kelly_frac = None
+        totals_kelly_stake = None
+        totals_has_kelly_edge = False
+        totals_odds_american = None
+        if over_ml is not None and under_ml is not None and not totals_odds_corrupt:
+            p_o_raw = american_to_implied_prob(over_ml)
+            p_u_raw = american_to_implied_prob(under_ml)
+            fair_o, fair_u, totals_vig = remove_vig(p_o_raw, p_u_raw)
+        else:
+            fair_o, fair_u, totals_vig = None, None, None
 
     # 6. Player Props Reales Enriquecidos con EV y Kelly Individual
     enriched_props: List[Dict[str, Any]] = []
@@ -389,7 +617,20 @@ def generate_nfl_matchup_analytics(
     else:
         factors.append("Línea de Hándicap: No disponible en cuotas observadas.")
 
-    if total_line is not None:
+    if total_line is not None and totals_is_available:
+        if totals_pick == "PUSH":
+            factors.append(
+                f"Línea de Puntos Totales en {total_line}: Proyección {proj_total:.1f} pts (PUSH / Línea Neutra, prob 50.0%); Modelo Experimental (No Producción)."
+            )
+        else:
+            factors.append(
+                f"Línea de Puntos Totales en {total_line}: Proyección {proj_total:.1f} pts ({totals_pick}, prob {totals_prob:.1%}); Modelo Experimental (No Producción)."
+            )
+    elif total_line is not None and totals_odds_corrupt:
+        factors.append(
+            f"Línea de Puntos Totales en {total_line}: Momio observado explícitamente inválido; se abstiene de calcular probabilidades o EV."
+        )
+    elif total_line is not None:
         factors.append(
             f"Línea de Puntos Totales en {total_line}: Sin modelo validado de totales; se omiten proyecciones OVER/UNDER."
         )
@@ -479,9 +720,10 @@ def generate_nfl_matchup_analytics(
             "tier": spread_tier,
         },
         "totals": {
-            "status": "available" if (total_line is not None and not totals_odds_corrupt) else "unavailable",
+            "status": "available" if totals_is_available else "unavailable",
+            "is_experimental": True,
             "market_line": total_line,
-            "odds_american": None,
+            "odds_american": totals_odds_american,
             "over_ml": over_ml if not over_explicit_invalid else None,
             "under_ml": under_ml if not under_explicit_invalid else None,
             "over_bookmaker": total_over_bookmaker or bookmaker,
@@ -494,11 +736,14 @@ def generate_nfl_matchup_analytics(
             "pick": totals_pick,
             "recommendation": totals_recommendation,
             "probability": totals_prob,
+            "prob_over": round(p_over, 4) if p_over is not None else None,
+            "prob_under": round(p_under, 4) if p_under is not None else None,
             "edge_pct": totals_edge,
             "ev_dollars": round(ev_totals, 2) if ev_totals is not None else None,
             "kelly_stake": totals_kelly_stake,
             "has_kelly_edge": False,
             "tier": totals_tier,
+            "residual_sigma": parsed_totals_sigma,
         },
         "player_props": enriched_props,
         "key_factors": factors,

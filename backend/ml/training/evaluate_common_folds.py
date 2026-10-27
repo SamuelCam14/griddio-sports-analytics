@@ -27,7 +27,7 @@ from sklearn.metrics import accuracy_score, brier_score_loss, log_loss, mean_abs
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from ml.data_pipeline.common import backend_root, project_root, write_manifest
+from ml.data_pipeline.common import DataQualityError, backend_root, project_root, write_manifest
 from ml.data_pipeline.temporal_features import NBA_GAME_STATS, NFL_GAME_STATS, feature_columns
 from ml.models.bounded_linear import BoundedLogisticRegression
 from ml.training.train_temporal import (
@@ -141,6 +141,12 @@ def run_nfl_common_folds(output_dir: Path) -> dict:
 
     for fold_no, (train_idx, test_idx) in enumerate(folds, 1):
         test_sub = df_inj.iloc[test_idx].copy()
+        max_train_d = pd.to_datetime(df_inj.iloc[train_idx]["game_date"]).dt.date.max()
+        min_test_d = pd.to_datetime(test_sub["game_date"]).dt.date.min()
+        if not (max_train_d < min_test_d):
+            raise DataQualityError(
+                f"Violación cronológica en fold {fold_no}: max(train)={max_train_d} >= min(test)={min_test_d}"
+            )
         y_train = df_inj.iloc[train_idx]["target_home_win"].astype(int).to_numpy()
         y_test = test_sub["target_home_win"].astype(int).to_numpy()
 

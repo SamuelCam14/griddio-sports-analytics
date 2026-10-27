@@ -16,6 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 import pandas as pd
+import numpy as np
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -81,6 +82,19 @@ def get_approved_model_version(sport: str) -> Optional[str]:
 def _production_model_enabled(sport: str) -> bool:
     """Require explicit per-sport approval before any stored prediction is served."""
     return get_approved_model_version(sport) is not None
+
+
+def _parse_american_int(val: Any) -> Optional[int]:
+    """Valida y convierte un momio americano a entero estricto sin truncar ni redondear fracciones."""
+    if not isinstance(val, (int, float, np.floating, np.integer, str)) or isinstance(val, (bool, np.bool_)):
+        return None
+    try:
+        f = float(val)
+        if not math.isfinite(f) or not f.is_integer() or f == 0 or (-100 < f < 100):
+            return None
+        return int(f)
+    except (TypeError, ValueError):
+        return None
 
 
 @router.get("/today", summary="Todos los picks y cartelera deportiva")
@@ -322,9 +336,9 @@ async def get_today_picks(
                         return False
                     o_ml = float(snapshot.over_ml) if snapshot.over_ml is not None else None
                     u_ml = float(snapshot.under_ml) if snapshot.under_ml is not None else None
-                    if o_ml is not None and (not math.isfinite(o_ml) or (-100 < o_ml < 100) or o_ml == 0):
+                    if o_ml is not None and (not math.isfinite(o_ml) or not o_ml.is_integer() or (-100 < o_ml < 100) or o_ml == 0):
                         return False
-                    if u_ml is not None and (not math.isfinite(u_ml) or (-100 < u_ml < 100) or u_ml == 0):
+                    if u_ml is not None and (not math.isfinite(u_ml) or not u_ml.is_integer() or (-100 < u_ml < 100) or u_ml == 0):
                         return False
                 except (TypeError, ValueError):
                     return False
@@ -416,10 +430,10 @@ async def get_today_picks(
             away_ml=away_ml,
             spread_line=spread_line,
             total_line=total_line,
-            home_spread_ml=spread_snap.home_spread_ml if spread_snap else None,
-            away_spread_ml=spread_snap.away_spread_ml if spread_snap else None,
-            over_ml=total_snap.over_ml if total_snap else None,
-            under_ml=total_snap.under_ml if total_snap else None,
+            home_spread_ml=_parse_american_int(spread_snap.home_spread_ml) if spread_snap else None,
+            away_spread_ml=_parse_american_int(spread_snap.away_spread_ml) if spread_snap else None,
+            over_ml=_parse_american_int(total_snap.over_ml) if total_snap else None,
+            under_ml=_parse_american_int(total_snap.under_ml) if total_snap else None,
             bookmaker=pick_bm,
             home_bookmaker=h2h_home_bm,
             away_bookmaker=h2h_away_bm,
@@ -437,6 +451,7 @@ async def get_today_picks(
             model_prob_away=pred.away_win_prob,
             model_agreement=pred.model_agreement,
             confluence_tier=pred.confluence_tier,
+            model_projected_total=getattr(pred, "projected_total", None),
         )
 
         p_pred_at = pred.predicted_at if (pred.predicted_at and pred.predicted_at.tzinfo) else (pred.predicted_at.replace(tzinfo=timezone.utc) if pred.predicted_at else None)
@@ -818,12 +833,8 @@ async def get_game_prediction(
             h2h_obs = h2h_snap.observed_at if h2h_snap.observed_at.tzinfo else h2h_snap.observed_at.replace(tzinfo=timezone.utc)
             h2h_age = (now_utc - h2h_obs).total_seconds() / 3600.0
 
-            try:
-                h_ml_val = int(float(h2h_snap.home_ml)) if h2h_snap.home_ml is not None else None
-                a_ml_val = int(float(h2h_snap.away_ml)) if h2h_snap.away_ml is not None else None
-            except (TypeError, ValueError):
-                h_ml_val = None
-                a_ml_val = None
+            h_ml_val = _parse_american_int(h2h_snap.home_ml) if h2h_snap else None
+            a_ml_val = _parse_american_int(h2h_snap.away_ml) if h2h_snap else None
             odds_dict = {
                 "bookmaker": h2h_snap.bookmaker,
                 "home_ml": h_ml_val,
@@ -873,6 +884,83 @@ async def get_game_prediction(
                 else:
                     status_reason = f"Early Lean: {reason_detail}"
 
+    totals_data = {
+        "status": "unavailable",
+        "is_experimental": True,
+        "market_line": None,
+        "odds_american": None,
+        "over_ml": None,
+        "under_ml": None,
+        "over_bookmaker": None,
+        "under_bookmaker": None,
+        "bookmaker": None,
+        "market_prob_over_no_vig": None,
+        "market_prob_under_no_vig": None,
+        "market_vig": None,
+        "projected_total": None,
+        "pick": None,
+        "recommendation": "Totales no disponibles en cuotas observadas.",
+        "probability": None,
+        "prob_over": None,
+        "prob_under": None,
+        "edge_pct": None,
+        "ev_dollars": None,
+        "kelly_stake": None,
+        "has_kelly_edge": False,
+        "tier": "UNAVAILABLE",
+        "residual_sigma": None,
+    }
+    if game_obj and pred_sport == "nfl":
+        from app.services.sports_analytics_service import generate_nfl_matchup_analytics
+        target_tot_snap = h2h_snap if (h2h_snap and getattr(h2h_snap, "total_line", None) is not None) else None
+        if target_tot_snap is None:
+            tot_stmt = (
+                select(OddsSnapshot)
+                .where(OddsSnapshot.game_id == game_id)
+                .where(OddsSnapshot.total_line.isnot(None))
+                .order_by(OddsSnapshot.observed_at.desc())
+                .limit(1)
+            )
+            tot_res = await db.execute(tot_stmt)
+            target_tot_snap = tot_res.scalar_one_or_none()
+
+        if target_tot_snap and target_tot_snap.observed_at:
+            tot_obs = target_tot_snap.observed_at if target_tot_snap.observed_at.tzinfo else target_tot_snap.observed_at.replace(tzinfo=timezone.utc)
+            if tot_obs >= g_kickoff:
+                target_tot_snap = None
+
+        tot_line_raw = getattr(target_tot_snap, "total_line", None) if target_tot_snap else None
+        tot_line_val = None
+        if isinstance(tot_line_raw, (int, float)) and not isinstance(tot_line_raw, (bool, np.bool_)):
+            if math.isfinite(tot_line_raw) and tot_line_raw > 0:
+                tot_line_val = float(tot_line_raw)
+
+        if tot_line_val is not None:
+            over_ml_raw = getattr(target_tot_snap, "over_ml", None)
+            under_ml_raw = getattr(target_tot_snap, "under_ml", None)
+            o_ml_val = _parse_american_int(over_ml_raw)
+            u_ml_val = _parse_american_int(under_ml_raw)
+
+            home_team_name = game_obj.home_team.name if (hasattr(game_obj, "home_team") and game_obj.home_team and hasattr(game_obj.home_team, "name")) else "Home"
+            away_team_name = game_obj.away_team.name if (hasattr(game_obj, "away_team") and game_obj.away_team and hasattr(game_obj.away_team, "name")) else "Away"
+
+            analytics_tot = generate_nfl_matchup_analytics(
+                home_team=home_team_name,
+                away_team=away_team_name,
+                game_date=game_obj.game_date,
+                home_ml=h_ml_val if h_ml_val is not None else -110,
+                away_ml=a_ml_val if a_ml_val is not None else 110,
+                total_line=tot_line_val,
+                over_ml=o_ml_val,
+                under_ml=u_ml_val,
+                total_over_bookmaker=getattr(target_tot_snap, "over_bookmaker", None),
+                total_under_bookmaker=getattr(target_tot_snap, "under_bookmaker", None),
+                model_prob_home=pred.home_win_prob,
+                model_prob_away=pred.away_win_prob,
+                model_projected_total=getattr(pred, "projected_total", None),
+            )
+            totals_data = analytics_tot.get("totals", totals_data)
+
     return {
         "game_id":          pred.game_id,
         "model_version":    pred.model_version,
@@ -902,6 +990,7 @@ async def get_game_prediction(
                 "tiene_ventaja":pred.away_has_edge,
             },
         },
+        "totals":           totals_data,
         "recomendacion": (
             "PREMIUM — Apostar con criterio Kelly"    if pred.confluence_tier and "PREMIUM" in pred.confluence_tier.upper()
             else "VALUE — Apostar 50% Kelly" if pred.confluence_tier and "VALUE" in pred.confluence_tier.upper()

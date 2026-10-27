@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { Star, AlertCircle } from 'lucide-react'
 import { useAppStore } from '@/store/useAppStore'
 import type { Pick } from '@/services/api'
-import { formatEvDollars } from '@/utils/dashboard'
+import { formatEvDollars, formatNumber, formatPercentage } from '@/utils/dashboard'
 
 interface Props {
   pick: Pick
@@ -152,14 +152,50 @@ export function PickCard({ pick, bankroll }: Props) {
       )}
 
       {/* ─── Detalles expandidos ──────────────────────────────────── */}
-      {expanded && pick.tiene_ventaja && (
+      {expanded && (
         <div className="mt-4 pt-4 border-t border-gray-800 space-y-2 text-sm">
-          <DetailRow label="Prob. modelo" value={`${((pick.prob_modelo ?? 0) * 100).toFixed(1)}%`} />
-          <DetailRow label="Prob. implícita" value={pick.momio ? impliedProb(pick.momio) : '—'} />
-          <DetailRow label="Bookmaker" value={pick.bookmaker ?? '—'} />
-          <DetailRow label="Kelly fraction" value={pick.kelly_fraccion ? `${(pick.kelly_fraccion * 100).toFixed(2)}%` : '—'} />
+          {pick.tiene_ventaja && (
+            <>
+              <DetailRow label="Prob. modelo" value={`${((pick.prob_modelo ?? 0) * 100).toFixed(1)}%`} />
+              <DetailRow label="Prob. implícita" value={pick.momio ? impliedProb(pick.momio) : '—'} />
+              <DetailRow label="Bookmaker" value={pick.bookmaker ?? '—'} />
+              <DetailRow label="Kelly fraction" value={pick.kelly_fraccion ? `${(pick.kelly_fraccion * 100).toFixed(2)}%` : '—'} />
+            </>
+          )}
           <DetailRow label="Estado del pick" value={pick.pick_status === 'official_cohort' ? 'Oficial Confirmado' : 'Early Lean (Preview)'} />
           {pick.status_reason && <DetailRow label="Detalle de estado" value={pick.status_reason} />}
+
+          {/* Mercado de Totales (Experimental) */}
+          {pick.totals &&
+          pick.totals.status === 'available' &&
+          pick.totals.market_line != null &&
+          Number.isFinite(pick.totals.market_line) &&
+          pick.totals.market_line > 0 &&
+          pick.totals.projected_total != null &&
+          Number.isFinite(pick.totals.projected_total) ? (
+            <div className="pt-2 mt-2 border-t border-gray-800/80">
+              <div className="flex items-center justify-between text-xs mb-1">
+                <span className="text-gray-400 font-medium">Totales (Over/Under)</span>
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-950/70 text-amber-300 border border-amber-500/30">
+                  Experimental
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-gray-300">
+                  Línea {pick.totals.market_line} · Proy: {formatNumber(pick.totals.projected_total, 1)}
+                </span>
+                <span className="font-mono font-semibold text-gray-200">
+                  {pick.totals.pick === 'PUSH'
+                    ? 'PUSH (50%)'
+                    : pick.totals.pick
+                    ? `${pick.totals.pick} (${formatPercentage(pick.totals.probability)})`
+                    : 'Sin pick'}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <DetailRow label="Totales" value="Línea o proyección no disponible" />
+          )}
         </div>
       )}
     </div>

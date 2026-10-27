@@ -211,6 +211,52 @@ class TestNFLTotalsWalkForwardEvaluation:
         fallback = estimate_oof_residual_sigma(Ridge(), X_train, y_train, dates=same_date, default_sigma=13.5)
         assert fallback == 13.5
 
+    def test_estimate_oof_residual_sigma_fails_closed_on_corrupt_dates(self):
+        """estimate_oof_residual_sigma no silencia DataQualityError si las fechas son nulas o corruptas."""
+        from sklearn.linear_model import Ridge
+        y_train = pd.Series([45.0, 52.0, 38.0, 41.0, 49.0])
+        X_train = pd.DataFrame({"f1": [1.0, 2.0, 1.5, 2.5, 3.0]})
+        corrupt_dates = ["2023-09-10", None, "2023-09-12", "invalid_date", "2023-09-14"]
+
+        with pytest.raises(DataQualityError) as exc:
+            estimate_oof_residual_sigma(Ridge(), X_train, y_train, dates=corrupt_dates)
+        assert "fechas contienen valores nulos o inválidos" in str(exc.value)
+
+    def test_estimate_oof_residual_sigma_fails_closed_on_dimension_mismatch(self):
+        """estimate_oof_residual_sigma falla cerrado si las longitudes de dates, X_train o y_train no coinciden."""
+        from sklearn.linear_model import Ridge
+        y_train = pd.Series([45.0, 52.0, 38.0, 41.0])
+        X_train = pd.DataFrame({"f1": [1.0, 2.0, 1.5, 2.5]})
+        mismatched_dates = ["2023-09-10", "2023-09-11"]  # len 2 != len 4
+
+        with pytest.raises(DataQualityError) as exc:
+            estimate_oof_residual_sigma(Ridge(), X_train, y_train, dates=mismatched_dates)
+        assert "Dimensiones inconsistentes" in str(exc.value)
+
+        # X_train len mismatch
+        with pytest.raises(DataQualityError) as exc2:
+            estimate_oof_residual_sigma(Ridge(), X_train.iloc[:2], y_train, dates=["2023-09-10"] * 4)
+        assert "Dimensiones inconsistentes" in str(exc2.value)
+
+    @pytest.mark.parametrize("bad_default_sigma", [0, 0.0, -5.0, float("nan"), float("inf"), True, False])
+    def test_estimate_oof_residual_sigma_fails_closed_on_invalid_default_sigma(self, bad_default_sigma):
+        """estimate_oof_residual_sigma falla cerrado si default_sigma es <= 0, no finito o booleano."""
+        from sklearn.linear_model import Ridge
+        y_train = pd.Series([45.0, 52.0, 38.0, 41.0])
+        X_train = pd.DataFrame({"f1": [1.0, 2.0, 1.5, 2.5]})
+        with pytest.raises(DataQualityError) as exc:
+            estimate_oof_residual_sigma(Ridge(), X_train, y_train, default_sigma=bad_default_sigma)
+        assert "default_sigma debe ser un número finito > 0" in str(exc.value)
+
+    @pytest.mark.parametrize("invalid_param", [0, -1, True, False])
+    def test_expanding_chronological_splits_validates_parameters(self, invalid_param):
+        """generate_expanding_chronological_splits valida que n_splits y min_train_dates sean enteros >= 1 y no booleanos."""
+        dates = pd.Series(["2023-09-10", "2023-09-11", "2023-09-12"])
+        with pytest.raises(ValueError):
+            generate_expanding_chronological_splits(dates, n_splits=invalid_param)
+        with pytest.raises(ValueError):
+            generate_expanding_chronological_splits(dates, min_train_dates=invalid_param)
+
 
 # ==============================================================================
 # 3. Probability Calibration & Over/Under Math
@@ -706,6 +752,8 @@ class TestResidualSigmaFailClosed:
         -10.0,
         "not_a_number",
         "invalid_text",
+        True,
+        False,
         [],
         {},
     ])
@@ -840,7 +888,7 @@ class TestLegacyMLEngineTotalsFailClosed:
             engine.predict_totals({"wpct": 0.5}, {"wpct": 0.5}, total_line=True)
         assert "no puede ser de tipo booleano" in str(exc.value)
 
-    @pytest.mark.parametrize("bad_val", [np.nan, np.inf, -np.inf, "invalid_str"])
+    @pytest.mark.parametrize("bad_val", [np.nan, np.inf, -np.inf, "invalid_str", True, False])
     def test_ml_engine_predict_totals_fails_closed_on_non_finite_projected_total(self, bad_val):
         """
         CODEX REQUISITO: Un modelo inyectado que devuelva NaN/±inf o no numérico
@@ -857,12 +905,27 @@ class TestLegacyMLEngineTotalsFailClosed:
         # 1. Con total_line
         with pytest.raises(ValueError) as exc1:
             engine.predict_totals({"wpct": 0.5}, {"wpct": 0.5}, total_line=45.5)
-        assert any(term in str(exc1.value) for term in ["estrictamente finito", "no convertible a float"])
+        assert any(term in str(exc1.value) for term in ["estrictamente finito", "no convertible a float", "booleano"])
 
         # 2. Sin total_line (total_line=None)
         with pytest.raises(ValueError) as exc2:
             engine.predict_totals({"wpct": 0.5}, {"wpct": 0.5}, total_line=None)
-        assert any(term in str(exc2.value) for term in ["estrictamente finito", "no convertible a float"])
+        assert any(term in str(exc2.value) for term in ["estrictamente finito", "no convertible a float", "booleano"])
+
+    def test_ml_engine_predict_totals_fails_closed_on_boolean_totals_sigma(self):
+        """MLEngine falla cerrado si totals_sigma es booleano (True o False)."""
+        engine = MLEngine()
+        engine.cat_model = MagicMock()
+        engine.scaler = MagicMock()
+        engine.scaler.transform.return_value = np.zeros((1, 14))
+        mock_tot_model = MagicMock()
+        mock_tot_model.predict.return_value = np.array([45.0])
+        engine.totals_model = mock_tot_model
+
+        engine.totals_sigma = True
+        with pytest.raises(ValueError) as exc:
+            engine.predict_totals({"wpct": 0.5}, {"wpct": 0.5}, total_line=45.5)
+        assert "no puede ser de tipo booleano" in str(exc.value)
 
 
 # ==============================================================================

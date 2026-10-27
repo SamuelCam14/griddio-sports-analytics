@@ -178,6 +178,11 @@ def generate_expanding_chronological_splits(
         max(dates[train_idx]) < min(dates[val_idx])
     y que los bloques de validación sean mutuamente excluyentes entre sí.
     """
+    if isinstance(n_splits, (bool, np.bool_)) or not isinstance(n_splits, (int, np.integer)) or n_splits < 1:
+        raise ValueError(f"n_splits debe ser un entero >= 1, obtenido: {n_splits}")
+    if isinstance(min_train_dates, (bool, np.bool_)) or not isinstance(min_train_dates, (int, np.integer)) or min_train_dates < 1:
+        raise ValueError(f"min_train_dates debe ser un entero >= 1, obtenido: {min_train_dates}")
+
     if len(dates) == 0:
         return []
 
@@ -249,7 +254,19 @@ def estimate_oof_residual_sigma(
     Previene la fuga temporal y la subestimación de la varianza residual producida por residuos in-sample.
     Garantiza que para cada partición interna se cumpla max(train_date) < min(val_date).
     """
+    if isinstance(default_sigma, (bool, np.bool_)) or not math.isfinite(default_sigma) or default_sigma <= 0:
+        raise DataQualityError(f"default_sigma debe ser un número finito > 0, obtenido: {default_sigma}")
+
     n_samples = len(y_train)
+    if len(X_train) != n_samples:
+        raise DataQualityError(
+            f"Dimensiones inconsistentes para estimate_oof_residual_sigma: len(X_train)={len(X_train)} != len(y_train)={n_samples}"
+        )
+    if dates is not None and len(dates) != n_samples:
+        raise DataQualityError(
+            f"Dimensiones inconsistentes para estimate_oof_residual_sigma: len(dates)={len(dates)} != len(y_train)={n_samples}"
+        )
+
     if n_samples < 4:
         return float(default_sigma)
 
@@ -258,6 +275,8 @@ def estimate_oof_residual_sigma(
 
     try:
         splits = generate_expanding_chronological_splits(dates, n_splits=n_splits)
+    except DataQualityError:
+        raise
     except Exception:
         return float(default_sigma)
 

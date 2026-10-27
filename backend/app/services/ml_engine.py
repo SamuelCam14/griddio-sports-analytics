@@ -220,6 +220,8 @@ class MLEngine:
         try:
             raw_pred = totals_model.predict(scaled_vector)
             val = raw_pred[0] if hasattr(raw_pred, "__getitem__") else raw_pred
+            if isinstance(val, (bool, np.bool_)):
+                raise ValueError(f"projected_total del modelo no puede ser de tipo booleano: {val}")
             projected_total = float(val)
         except (TypeError, ValueError, IndexError) as err:
             raise ValueError(f"totals_model retornó un valor de proyección no convertible a float: {err}") from err
@@ -229,6 +231,8 @@ class MLEngine:
 
         totals_sigma = getattr(self, "totals_sigma", 14.0)
         try:
+            if isinstance(totals_sigma, (bool, np.bool_)):
+                raise ValueError(f"totals_sigma no puede ser de tipo booleano: {totals_sigma}")
             parsed_sigma = float(totals_sigma)
             if not np.isfinite(parsed_sigma) or parsed_sigma <= 0:
                 raise ValueError(f"totals_sigma debe ser finito > 0, obtenido: {totals_sigma}")
@@ -241,7 +245,7 @@ class MLEngine:
         totals_pick = None
 
         if total_line is not None:
-            if isinstance(total_line, bool):
+            if isinstance(total_line, (bool, np.bool_)):
                 raise ValueError(f"total_line no puede ser de tipo booleano: {total_line}")
             try:
                 line_val = float(total_line)

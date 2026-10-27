@@ -429,6 +429,13 @@ def evaluate_predictions_task(sport: str = "ALL", game_ids: Optional[List[str]] 
                             pred_dict["model_agreement"] = int(row["model_agreement"])
                         if "confluence_tier" in row and pd.notna(row["confluence_tier"]):
                             pred_dict["confluence_tier"] = str(row["confluence_tier"])
+                        if "projected_total" in row and pd.notna(row["projected_total"]):
+                            try:
+                                pt_val = float(row["projected_total"])
+                                if math.isfinite(pt_val) and pt_val > 0:
+                                    pred_dict["projected_total"] = pt_val
+                            except (TypeError, ValueError):
+                                pass
 
                         filtered_pred_dict = {k: v for k, v in pred_dict.items() if k in valid_cols}
                         predictions_data.append(filtered_pred_dict)

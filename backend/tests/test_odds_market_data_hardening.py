@@ -692,6 +692,7 @@ class TestSportsAnalyticsServiceHardening:
             under_ml=-112,
             model_prob_home=0.65,
             model_prob_away=0.35,
+            model_projected_total=48.0,
         )
 
         assert result["spread"]["status"] == "available"

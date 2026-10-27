@@ -214,6 +214,7 @@ export interface MatchupSpread {
 
 export interface MatchupTotals {
   status?: string
+  is_experimental?: boolean
   market_line: number | null
   odds_american: number | null
   over_ml?: number | null
@@ -225,11 +226,14 @@ export interface MatchupTotals {
   market_prob_under_no_vig?: number | null
   market_vig?: number | null
   projected_total: number | null
-  pick: 'OVER' | 'UNDER' | string | null
+  pick: 'OVER' | 'UNDER' | 'PUSH' | string | null
   recommendation?: string | null
   probability: number | null
+  prob_over?: number | null
+  prob_under?: number | null
   edge_pct: number | null
   tier?: string | null
+  residual_sigma?: number | null
   // Campos EV y Kelly
   ev_dollars?: number | null
   kelly_stake?: number | null

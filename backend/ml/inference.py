@@ -502,8 +502,8 @@ def predict_matchups(
             else:
                 raise DataQualityError(f"Modelo seleccionado de totales {selected_totals_model!r} no está disponible")
 
-            if not np.isfinite(projected_total).all():
-                raise DataQualityError("El modelo de totales produjo predicciones no finitas")
+            if projected_total.dtype == bool or not np.isfinite(projected_total).all():
+                raise DataQualityError("El modelo de totales produjo predicciones no finitas o booleanas")
 
             features["projected_total"] = np.round(projected_total, 2)
             features["predicted_total"] = features["projected_total"]
@@ -523,6 +523,8 @@ def predict_matchups(
             try:
                 if raw_sigma is None:
                     raise ValueError("residual_sigma ausente en metadata de totales")
+                if isinstance(raw_sigma, (bool, np.bool_)):
+                    raise ValueError(f"residual_sigma no puede ser de tipo booleano: {raw_sigma}")
                 parsed_sigma = float(raw_sigma)
                 if not math.isfinite(parsed_sigma) or parsed_sigma <= 0:
                     raise ValueError(f"residual_sigma debe ser un número finito > 0, obtenido: {raw_sigma}")
@@ -542,7 +544,7 @@ def predict_matchups(
                         probs_under.append(np.nan)
                         totals_picks.append(None)
                     else:
-                        if isinstance(val, bool):
+                        if isinstance(val, (bool, np.bool_)):
                             raise DataQualityError(f"Línea de total inválida: tipo booleano no permitido ({val})")
                         try:
                             line_val = float(val)
