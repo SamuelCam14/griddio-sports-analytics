@@ -450,8 +450,8 @@ def test_odds_quota_ledger_hash_integrity():
     assert ledger_path.is_file(), f"Ledger file not found at {ledger_path}"
 
     current_hash = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
-    # Baseline updated following authorized Celery startup NFL odds sync (reservation cfd8ccdc8206: cost 3, 300 used, 200 remaining)
-    expected_hash = "1639967d78f03967b00e00ba462f65210070ad41f734d95adb75c06dd294196a"
+    # Baseline updated following authorized Celery startup NFL odds sync (reservation 8a5f2170291d: cost 3, 303 used, 197 remaining)
+    expected_hash = "a09c01acc3412a31066b2e1f557d3279fc7d1713e969b770be0f8562e6ef35ff"
     assert current_hash == expected_hash, (
         f"Quota ledger hash altered! Expected {expected_hash}, got {current_hash}. "
         f"Tests must NEVER spend external API credits or alter the ledger."

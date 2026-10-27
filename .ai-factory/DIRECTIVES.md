@@ -11,7 +11,7 @@
 ---
 
 ## 2. Reglas Inquebrantables del Dominio (Invariantes)
-1. **Protección de Cuotas (The Odds API):** PROHIBIDO realizar llamadas en vivo a The Odds API o iniciar `sports_beat` durante pruebas. El archivo `data/odds_quota_ledger.json` (hash base `1639967d...`) no debe ser alterado por tests ni scripts.
+1. **Protección de Cuotas (The Odds API):** PROHIBIDO realizar llamadas en vivo a The Odds API o iniciar `sports_beat` durante pruebas. El archivo `data/odds_quota_ledger.json` (hash base `a09c01ac...`) no debe ser alterado por tests ni scripts.
 2. **Cero Data Leakage Temporal:** Todo corte `as_of` debe usar estrictamente el kickoff canónico UTC (`< kickoff_utc`), nunca `T23:59:59Z`. Disponibilidad/lesiones de NFL exigen `date_modified < decision_cutoff` (2h antes del kickoff).
 3. **Cero Timestamps Sintéticos:** Prohibido sintetizar `captured_at_utc` en cuotas de mercado. Si falta timestamp verificado, debe fallar cerrado (`market_odds=None` o `ValueError`).
 4. **Una Sola Tarea Activa (WIP = 1):** Solo puede existir UNA tarea marcada como `[~]` en `BACKLOG.md` en cada ciclo.
